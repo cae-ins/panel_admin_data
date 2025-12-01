@@ -1,4 +1,4 @@
-# Panel Admin Data — Traitement des données de solde
+# Panel Admin Data
 
 Projet de traitement, fusion et contrôle qualité des données de solde (paie) utilisé pour construire un panel longitudinal d'observations par matricule.
 
