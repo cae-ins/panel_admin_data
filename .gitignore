@@ -1,0 +1,16 @@
+**/*.xlsx
+*.xlsx
+**/*.xls
+*.xls  
+**/*.csv
+*.csv
+**/*.tsv
+*.tsv
+**/*.ods
+*.ods
+**/*.parquet
+*.parquet
+*.txt
+**/*.txt
+*.env
+**/*.env
