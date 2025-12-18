@@ -14,3 +14,7 @@
 **/*.txt
 *.env
 **/*.env
+data/
+logs/
+output/
+results/
