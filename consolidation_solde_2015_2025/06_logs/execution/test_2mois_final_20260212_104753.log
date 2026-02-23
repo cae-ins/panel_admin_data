@@ -1,0 +1,69 @@
+[2026-02-12 10:47:53] ============================================================ 
+[2026-02-12 10:47:53] TEST MÉTHODOLOGIE - VERSION FINALE AVEC CODES 
+[2026-02-12 10:47:53] ============================================================ 
+[2026-02-12 10:47:53] 
+[CHARGEMENT] Tables de codes de référence 
+[2026-02-12 10:47:53] ------------------------------------------------------------ 
+[2026-02-12 10:47:53]   Fichier ANSTAT : FICHIER_ANSTAT_CODE_2025.xlsx 
+[2026-02-12 10:47:53]   Chargement : lieu affectation 
+[2026-02-12 10:47:53]     ✓ 1583 codes chargés 
+[2026-02-12 10:47:53]   Chargement : ORGANISME_OK 
+[2026-02-12 10:47:53]     ✓ 210 codes chargés 
+[2026-02-12 10:47:53]   Chargement : CODE_SITUATION_SOLDE 
+[2026-02-12 10:47:53]     ✓ 60 codes chargés 
+[2026-02-12 10:47:53]   Chargement : HISTORIQUE_ECHELLES_CORPS 
+[2026-02-12 10:47:53]     ✓ 1255 codes chargés (+ Code_CITP, Metier_CITP) 
+[2026-02-12 10:47:53]   Chargement : SERVICE 
+[2026-02-12 10:47:54]     ✓ 2241 codes chargés 
+[2026-02-12 10:47:54]   Chargement : FONCTION 
+[2026-02-12 10:47:54]     ✓ 160 codes chargés 
+[2026-02-12 10:47:54]   Chargement : GRADE 
+[2026-02-12 10:47:54]     ✓ 278 codes chargés 
+[2026-02-12 10:47:54]   Chargement : LIBELLE POSTE 
+[2026-02-12 10:47:54]     ✓ 588 codes chargés 
+[2026-02-12 10:47:54] 
+  ✓ Toutes les tables de codes chargées 
+[2026-02-12 10:47:57] 
+============================================================ 
+[2026-02-12 10:47:57] TRAITEMENT FICHIERS 
+[2026-02-12 10:47:57] ============================================================ 
+[2026-02-12 10:47:57] 
+[TRAITEMENT] 012021.xlsx 
+[2026-02-12 10:47:57] ------------------------------------------------------------ 
+[2026-02-12 10:47:57]   Lecture Feuille 1... 
+[2026-02-12 10:47:57]   Détection en-tête pour feuille 1... 
+[2026-02-12 10:48:00]     ✓ En-tête détecté à la ligne 1 
+[2026-02-12 10:48:05]     Lignes : 248266, Colonnes : 26 
+[2026-02-12 10:48:05]   Mapping des colonnes... 
+[2026-02-12 10:48:05]     ✓ 26 colonnes mappées 
+[2026-02-12 10:48:50]     Agents gardés : 246410 (99.3%) 
+[2026-02-12 10:48:50]   Lecture Feuille 2... 
+[2026-02-12 10:48:50]   Détection en-tête pour feuille 2... 
+[2026-02-12 10:49:00]     ✓ En-tête détecté à la ligne 2 
+[2026-02-12 10:49:07]     Lignes : 247365, Colonnes : 158 
+[2026-02-12 10:49:07]     Clé F2 : MATRICULE||CODE_ORGANISME 
+[2026-02-12 10:49:07]   Fusion F1 + F2... 
+[2026-02-12 10:49:10]     ✓ Fusion terminée : 246410 lignes 
+[2026-02-12 10:49:10]   Enrichissement par codes de référence... 
+[2026-02-12 10:49:10]   ✗ ERREUR : 'length = 246410' in coercion to 'logical(1)' 
+[2026-02-12 10:49:10] 
+[TRAITEMENT] 022021.xlsx 
+[2026-02-12 10:49:10] ------------------------------------------------------------ 
+[2026-02-12 10:49:10]   Lecture Feuille 1... 
+[2026-02-12 10:49:10]   Détection en-tête pour feuille 1... 
+[2026-02-12 10:49:12]     ✓ En-tête détecté à la ligne 1 
+[2026-02-12 10:49:15]     Lignes : 185336, Colonnes : 26 
+[2026-02-12 10:49:15]   Mapping des colonnes... 
+[2026-02-12 10:49:15]     ✓ 26 colonnes mappées 
+[2026-02-12 10:49:49]     Agents gardés : 184415 (99.5%) 
+[2026-02-12 10:49:49]   Lecture Feuille 2... 
+[2026-02-12 10:49:49]   Détection en-tête pour feuille 2... 
+[2026-02-12 10:49:56]     ✓ En-tête détecté à la ligne 2 
+[2026-02-12 10:50:04]     Lignes : 248116, Colonnes : 155 
+[2026-02-12 10:50:04]     Clé F2 : MATRICULE||CODE_ORGANISME 
+[2026-02-12 10:50:04]   Fusion F1 + F2... 
+[2026-02-12 10:50:07]     ✓ Fusion terminée : 184415 lignes 
+[2026-02-12 10:50:07]   Enrichissement par codes de référence... 
+[2026-02-12 10:50:07]   ✗ ERREUR : 'length = 184415' in coercion to 'logical(1)' 
+[2026-02-12 10:50:07] 
+✗ Aucun fichier traité 

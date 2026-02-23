@@ -1,0 +1,29 @@
+[2026-02-12 12:27:34] ============================================================ 
+[2026-02-12 12:27:34] TEST MÉTHODOLOGIE - VERSION FINALE 
+[2026-02-12 12:27:34] ============================================================ 
+[2026-02-12 12:27:35] 
+[CHARGEMENT CODES] 
+[2026-02-12 12:27:35]   CODE_AFFECTATION : OK 
+[2026-02-12 12:27:36]   CODE_ORGANISME : OK 
+[2026-02-12 12:27:36]   CODE_POSITION_SOLDE : OK 
+[2026-02-12 12:27:36]   CODE_EMPLOI : OK (+CITP) 
+[2026-02-12 12:27:36]   CODE_SERVICE : OK 
+[2026-02-12 12:27:36]   CODE_FONCTION : OK 
+[2026-02-12 12:27:36]   CODE_GRADE : OK 
+[2026-02-12 12:27:36]   CODE_POSTE : OK 
+[2026-02-12 12:27:36] 
+[TRAITEMENT] 
+[2026-02-12 12:27:36] 
+[012021.xlsx] 
+[2026-02-12 12:27:44]   F1 : 248266 lignes 
+[2026-02-12 12:28:26]   Gardés : 246410 (99.3%) 
+[2026-02-12 12:28:44]   F2 : 158 colonnes 
+[2026-02-12 12:28:44]   ✗ ERREUR : x comporte plusieurs fois la colonne : [grade_2]. Veuillez supprimer le doublon ou le renommer et recommencer. 
+[2026-02-12 12:28:44] 
+[022021.xlsx] 
+[2026-02-12 12:28:48]   F1 : 185336 lignes 
+[2026-02-12 12:29:21]   Gardés : 184415 (99.5%) 
+[2026-02-12 12:29:37]   F2 : 155 colonnes 
+[2026-02-12 12:29:37]   ✗ ERREUR : x comporte plusieurs fois la colonne : [grade_2]. Veuillez supprimer le doublon ou le renommer et recommencer. 
+[2026-02-12 12:29:37] 
+✗ Échec 

@@ -1,0 +1,103 @@
+[2026-02-12 09:30:34] ============================================================= 
+[2026-02-12 09:30:37] TEST MÉTHODOLOGIE - JANVIER-FÉVRIER 2021 
+[2026-02-12 09:30:38] ============================================================= 
+[2026-02-12 09:30:56] 
+============================================================ 
+[2026-02-12 09:30:58] PHASE 1 : TRAITEMENT DES FICHIERS 
+[2026-02-12 09:31:00] ============================================================ 
+[2026-02-12 09:31:12] 
+[TRAITEMENT] 012021.xlsx 
+[2026-02-12 09:31:12] ------------------------------------------------------------ 
+[2026-02-12 09:31:12]   Lecture Feuille 1... 
+[2026-02-12 09:31:12]   Détection en-tête pour feuille 1... 
+[2026-02-12 09:31:17]     ✓ En-tête détecté à la ligne 1 
+[2026-02-12 09:31:24]     Lignes lues : 248266 
+[2026-02-12 09:31:24]     Colonnes lues : 26 
+[2026-02-12 09:31:24]   Mapping des colonnes... 
+[2026-02-12 09:31:24]     ✓ 26 colonnes mappées 
+[2026-02-12 09:31:24]   Normalisation des situations... 
+[2026-02-12 09:32:11]     Répartition situations : 
+[2026-02-12 09:32:11]       autre : 1856 
+[2026-02-12 09:32:11]       demi_solde : 1 
+[2026-02-12 09:32:11]       en_activite : 245297 
+[2026-02-12 09:32:11]       regul_indemnites : 1112 
+[2026-02-12 09:32:11]   Filtrage agents payés... 
+[2026-02-12 09:32:11]     Agents gardés : 246410 (99.3%) 
+[2026-02-12 09:32:11]     Agents exclus : 1856 
+[2026-02-12 09:32:11]   Lecture Feuille 2... 
+[2026-02-12 09:32:11]   Détection en-tête pour feuille 2... 
+[2026-02-12 09:32:23]     ⚠️ En-tête non détecté, utilisation ligne 1 par défaut 
+[2026-02-12 09:32:38]     Lignes lues : 247366 
+[2026-02-12 09:32:38]   Mapping des colonnes... 
+[2026-02-12 09:32:38]     ✓ 158 colonnes mappées 
+[2026-02-12 09:32:38]   Standardisation des types... 
+[2026-02-12 09:32:38]   ✓ Traitement terminé : 246410 lignes gardées 
+[2026-02-12 09:32:38] 
+[TRAITEMENT] 022021.xlsx 
+[2026-02-12 09:32:38] ------------------------------------------------------------ 
+[2026-02-12 09:32:38]   Lecture Feuille 1... 
+[2026-02-12 09:32:38]   Détection en-tête pour feuille 1... 
+[2026-02-12 09:32:40]     ✓ En-tête détecté à la ligne 1 
+[2026-02-12 09:32:44]     Lignes lues : 185336 
+[2026-02-12 09:32:44]     Colonnes lues : 26 
+[2026-02-12 09:32:44]   Mapping des colonnes... 
+[2026-02-12 09:32:44]     ✓ 26 colonnes mappées 
+[2026-02-12 09:32:44]   Normalisation des situations... 
+[2026-02-12 09:33:17]     Répartition situations : 
+[2026-02-12 09:33:17]       autre : 921 
+[2026-02-12 09:33:17]       en_activite : 184408 
+[2026-02-12 09:33:17]       regul_indemnites : 7 
+[2026-02-12 09:33:17]   Filtrage agents payés... 
+[2026-02-12 09:33:17]     Agents gardés : 184415 (99.5%) 
+[2026-02-12 09:33:17]     Agents exclus : 921 
+[2026-02-12 09:33:17]   Lecture Feuille 2... 
+[2026-02-12 09:33:17]   Détection en-tête pour feuille 2... 
+[2026-02-12 09:33:26]     ⚠️ En-tête non détecté, utilisation ligne 1 par défaut 
+[2026-02-12 09:33:38]     Lignes lues : 248117 
+[2026-02-12 09:33:38]   Mapping des colonnes... 
+[2026-02-12 09:33:38]     ✓ 155 colonnes mappées 
+[2026-02-12 09:33:38]   Standardisation des types... 
+[2026-02-12 09:33:38]   ✓ Traitement terminé : 184415 lignes gardées 
+[2026-02-12 09:35:03] 
+============================================================ 
+[2026-02-12 09:35:03] PHASE 2 : CONSOLIDATION 
+[2026-02-12 09:35:03] ============================================================ 
+[2026-02-12 09:35:03] Harmonisation des colonnes... 
+[2026-02-12 09:35:03]   Total colonnes uniques : 32 
+[2026-02-12 09:35:03] Empilement vertical... 
+[2026-02-12 09:35:04]   ✓ Base consolidée : 430825 lignes × 32 colonnes 
+[2026-02-12 09:35:04] 
+============================================================ 
+[2026-02-12 09:35:04] PHASE 3 : VALIDATION 
+[2026-02-12 09:35:04] ============================================================ 
+[2026-02-12 09:35:04] Contrôle unicité clé... 
+[2026-02-12 09:35:04]   Doublons détectés : 1 
+[2026-02-12 09:35:04] Contrôle complétude... 
+[2026-02-12 09:35:04]   matricule : 100.00% complet 
+[2026-02-12 09:35:04]   nom : 100.00% complet 
+[2026-02-12 09:35:04]   montant_brut : 100.00% complet 
+[2026-02-12 09:35:04]   montant_net : 100.00% complet 
+[2026-02-12 09:35:04] Contrôle cohérence montants... 
+[2026-02-12 09:35:04]   Montants incohérents (net > brut) : 0 
+[2026-02-12 09:35:04] Distribution situations : 
+[2026-02-12 09:35:04]   demi_solde : 1 (0.0%) 
+[2026-02-12 09:35:04]   en_activite : 429705 (99.7%) 
+[2026-02-12 09:35:04]   regul_indemnites : 1119 (0.3%) 
+[2026-02-12 09:35:04] 
+============================================================ 
+[2026-02-12 09:35:04] PHASE 4 : SAUVEGARDE 
+[2026-02-12 09:35:04] ============================================================ 
+[2026-02-12 09:35:04]   ✓ CSV sauvegardé : /home/migone/consolidation_solde_2015_2025/03_data_output/test_2mois_2021/base_consolidee_jan_fev_2021.csv 
+[2026-02-12 09:35:45]   ✓ Excel sauvegardé : /home/migone/consolidation_solde_2015_2025/03_data_output/test_2mois_2021/base_consolidee_jan_fev_2021.xlsx 
+[2026-02-12 09:35:45]   ✓ Statistiques sauvegardées : /home/migone/consolidation_solde_2015_2025/03_data_output/test_2mois_2021/statistiques_traitement.csv 
+[2026-02-12 09:35:45] 
+============================================================ 
+[2026-02-12 09:35:45] RAPPORT FINAL 
+[2026-02-12 09:35:45] ============================================================ 
+[2026-02-12 09:35:45] Fichiers traités : 2 / 2 
+[2026-02-12 09:35:45] Lignes totales : 430825 
+[2026-02-12 09:35:45] Colonnes : 32 
+[2026-02-12 09:35:45] Périodes : 2021-01, 2021-02 
+[2026-02-12 09:35:46] Agents uniques : 272928 
+[2026-02-12 09:35:46] 
+✓ TEST MÉTHODOLOGIE TERMINÉ AVEC SUCCÈS 

@@ -1,0 +1,82 @@
+[2026-02-12 10:19:20] ============================================================ 
+[2026-02-12 10:19:20] TEST MÉTHODOLOGIE - AVEC FUSION F1+F2 
+[2026-02-12 10:19:20] ============================================================ 
+[2026-02-12 10:19:22] 
+============================================================ 
+[2026-02-12 10:19:22] TRAITEMENT DES FICHIERS 
+[2026-02-12 10:19:22] ============================================================ 
+[2026-02-12 10:19:23] 
+[TRAITEMENT] 012021.xlsx 
+[2026-02-12 10:19:23] ------------------------------------------------------------ 
+[2026-02-12 10:19:23]   Lecture Feuille 1... 
+[2026-02-12 10:19:23]   Détection en-tête pour feuille 1... 
+[2026-02-12 10:19:26]     ✓ En-tête détecté à la ligne 1 (mot-clé 'matricule' trouvé) 
+[2026-02-12 10:19:30]     Lignes : 248266, Colonnes : 26 
+[2026-02-12 10:19:30]   Mapping des colonnes... 
+[2026-02-12 10:19:30]     ✓ 26 colonnes mappées 
+[2026-02-12 10:20:14]     Situations : 
+[2026-02-12 10:20:14]       autre : 1856 
+[2026-02-12 10:20:14]       demi_solde : 1 
+[2026-02-12 10:20:14]       en_activite : 245297 
+[2026-02-12 10:20:14]       regul_indemnites : 1112 
+[2026-02-12 10:20:14]     Agents gardés : 246410 (99.3%) 
+[2026-02-12 10:20:14]   Lecture Feuille 2... 
+[2026-02-12 10:20:14]   Détection en-tête pour feuille 2... 
+[2026-02-12 10:20:24]     ✓ En-tête détecté à la ligne 2 (mot-clé 'matricule' trouvé) 
+[2026-02-12 10:20:32]     Lignes : 247365, Colonnes : 158 
+[2026-02-12 10:20:32]     Colonnes F2 : MATRICULE||CODE_ORGANISME, 124, 125, 126, 171 
+[2026-02-12 10:20:32]     Colonne clé F2 : MATRICULE||CODE_ORGANISME 
+[2026-02-12 10:20:32]   Fusion F1 + F2... 
+[2026-02-12 10:20:35]     Agents avec données F2 : 241231 / 246410 
+[2026-02-12 10:20:36]   ✓ Traitement terminé : 246410 lignes, 187 colonnes 
+[2026-02-12 10:20:36] 
+[TRAITEMENT] 022021.xlsx 
+[2026-02-12 10:20:36] ------------------------------------------------------------ 
+[2026-02-12 10:20:36]   Lecture Feuille 1... 
+[2026-02-12 10:20:36]   Détection en-tête pour feuille 1... 
+[2026-02-12 10:20:37]     ✓ En-tête détecté à la ligne 1 (mot-clé 'matricule' trouvé) 
+[2026-02-12 10:20:41]     Lignes : 185336, Colonnes : 26 
+[2026-02-12 10:20:41]   Mapping des colonnes... 
+[2026-02-12 10:20:41]     ✓ 26 colonnes mappées 
+[2026-02-12 10:21:14]     Situations : 
+[2026-02-12 10:21:14]       autre : 921 
+[2026-02-12 10:21:14]       en_activite : 184408 
+[2026-02-12 10:21:14]       regul_indemnites : 7 
+[2026-02-12 10:21:14]     Agents gardés : 184415 (99.5%) 
+[2026-02-12 10:21:14]   Lecture Feuille 2... 
+[2026-02-12 10:21:14]   Détection en-tête pour feuille 2... 
+[2026-02-12 10:21:23]     ✓ En-tête détecté à la ligne 2 (mot-clé 'matricule' trouvé) 
+[2026-02-12 10:21:31]     Lignes : 248116, Colonnes : 155 
+[2026-02-12 10:21:31]     Colonnes F2 : MATRICULE||CODE_ORGANISME, 124, 125, 126, 171 
+[2026-02-12 10:21:31]     Colonne clé F2 : MATRICULE||CODE_ORGANISME 
+[2026-02-12 10:21:31]   Fusion F1 + F2... 
+[2026-02-12 10:21:34]     Agents avec données F2 : 140679 / 184415 
+[2026-02-12 10:21:35]   ✓ Traitement terminé : 184415 lignes, 184 colonnes 
+[2026-02-12 10:21:35] 
+============================================================ 
+[2026-02-12 10:21:35] CONSOLIDATION 
+[2026-02-12 10:21:35] ============================================================ 
+[2026-02-12 10:21:35]   Colonnes uniques : 191 
+[2026-02-12 10:21:35]   Colonnes codes (F2) : 158 
+[2026-02-12 10:21:35]   ✓ Base : 430825 lignes × 191 colonnes 
+[2026-02-12 10:21:35] 
+============================================================ 
+[2026-02-12 10:21:35] VALIDATION 
+[2026-02-12 10:21:35] ============================================================ 
+[2026-02-12 10:21:35]   Colonnes codes présentes : 158 
+[2026-02-12 10:21:35]     Exemples : code_124, code_125, code_126, code_171, code_195, code_200, code_201, code_202, code_203, code_204 
+[2026-02-12 10:21:35]   Complétude colonnes codes (échantillon) : 
+[2026-02-12 10:21:35]     code_124 : 88.6% complet 
+[2026-02-12 10:21:35]     code_125 : 0.0% complet 
+[2026-02-12 10:21:35]     code_126 : 1.1% complet 
+[2026-02-12 10:21:35]     code_171 : 0.0% complet 
+[2026-02-12 10:21:35]     code_195 : 0.1% complet 
+[2026-02-12 10:21:35] 
+============================================================ 
+[2026-02-12 10:21:35] SAUVEGARDE 
+[2026-02-12 10:21:35] ============================================================ 
+[2026-02-12 10:21:35]   ✓ CSV : /home/migone/consolidation_solde_2015_2025/03_data_output/test_2mois_2021_avec_fusion/base_consolidee_jan_fev_2021_complete.csv 
+[2026-02-12 10:23:56]   ✓ Excel : /home/migone/consolidation_solde_2015_2025/03_data_output/test_2mois_2021_avec_fusion/base_consolidee_jan_fev_2021_complete.xlsx 
+[2026-02-12 10:23:56]   ✓ Échantillon : /home/migone/consolidation_solde_2015_2025/03_data_output/test_2mois_2021_avec_fusion/echantillon_1000lignes.xlsx 
+[2026-02-12 10:23:56] 
+✓ TEST TERMINÉ AVEC SUCCÈS 

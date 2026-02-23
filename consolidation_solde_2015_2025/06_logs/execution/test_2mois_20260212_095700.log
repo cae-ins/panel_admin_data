@@ -1,0 +1,137 @@
+[2026-02-12 09:57:00] ============================================================ 
+[2026-02-12 09:57:00] TEST MÉTHODOLOGIE - JANVIER-FÉVRIER 2021 (VERSION CORRIGÉE) 
+[2026-02-12 09:57:00] ============================================================ 
+[2026-02-12 09:57:03] 
+============================================================ 
+[2026-02-12 09:57:03] PHASE 1 : TRAITEMENT DES FICHIERS 
+[2026-02-12 09:57:03] ============================================================ 
+[2026-02-12 09:57:03] 
+[TRAITEMENT] 012021.xlsx 
+[2026-02-12 09:57:03] ------------------------------------------------------------ 
+[2026-02-12 09:57:03]   Lecture Feuille 1... 
+[2026-02-12 09:57:03]   Détection en-tête pour feuille 1... 
+[2026-02-12 09:57:06]     ✓ En-tête détecté à la ligne 1 (mot-clé 'matricule' trouvé) 
+[2026-02-12 09:57:11]     Lignes lues : 248266 
+[2026-02-12 09:57:11]     Colonnes lues : 26 
+[2026-02-12 09:57:11]   Mapping des colonnes... 
+[2026-02-12 09:57:11]     ✓ 26 colonnes mappées 
+[2026-02-12 09:57:11]       matricule ← 'MATRICULE' 
+[2026-02-12 09:57:11]       nom ← 'NOM' 
+[2026-02-12 09:57:11]       situation ← 'SITUATION' 
+[2026-02-12 09:57:11]       montant_brut ← 'MONTANT BRUT' 
+[2026-02-12 09:57:11]       montant_net ← 'MONTANT NET' 
+[2026-02-12 09:57:11]     ✓ Toutes colonnes obligatoires présentes 
+[2026-02-12 09:57:11]   Normalisation des situations... 
+[2026-02-12 09:57:56]     Répartition situations : 
+[2026-02-12 09:57:56]       autre : 1856 
+[2026-02-12 09:57:56]       demi_solde : 1 
+[2026-02-12 09:57:56]       en_activite : 245297 
+[2026-02-12 09:57:56]       regul_indemnites : 1112 
+[2026-02-12 09:57:56]   Filtrage agents payés... 
+[2026-02-12 09:57:56]     Agents gardés : 246410 (99.3%) 
+[2026-02-12 09:57:56]     Agents exclus : 1856 
+[2026-02-12 09:57:56]   Lecture Feuille 2... 
+[2026-02-12 09:57:56]   Détection en-tête pour feuille 2... 
+[2026-02-12 09:58:06]     ✓ En-tête détecté à la ligne 2 (mot-clé 'matricule' trouvé) 
+[2026-02-12 09:58:06]     Ligne d'en-tête utilisée : 2 
+[2026-02-12 09:58:15]     Lignes lues : 247365 
+[2026-02-12 09:58:15]     Colonnes lues : 158 
+[2026-02-12 09:58:15]     Premières colonnes F2 : MATRICULE||CODE_ORGANISME, 124, 125, 126, 171 
+[2026-02-12 09:58:15]   Mapping des colonnes... 
+[2026-02-12 09:58:15]     ✓ 158 colonnes mappées 
+[2026-02-12 09:58:15]       montant_brut ← 'BRUT MONTANT' 
+[2026-02-12 09:58:15]     ✓ Validation croisée OK : tous agents F1 présents en F2 
+[2026-02-12 09:58:15]   Standardisation des types... 
+[2026-02-12 09:58:15]   ✓ Traitement terminé : 246410 lignes gardées 
+[2026-02-12 09:58:15] 
+[TRAITEMENT] 022021.xlsx 
+[2026-02-12 09:58:15] ------------------------------------------------------------ 
+[2026-02-12 09:58:15]   Lecture Feuille 1... 
+[2026-02-12 09:58:15]   Détection en-tête pour feuille 1... 
+[2026-02-12 09:58:17]     ✓ En-tête détecté à la ligne 1 (mot-clé 'matricule' trouvé) 
+[2026-02-12 09:58:20]     Lignes lues : 185336 
+[2026-02-12 09:58:20]     Colonnes lues : 26 
+[2026-02-12 09:58:20]   Mapping des colonnes... 
+[2026-02-12 09:58:20]     ✓ 26 colonnes mappées 
+[2026-02-12 09:58:20]       matricule ← 'MATRICULE' 
+[2026-02-12 09:58:20]       nom ← 'NOM' 
+[2026-02-12 09:58:20]       situation ← 'SITUATION' 
+[2026-02-12 09:58:20]       montant_brut ← 'MONTANT BRUT' 
+[2026-02-12 09:58:20]       montant_net ← 'MONTANT NET' 
+[2026-02-12 09:58:20]     ✓ Toutes colonnes obligatoires présentes 
+[2026-02-12 09:58:20]   Normalisation des situations... 
+[2026-02-12 09:58:55]     Répartition situations : 
+[2026-02-12 09:58:55]       autre : 921 
+[2026-02-12 09:58:55]       en_activite : 184408 
+[2026-02-12 09:58:55]       regul_indemnites : 7 
+[2026-02-12 09:58:55]   Filtrage agents payés... 
+[2026-02-12 09:58:55]     Agents gardés : 184415 (99.5%) 
+[2026-02-12 09:58:55]     Agents exclus : 921 
+[2026-02-12 09:58:55]   Lecture Feuille 2... 
+[2026-02-12 09:58:55]   Détection en-tête pour feuille 2... 
+[2026-02-12 09:59:07]     ✓ En-tête détecté à la ligne 2 (mot-clé 'matricule' trouvé) 
+[2026-02-12 09:59:07]     Ligne d'en-tête utilisée : 2 
+[2026-02-12 09:59:15]     Lignes lues : 248116 
+[2026-02-12 09:59:15]     Colonnes lues : 155 
+[2026-02-12 09:59:15]     Premières colonnes F2 : MATRICULE||CODE_ORGANISME, 124, 125, 126, 171 
+[2026-02-12 09:59:15]   Mapping des colonnes... 
+[2026-02-12 09:59:15]     ✓ 155 colonnes mappées 
+[2026-02-12 09:59:15]       montant_brut ← 'MONTANT BRUT' 
+[2026-02-12 09:59:15]     ⚠️ 40538 agents en F1 absents de F2 
+[2026-02-12 09:59:15]   Standardisation des types... 
+[2026-02-12 09:59:15]   ✓ Traitement terminé : 184415 lignes gardées 
+[2026-02-12 09:59:15] 
+============================================================ 
+[2026-02-12 09:59:15] PHASE 2 : CONSOLIDATION 
+[2026-02-12 09:59:15] ============================================================ 
+[2026-02-12 09:59:15] Harmonisation des colonnes... 
+[2026-02-12 09:59:15]   Total colonnes uniques : 31 
+[2026-02-12 09:59:15]   Période 2021-01 : ajout 1 colonnes manquantes 
+[2026-02-12 09:59:15]   Période 2021-02 : ajout 1 colonnes manquantes 
+[2026-02-12 09:59:15] Empilement vertical... 
+[2026-02-12 09:59:15]   ✓ Base consolidée : 430825 lignes × 31 colonnes 
+[2026-02-12 09:59:15] 
+============================================================ 
+[2026-02-12 09:59:15] PHASE 3 : VALIDATION 
+[2026-02-12 09:59:15] ============================================================ 
+[2026-02-12 09:59:15] Contrôle unicité clé... 
+[2026-02-12 09:59:16]   Doublons détectés : 0 
+[2026-02-12 09:59:16] Contrôle complétude... 
+[2026-02-12 09:59:16]   matricule : 100.00% complet 
+[2026-02-12 09:59:16]   nom : 100.00% complet 
+[2026-02-12 09:59:16]   montant_brut : 100.00% complet 
+[2026-02-12 09:59:16]   montant_net : 100.00% complet 
+[2026-02-12 09:59:16] Contrôle cohérence montants... 
+[2026-02-12 09:59:16]   Montants incohérents (net > brut) : 0 
+[2026-02-12 09:59:16] Distribution situations : 
+[2026-02-12 09:59:16]   demi_solde : 1 (0.0%) 
+[2026-02-12 09:59:16]   en_activite : 429705 (99.7%) 
+[2026-02-12 09:59:16]   regul_indemnites : 1119 (0.3%) 
+[2026-02-12 09:59:16] Statistiques montants bruts : 
+[2026-02-12 09:59:16]   Moyenne : 443383 
+[2026-02-12 09:59:16]   Médiane : 337926 
+[2026-02-12 09:59:16]   Min : 910 
+[2026-02-12 09:59:16]   Max : 42388230 
+[2026-02-12 09:59:16] 
+============================================================ 
+[2026-02-12 09:59:16] PHASE 4 : SAUVEGARDE 
+[2026-02-12 09:59:16] ============================================================ 
+[2026-02-12 09:59:16]   ✓ CSV sauvegardé : /home/migone/consolidation_solde_2015_2025/03_data_output/test_2mois_2021/base_consolidee_jan_fev_2021.csv (150.23 MB) 
+[2026-02-12 09:59:56]   ✓ Excel sauvegardé : /home/migone/consolidation_solde_2015_2025/03_data_output/test_2mois_2021/base_consolidee_jan_fev_2021.xlsx (53.61 MB) 
+[2026-02-12 09:59:56]   ✓ Échantillon sauvegardé : /home/migone/consolidation_solde_2015_2025/03_data_output/test_2mois_2021/echantillon_100lignes.xlsx 
+[2026-02-12 09:59:56]   ✓ Statistiques sauvegardées : /home/migone/consolidation_solde_2015_2025/03_data_output/test_2mois_2021/statistiques_traitement.csv 
+[2026-02-12 09:59:56] 
+============================================================ 
+[2026-02-12 09:59:56] RAPPORT FINAL 
+[2026-02-12 09:59:56] ============================================================ 
+[2026-02-12 09:59:56] Fichiers traités : 2 / 2 
+[2026-02-12 09:59:56] Lignes totales : 430825 
+[2026-02-12 09:59:56] Colonnes : 31 
+[2026-02-12 09:59:56] Périodes : 2021-01, 2021-02 
+[2026-02-12 09:59:57] Agents uniques : 272928 
+[2026-02-12 09:59:57] 
+✓ TEST MÉTHODOLOGIE TERMINÉ AVEC SUCCÈS 
+[2026-02-12 09:59:57] 
+============================================================ 
+[2026-02-12 09:59:57] FIN DU SCRIPT 
+[2026-02-12 09:59:57] ============================================================ 
