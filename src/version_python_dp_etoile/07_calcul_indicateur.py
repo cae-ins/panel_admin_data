@@ -59,6 +59,14 @@ PERIODE_RECENTE   = True
 # True = inclure zéros | False = salaire strictement > 0
 INCLURE_ZEROS     = True
 
+# Seuil de winsorisation (ex: 0.01 = écrêtage à P1/P99)
+# Mettre à None pour désactiver
+SEUIL_WINS        = 0.01
+
+# Effectif minimum par cellule mois × grade × CITP pour appliquer la
+# winsorisation CITP. En dessous, repli sur mois × grade uniquement.
+MIN_OBS_WINS      = 100
+
 # ============================================================
 
 # LORSQU'ON TRAVAILLE DEPUIS SA MACHINE LOCAL
@@ -141,19 +149,20 @@ def grade_order_value(grade: str) -> int:
     return 0
 
 
-def compute_indicators(df: pl.DataFrame, group_cols: list[str]) -> pl.DataFrame:
+def compute_indicators(df: pl.DataFrame, group_cols: list[str],
+                       value_col: str = "REVENU_TOTAL") -> pl.DataFrame:
     """Calcule les indicateurs statistiques complets par groupe."""
     return (
         df.group_by(group_cols)
         .agg([
             pl.len().alias("Effectif"),
-            pl.col("REVENU_TOTAL").mean().round(0).alias("Revenu_moyen"),
-            pl.col("REVENU_TOTAL").median().round(0).alias("Revenu_median"),
-            pl.col("REVENU_TOTAL").min().round(0).alias("Revenu_min"),
-            pl.col("REVENU_TOTAL").max().round(0).alias("Revenu_max"),
-            pl.col("REVENU_TOTAL").quantile(0.25, interpolation="nearest")
+            pl.col(value_col).mean().round(0).alias("Revenu_moyen"),
+            pl.col(value_col).median().round(0).alias("Revenu_median"),
+            pl.col(value_col).min().round(0).alias("Revenu_min"),
+            pl.col(value_col).max().round(0).alias("Revenu_max"),
+            pl.col(value_col).quantile(0.25, interpolation="nearest")
               .round(0).alias("Revenu_p25"),
-            pl.col("REVENU_TOTAL").quantile(0.75, interpolation="nearest")
+            pl.col(value_col).quantile(0.75, interpolation="nearest")
               .round(0).alias("Revenu_p75"),
         ])
         .sort(group_cols)
@@ -391,16 +400,66 @@ base_agrege = base_agrege.filter(pl.col("REVENU_TOTAL").is_not_null())
 print(f"   {len(base_agrege):,} agents agrégés\n")
 
 # ============================================================
+# 8b. WINSORISATION DU REVENU TOTAL
+# ============================================================
+# Appliquée uniquement en mémoire pour le calcul des indicateurs.
+# Le Gold n'est pas modifié — REVENU_TOTAL brut est conservé.
+
+value_col_indic = "REVENU_TOTAL"
+
+if SEUIL_WINS is not None:
+    wins_full     = [c for c in ["ANNEE", "MOIS_NUM", "GRADE_PRINCIPAL", "Code_CITP"]
+                     if c in base_agrege.columns]
+    wins_fallback = [c for c in ["ANNEE", "MOIS_NUM", "GRADE_PRINCIPAL"]
+                     if c in base_agrege.columns]
+    print(f"8b. Winsorisation REVENU_TOTAL "
+          f"(P{int(SEUIL_WINS*100)}/P{int((1-SEUIL_WINS)*100)}) "
+          f"— seuil groupe : {MIN_OBS_WINS} obs...")
+
+    base_agrege = base_agrege.with_columns([
+        pl.len().over(wins_full).alias("_n_citp"),
+        pl.col("REVENU_TOTAL")
+          .quantile(SEUIL_WINS, interpolation="nearest")
+          .over(wins_full).alias("_pb_citp"),
+        pl.col("REVENU_TOTAL")
+          .quantile(1 - SEUIL_WINS, interpolation="nearest")
+          .over(wins_full).alias("_ph_citp"),
+        pl.col("REVENU_TOTAL")
+          .quantile(SEUIL_WINS, interpolation="nearest")
+          .over(wins_fallback).alias("_pb_grade"),
+        pl.col("REVENU_TOTAL")
+          .quantile(1 - SEUIL_WINS, interpolation="nearest")
+          .over(wins_fallback).alias("_ph_grade"),
+    ])
+
+    n_obs_citp  = int((base_agrege["_n_citp"] >= MIN_OBS_WINS).sum())
+    n_obs_grade = len(base_agrege) - n_obs_citp
+
+    base_agrege = base_agrege.with_columns(
+        pl.when(pl.col("_n_citp") >= MIN_OBS_WINS)
+        .then(pl.col("REVENU_TOTAL").clip(pl.col("_pb_citp"), pl.col("_ph_citp")))
+        .otherwise(pl.col("REVENU_TOTAL").clip(pl.col("_pb_grade"), pl.col("_ph_grade")))
+        .alias("REVENU_TOTAL_W")
+    ).drop(["_n_citp", "_pb_citp", "_ph_citp", "_pb_grade", "_ph_grade"])
+
+    n_modif = int((base_agrege["REVENU_TOTAL_W"] != base_agrege["REVENU_TOTAL"]).sum())
+    print(f"   Groupe mois × grade × CITP (≥{MIN_OBS_WINS} obs) : {n_obs_citp:,} obs")
+    print(f"   Repli  mois × grade         (<{MIN_OBS_WINS} obs) : {n_obs_grade:,} obs")
+    print(f"   Observations écrêtées : {n_modif:,}  ({100*n_modif/len(base_agrege):.2f}%)")
+    print(f"   Gold inchangé — winsorisation en mémoire uniquement\n")
+    value_col_indic = "REVENU_TOTAL_W"
+
+# ============================================================
 # 9. INDICATEURS SUR LE REVENU TOTAL
 # ============================================================
 
 print("9. Calcul indicateurs REVENU TOTAL...")
 
 indic_grade = compute_indicators(
-    base_agrege, ["ANNEE", "MOIS_NUM", "MOIS", "GRADE_PRINCIPAL"]
+    base_agrege, ["ANNEE", "MOIS_NUM", "MOIS", "GRADE_PRINCIPAL"], value_col_indic
 )
 indic_grade_sexe = compute_indicators(
-    base_agrege, ["ANNEE", "MOIS_NUM", "MOIS", "SEXE_STD", "GRADE_PRINCIPAL"]
+    base_agrege, ["ANNEE", "MOIS_NUM", "MOIS", "SEXE_STD", "GRADE_PRINCIPAL"], value_col_indic
 )
 
 if "Code_CITP" in base_agrege.columns:
@@ -408,7 +467,8 @@ if "Code_CITP" in base_agrege.columns:
         base_agrege.filter(
             pl.col("Code_CITP").is_not_null() & (pl.col("Code_CITP") != "Non renseigné")
         ),
-        ["ANNEE", "MOIS_NUM", "MOIS", "Code_CITP", "Metier_CITP"]
+        ["ANNEE", "MOIS_NUM", "MOIS", "Code_CITP", "Metier_CITP"],
+        value_col_indic,
     )
 else:
     indic_citp = pl.DataFrame()
@@ -422,14 +482,47 @@ print(f"   {total_indic} lignes d'indicateurs créées\n")
 
 print("10. Calcul indicateurs SALAIRE BRUT (pivot grade)...")
 
+base_gv_brut = base_gv
+if SEUIL_WINS is not None:
+    wins_full_brut     = [c for c in ["ANNEE", "MOIS_NUM", "GRADE", "Code_CITP"]
+                          if c in base_gv.columns]
+    wins_fallback_brut = [c for c in ["ANNEE", "MOIS_NUM", "GRADE"]
+                          if c in base_gv.columns]
+
+    base_gv_brut = base_gv.with_columns([
+        pl.len().over(wins_full_brut).alias("_n_citp"),
+        pl.col("SALAIRE_BRUT")
+          .quantile(SEUIL_WINS, interpolation="nearest")
+          .over(wins_full_brut).alias("_pb_citp"),
+        pl.col("SALAIRE_BRUT")
+          .quantile(1 - SEUIL_WINS, interpolation="nearest")
+          .over(wins_full_brut).alias("_ph_citp"),
+        pl.col("SALAIRE_BRUT")
+          .quantile(SEUIL_WINS, interpolation="nearest")
+          .over(wins_fallback_brut).alias("_pb_grade"),
+        pl.col("SALAIRE_BRUT")
+          .quantile(1 - SEUIL_WINS, interpolation="nearest")
+          .over(wins_fallback_brut).alias("_ph_grade"),
+    ])
+    base_gv_brut = base_gv_brut.with_columns(
+        pl.when(pl.col("_n_citp") >= MIN_OBS_WINS)
+        .then(pl.col("SALAIRE_BRUT").clip(pl.col("_pb_citp"), pl.col("_ph_citp")))
+        .otherwise(pl.col("SALAIRE_BRUT").clip(pl.col("_pb_grade"), pl.col("_ph_grade")))
+        .alias("SALAIRE_BRUT")
+    ).drop(["_n_citp", "_pb_citp", "_ph_citp", "_pb_grade", "_ph_grade"])
+
+    n_modif_brut = int((base_gv_brut["SALAIRE_BRUT"] != base_gv["SALAIRE_BRUT"]).sum())
+    print(f"   Winsorisation SALAIRE_BRUT (mois × grade × CITP / repli grade) : "
+          f"{n_modif_brut:,} obs écrêtées")
+
 brut_moyen = (
-    base_gv
+    base_gv_brut
     .group_by(["ANNEE", "MOIS_NUM", "MOIS", "GRADE"])
     .agg(pl.col("SALAIRE_BRUT").mean().round(0).alias("Salaire_brut_moyen"))
     .sort(["ANNEE", "MOIS_NUM"])
 )
 brut_median = (
-    base_gv
+    base_gv_brut
     .group_by(["ANNEE", "MOIS_NUM", "MOIS", "GRADE"])
     .agg(pl.col("SALAIRE_BRUT").median().round(0).alias("Salaire_brut_median"))
     .sort(["ANNEE", "MOIS_NUM"])
