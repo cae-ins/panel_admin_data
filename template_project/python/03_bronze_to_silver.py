@@ -10,8 +10,13 @@
 # Table source   : nessie.bronze.panel_admin_solde_mensuel
 # Table produite : nessie.silver.panel_admin_solde_mensuel
 #
+# Architecture :
+#   pandas+openpyxl → lecture Excel (fiable sur toutes les versions)
+#   Polars          → toutes les transformations métier
+#   PySpark         → lecture/écriture Iceberg (catalogue Nessie)
+#
 # Dépendances :
-#   pip install pyspark boto3 openpyxl pandas python-dotenv
+#   pip install polars pandas openpyxl boto3 python-dotenv pyspark
 # ============================================================
 
 import os
@@ -22,6 +27,7 @@ from dotenv import load_dotenv
 import boto3
 from botocore.client import Config
 import pandas as pd
+import polars as pl
 from pyspark.sql import SparkSession
 
 load_dotenv(".env")
@@ -40,10 +46,10 @@ NESSIE_URI       = "http://192.168.1.230:30604/api/v1"
 # MINIO_SECRET_KEY = "minio-datalabteam123"
 # NESSIE_URI       = "http://nessie.trino.svc.cluster.local:19120/api/v1"
 
-BUCKET       = "staging"
-PREFIX_REFS  = "panel_admin/references"
-TABLE_BRONZE = "nessie.bronze.panel_admin_solde_mensuel"
-TABLE_SILVER = "nessie.silver.panel_admin_solde_mensuel"
+BUCKET        = "staging"
+PREFIX_REFS   = "panel_admin/references"
+TABLE_BRONZE  = "nessie.bronze.panel_admin_solde_mensuel"
+TABLE_SILVER  = "nessie.silver.panel_admin_solde_mensuel"
 
 # --- CLIENT S3 (MinIO) ---
 s3 = boto3.client(
@@ -68,7 +74,7 @@ def normaliser_pour_matching(texte):
     if not texte:
         return None
     texte = re.sub(r"[-]", " ", texte)
-    texte = re.sub(r"[.,;:/()\\[\\]]", " ", texte)
+    texte = re.sub(r"[.,;:/()\\[\]]", " ", texte)
     texte = re.sub(r"[''\u2019]", " ", texte)
     texte = texte.upper()
     texte = unicodedata.normalize("NFKD", texte)
@@ -153,7 +159,7 @@ def normaliser_situation(situation):
     sit = re.sub(r"\s+", " ", sit).strip()
 
     situations_valides = {
-        "en_activite":      ["EN ACTIVITE", "ACTIVITE", "EN ACTIVITE", "ACTIVITE"],
+        "en_activite":      ["EN ACTIVITE", "ACTIVITE"],
         "regul_indemnites": ["REGUL. INDEMNITES", "REGUL INDEMNITES", "REGULARISATION INDEMNITES"],
         "demi_solde":       ["DEMI-SOLDE", "DEMI SOLDE", "DEMISOLDE", "1/2 SOLDE"],
     }
@@ -180,7 +186,7 @@ fichier_anstat_key = next(
      for page in pages
      for obj in page.get("Contents", [])
      if "ANSTAT_CODE" in obj["Key"].upper()),
-    None
+    None,
 )
 
 with tempfile.NamedTemporaryFile(suffix=".xlsx", delete=False) as tmp:
@@ -190,12 +196,16 @@ print(f"✓ Fichier ANSTAT téléchargé : {os.path.basename(fichier_anstat_key)
 
 
 def charger_table_codes(sheet_name, libelle_col_names, col_jointure):
-    dt = pd.read_excel(tmp_anstat, sheet_name=sheet_name)
+    dt = pl.from_pandas(pd.read_excel(tmp_anstat, sheet_name=sheet_name, dtype=str))
     libelle_col = next((c for c in libelle_col_names if c in dt.columns), None)
     if not libelle_col:
         raise ValueError(f"Colonne libellé non trouvée dans {sheet_name}")
-    dt = dt.rename(columns={libelle_col: "libelle"})
-    dt["libelle_norm"] = dt["libelle"].apply(normaliser_pour_matching)
+    dt = dt.rename({libelle_col: "libelle"})
+    dt = dt.with_columns(
+        pl.col("libelle")
+        .map_elements(normaliser_pour_matching, return_dtype=pl.Utf8)
+        .alias("libelle_norm")
+    )
     col_code = dt.columns[0]
     return {"table": dt, "col_code": col_code, "col_jointure_source": col_jointure}
 
@@ -234,7 +244,7 @@ for nom_code, cfg in dictionnaires_codes.items():
 os.unlink(tmp_anstat)
 
 # ============================================================
-# CONNEXION SPARK
+# CONNEXION SPARK (lecture Bronze + écriture Silver)
 # ============================================================
 
 spark = (
@@ -264,7 +274,7 @@ spark = (
 )
 
 # ============================================================
-# LECTURE BRONZE ET TRANSFORMATION
+# LECTURE BRONZE → CONVERSION POLARS
 # ============================================================
 
 print()
@@ -273,13 +283,13 @@ print("TRANSFORMATION : Bronze → Silver")
 print("=" * 70)
 print()
 
-print("Lecture de la table Bronze (collect)...")
-dt_bronze = spark.table(TABLE_BRONZE).toPandas()
-print(f"✓ Bronze : {len(dt_bronze):,} lignes × {len(dt_bronze.columns)} colonnes\n")
+print("Lecture de la table Bronze...")
+df = pl.from_pandas(spark.table(TABLE_BRONZE).toPandas())
+print(f"✓ Bronze : {len(df):,} lignes × {len(df.columns)} colonnes\n")
 
-# --- MAPPING DES COLONNES ---
+# --- MAPPING DES COLONNES (Polars) ---
 print("Application de mapper_colonnes()...")
-correspondance = mapper_colonnes(list(dt_bronze.columns))
+correspondance = mapper_colonnes(list(df.columns))
 
 # Gérer les doublons dans les noms standards
 noms_std_vals = list(correspondance.values())
@@ -293,25 +303,29 @@ for src, std in correspondance.items():
     new_correspondance[src] = std
 correspondance = new_correspondance
 
-dt_bronze = dt_bronze.rename(columns=correspondance)
+df = df.rename(correspondance)
 print(f"✓ {len(correspondance)} colonnes mappées\n")
 
-# --- NORMALISATION DES SITUATIONS ---
+# --- NORMALISATION DES SITUATIONS (Polars) ---
 print("Normalisation des situations administratives...")
 
-if "situation" in dt_bronze.columns:
-    dt_bronze["situation_brute"]      = dt_bronze["situation"]
-    dt_bronze["situation_normalisee"] = dt_bronze["situation"].apply(normaliser_situation)
+if "situation" in df.columns:
+    df = df.with_columns([
+        pl.col("situation").alias("situation_brute"),
+        pl.col("situation")
+        .map_elements(normaliser_situation, return_dtype=pl.Utf8)
+        .alias("situation_normalisee"),
+    ])
 
-    avant  = len(dt_bronze)
-    dt_bronze = dt_bronze[
-        dt_bronze["situation_normalisee"].isin(["en_activite", "regul_indemnites", "demi_solde"])
-    ].reset_index(drop=True)
-    apres  = len(dt_bronze)
-    pct    = 100 * apres / avant if avant > 0 else 0
+    avant = len(df)
+    df = df.filter(
+        pl.col("situation_normalisee").is_in(["en_activite", "regul_indemnites", "demi_solde"])
+    )
+    apres = len(df)
+    pct = 100 * apres / avant if avant > 0 else 0
     print(f"✓ Filtrage : {avant:,} → {apres:,} lignes ({pct:.1f}% conservé)\n")
 
-# --- ENRICHISSEMENT PAR CODES ANSTAT ---
+# --- ENRICHISSEMENT PAR CODES ANSTAT (Polars) ---
 print("Enrichissement avec les codes ANSTAT...")
 
 for nom_code, cfg in dictionnaires_codes.items():
@@ -319,46 +333,56 @@ for nom_code, cfg in dictionnaires_codes.items():
     table_codes  = cfg["table"]
     col_code     = cfg["col_code"]
 
-    if col_jointure not in dt_bronze.columns:
-        dt_bronze[nom_code] = None
+    if col_jointure not in df.columns:
+        df = df.with_columns(pl.lit(None).cast(pl.Utf8).alias(nom_code))
         print(f"  {nom_code:<25} : colonne source absente")
         continue
 
-    dt_bronze["_col_norm_tmp"] = dt_bronze[col_jointure].apply(normaliser_pour_matching)
-
-    table_match = (
-        table_codes[table_codes["libelle_norm"].notna()]
-        [["libelle_norm", col_code]]
-        .drop_duplicates(subset="libelle_norm")
-        .rename(columns={col_code: nom_code})
+    df = df.with_columns(
+        pl.col(col_jointure)
+        .map_elements(normaliser_pour_matching, return_dtype=pl.Utf8)
+        .alias("_col_norm_tmp")
     )
 
-    dt_bronze = dt_bronze.merge(table_match, left_on="_col_norm_tmp",
-                                right_on="libelle_norm", how="left")
-    dt_bronze = dt_bronze.drop(columns=["_col_norm_tmp", "libelle_norm"], errors="ignore")
+    table_match = (
+        table_codes
+        .filter(pl.col("libelle_norm").is_not_null())
+        .select(["libelle_norm", col_code])
+        .unique(subset=["libelle_norm"])
+        .rename({col_code: nom_code})
+    )
 
-    taux = 100 * dt_bronze[nom_code].notna().sum() / len(dt_bronze)
+    df = (
+        df.join(table_match, left_on="_col_norm_tmp", right_on="libelle_norm", how="left")
+        .drop("_col_norm_tmp")
+    )
+
+    taux = 100 * df[nom_code].is_not_null().sum() / len(df)
     print(f"  {nom_code:<25} : {taux:.1f}% matchés")
 
 print()
 
-# --- CAST DES TYPES NUMÉRIQUES ---
+# --- CAST DES TYPES NUMÉRIQUES (Polars) ---
 print("Cast des montants en numérique...")
 
 cols_numeriques = ["montant_brut", "montant_net", "retenue_pension", "impot", "charge_patronale"]
-for col in cols_numeriques:
-    if col in dt_bronze.columns:
-        dt_bronze[col] = pd.to_numeric(dt_bronze[col], errors="coerce")
+exprs_num = [
+    pl.col(c).cast(pl.Float64, strict=False)
+    for c in cols_numeriques
+    if c in df.columns
+]
 
-cols_codes_num = [c for c in dt_bronze.columns if re.match(r"^[0-9]", c)]
-for col in cols_codes_num:
-    dt_bronze[col] = pd.to_numeric(dt_bronze[col], errors="coerce")
+cols_codes_num = [c for c in df.columns if re.match(r"^[0-9]", c)]
+exprs_num += [pl.col(c).cast(pl.Float64, strict=False) for c in cols_codes_num]
 
-nb_num = len([c for c in cols_numeriques if c in dt_bronze.columns]) + len(cols_codes_num)
+if exprs_num:
+    df = df.with_columns(exprs_num)
+
+nb_num = len([c for c in cols_numeriques if c in df.columns]) + len(cols_codes_num)
 print(f"✓ {nb_num} colonnes numériques castées\n")
 
 # ============================================================
-# ÉCRITURE EN SILVER
+# ÉCRITURE EN SILVER (via Spark)
 # ============================================================
 
 print("=" * 70)
@@ -366,9 +390,9 @@ print(f"ÉCRITURE : {TABLE_SILVER}")
 print("=" * 70)
 print()
 
-print(f"Silver : {len(dt_bronze):,} lignes × {len(dt_bronze.columns)} colonnes")
+print(f"Silver : {len(df):,} lignes × {len(df.columns)} colonnes")
 
-df_silver_spark = spark.createDataFrame(dt_bronze)
+df_silver_spark = spark.createDataFrame(df.to_pandas())
 spark.sql("CREATE NAMESPACE IF NOT EXISTS nessie.silver")
 df_silver_spark.writeTo(TABLE_SILVER).using("iceberg").mode("overwrite").createOrReplace()
 

@@ -36,6 +36,8 @@ import gc
 import io
 import os
 import re
+import tempfile
+import unicodedata
 from dotenv import load_dotenv
 import boto3
 from botocore.client import Config
@@ -83,6 +85,7 @@ BUCKET_GOLD    = "gold"
 BUCKET_STAGING = "staging"
 PREFIX_PANEL   = "panel_admin"
 PREFIX_EXPORTS = "panel_admin/exports_gold"
+KEY_CORRESPONDANCE = "panel_admin/references/CORRESPONDANCE_GRILLE_EMPLOI.xlsx"
 
 _mode_label    = "salaire_brut"  if MODE_SALAIRE_BRUT else "revenu_salarial"
 _periode_label = "2024_2025"     if PERIODE_RECENTE   else "2015_recent"
@@ -139,6 +142,123 @@ def lire_parquet_s3(bucket: str, key: str) -> pl.DataFrame:
     s3.download_fileobj(bucket, key, buf)
     buf.seek(0)
     return pl.read_parquet(buf)
+
+
+# ============================================================
+# CONSTANTES BARÈME
+# ============================================================
+
+# Pour ENS SEC & PRIM : grades B/C/D = Primaire, grades A = Secondaire
+GRADES_PRIMAIRE = {"B3", "C3", "D1", "D2"}
+
+# Ordre d'affichage dans la feuille MODELE_ANSTAT
+ORDRE_MODELE_ANSTAT = [
+    ("TOUS SECTEURS CONFONDUS",                       "_GLOBAL_"),
+    ("SECTEUR EDUCATION",                             None),
+    ("Primaire",                                      "ENS SEC & PRIM_PRIM"),
+    ("Secondaire",                                    "ENS SEC & PRIM_SEC"),
+    ("Supérieur",                                     "ENS SUP"),
+    ("SECTEUR SANTE",                                 None),
+    ("Cadres supérieurs",                             "Cadre-Sup-Santé Generaliste & Specialiste"),
+    ("Personnels Techniques",                         "Tech-Santé"),
+    ("AUTRES SECTEURS",                               None),
+    ("Para-militaire / Douanes / Eaux & Forêts",      "police"),
+    ("Barème Général",                                "Barême Général"),
+    ("PERSONNELS SOUS STATUT PARTICULIER",            None),
+    ("Magistrat",                                     "MAGISTRAT "),
+    ("Corps préfectoral",                             "CORPS PREF"),
+    ("Corps diplomatique",                            "CORPS DIPL"),
+    ("Greffier",                                      "GREFFE"),
+]
+
+
+def normaliser_pour_matching(texte) -> str | None:
+    """Normalisation textuelle pour fuzzy join — identique à l'étape 03."""
+    if texte is None:
+        return None
+    texte = str(texte).strip()
+    if not texte:
+        return None
+    texte = re.sub(r"[-]", " ", texte)
+    texte = re.sub(r"[.,;:/()\\[\]]", " ", texte)
+    texte = re.sub(r"[''\u2019]", " ", texte)
+    texte = texte.upper()
+    texte = unicodedata.normalize("NFKD", texte)
+    texte = "".join(c for c in texte if not unicodedata.combining(c))
+    texte = re.sub(r"\s+", " ", texte).strip()
+    return texte if texte else None
+
+
+def charger_table_bareme() -> pl.DataFrame | None:
+    """
+    Charge la table CORRESPONDANCE_GRILLE_EMPLOI depuis staging et
+    renvoie une table de jointure (emploi_norm → bareme, grade_ref).
+    Renvoie None si le fichier est absent (étape non bloquante).
+    """
+    with tempfile.NamedTemporaryFile(suffix=".xlsx", delete=False) as tmp:
+        tmp_path = tmp.name
+    try:
+        s3.download_file(BUCKET_STAGING, KEY_CORRESPONDANCE, tmp_path)
+        df = pl.read_excel(tmp_path)
+        df = df.rename({
+            "BAREME / GRILLE SALARIALE": "bareme",
+            "GRADE": "grade_ref",
+            "EMPLOI": "emploi_ref",
+        })
+        df = df.with_columns(
+            pl.col("emploi_ref")
+            .map_elements(normaliser_pour_matching, return_dtype=pl.Utf8)
+            .alias("emploi_ref_norm")
+        )
+        table = (
+            df.filter(pl.col("emploi_ref_norm").is_not_null())
+            .select(["emploi_ref_norm", "bareme", "grade_ref"])
+            .unique(subset=["emploi_ref_norm"])
+        )
+        print(f"  ✓ Table barème chargée : {len(table)} emplois")
+        return table
+    except Exception as e:
+        print(f"  ⚠️  Table barème non disponible ({e}) — feuilles barème ignorées")
+        return None
+    finally:
+        os.unlink(tmp_path)
+
+
+def fuzzy_join_bareme(df: pl.DataFrame, table_join: pl.DataFrame,
+                      col_emploi: str) -> pl.DataFrame:
+    """
+    Ajoute les colonnes 'bareme' et 'grade_ref' au DataFrame
+    via fuzzy join sur le libellé emploi normalisé.
+    """
+    df = df.with_columns(
+        pl.col(col_emploi)
+        .map_elements(normaliser_pour_matching, return_dtype=pl.Utf8)
+        .alias("_emploi_norm")
+    )
+    df = df.join(table_join, left_on="_emploi_norm", right_on="emploi_ref_norm",
+                 how="left").drop("_emploi_norm")
+    nb_match  = int(df["bareme"].is_not_null().sum())
+    taux      = 100 * nb_match / len(df)
+    print(f"  ✓ Fuzzy join barème : {nb_match:,} / {len(df):,} ({taux:.1f}%)")
+    if taux < 20:
+        print("  ⚠️  Matching faible — vérifiez CORRESPONDANCE_GRILLE_EMPLOI.xlsx")
+    return df
+
+
+def ajouter_bareme_detail(df: pl.DataFrame, col_grade: str) -> pl.DataFrame:
+    """Scinde ENS SEC & PRIM en Primaire (B/C/D) et Secondaire (A)."""
+    return df.with_columns(
+        pl.when(
+            (pl.col("bareme") == "ENS SEC & PRIM")
+            & pl.col(col_grade).is_in(GRADES_PRIMAIRE)
+        ).then(pl.lit("ENS SEC & PRIM_PRIM"))
+        .when(
+            (pl.col("bareme") == "ENS SEC & PRIM")
+            & ~pl.col(col_grade).is_in(GRADES_PRIMAIRE)
+        ).then(pl.lit("ENS SEC & PRIM_SEC"))
+        .otherwise(pl.col("bareme"))
+        .alias("bareme_detail")
+    )
 
 
 def grade_order_value(grade: str) -> int:
@@ -356,6 +476,40 @@ for source in ["OBSERVE", "IMPUTE"]:
 print(f"   Total retenu : {n_gv:,} ({100*n_gv/len(base):.1f}%)\n")
 
 # ============================================================
+# 7b. FUZZY JOIN EMPLOI → BARÈME
+# ============================================================
+# Ajoute les colonnes 'bareme' et 'bareme_detail' sur base_gv
+# pour permettre la ventilation des indicateurs par grille salariale.
+
+print("7b. Fuzzy join EMPLOI → BARÈME (via table de correspondance)...")
+
+TABLE_BAREME = charger_table_bareme()
+
+CANDIDATES_EMPLOI = ["emploi", "CODE_EMPLOI", "EMPLOI", "corps", "CORPS"]
+col_emploi_panel = next(
+    (c for c in CANDIDATES_EMPLOI if c in base_gv.columns), None
+)
+
+if TABLE_BAREME is not None and col_emploi_panel is not None:
+    base_gv = fuzzy_join_bareme(base_gv, TABLE_BAREME, col_emploi_panel)
+    # Utiliser grade_ref si GRADE absent ou pour affiner la scission Primaire/Secondaire
+    col_grade_bareme = "GRADE" if "GRADE" in base_gv.columns else "grade_ref"
+    if col_grade_bareme in base_gv.columns:
+        base_gv = ajouter_bareme_detail(base_gv, col_grade_bareme)
+    else:
+        base_gv = base_gv.with_columns(pl.col("bareme").alias("bareme_detail"))
+    BAREME_DISPONIBLE = True
+else:
+    if TABLE_BAREME is None:
+        print("  ⚠️  Table barème absente — feuilles barème non produites")
+    else:
+        print(f"  ⚠️  Colonne emploi absente dans le panel — feuilles barème non produites")
+        print(f"       Colonnes disponibles : {base_gv.columns}")
+    BAREME_DISPONIBLE = False
+
+print()
+
+# ============================================================
 # 8. AGRÉGATION → REVENU TOTAL
 # ============================================================
 
@@ -388,6 +542,13 @@ base_agrege = (
         pl.col("Metier_CITP").first().alias("Metier_CITP")
           if "Metier_CITP" in base_gv.columns
           else pl.lit(None).cast(pl.Utf8).alias("Metier_CITP"),
+        # Barème : conservé directement depuis base_gv (ajouté en 7b)
+        pl.col("bareme").first().alias("bareme")
+          if "bareme" in base_gv.columns
+          else pl.lit(None).cast(pl.Utf8).alias("bareme"),
+        pl.col("bareme_detail").first().alias("bareme_detail")
+          if "bareme_detail" in base_gv.columns
+          else pl.lit(None).cast(pl.Utf8).alias("bareme_detail"),
     ])
 )
 
@@ -473,8 +634,59 @@ if "Code_CITP" in base_agrege.columns:
 else:
     indic_citp = pl.DataFrame()
 
-total_indic = len(indic_grade) + len(indic_grade_sexe) + len(indic_citp)
-print(f"   {total_indic} lignes d'indicateurs créées\n")
+# Ventilations barème (si fuzzy join réussi en 7b)
+indic_bareme       = pl.DataFrame()
+indic_bareme_grade = pl.DataFrame()
+indic_bareme_sexe  = pl.DataFrame()
+global_brut        = None
+stats_bareme_detail = pl.DataFrame()
+
+if BAREME_DISPONIBLE:
+    base_b = base_agrege.filter(pl.col("bareme").is_not_null())
+    indic_bareme = compute_indicators(
+        base_b, ["ANNEE", "MOIS_NUM", "MOIS", "bareme"], value_col_indic
+    )
+    indic_bareme_grade = compute_indicators(
+        base_b, ["ANNEE", "MOIS_NUM", "MOIS", "bareme", "GRADE_PRINCIPAL"], value_col_indic
+    )
+    indic_bareme_sexe = compute_indicators(
+        base_b, ["ANNEE", "MOIS_NUM", "MOIS", "bareme", "SEXE_STD"], value_col_indic
+    )
+    # Stats SALAIRE_BRUT ligne par ligne (pour MODELE_ANSTAT, calculé ici une seule fois)
+    base_gv_b = base_gv.filter(
+        pl.col("bareme_detail").is_not_null()
+        & pl.col("SALAIRE_BRUT").is_not_null()
+        & (pl.col("SALAIRE_BRUT") > 0)
+    )
+    if len(base_gv_b) > 0:
+        global_brut = base_gv_b.select([
+            pl.col("SALAIRE_BRUT").min().round(0).alias("salaire_brut_min"),
+            pl.col("SALAIRE_BRUT").mean().round(0).alias("salaire_brut_moyen"),
+            pl.col("SALAIRE_BRUT").max().round(0).alias("salaire_brut_max"),
+            pl.col("SALAIRE_BRUT").median().round(0).alias("salaire_brut_mediane"),
+        ]).row(0, named=True)
+        stats_bareme_detail = (
+            base_gv_b.group_by("bareme_detail")
+            .agg([
+                pl.col("SALAIRE_BRUT").min().round(0).alias("salaire_brut_min"),
+                pl.col("SALAIRE_BRUT").mean().round(0).alias("salaire_brut_moyen"),
+                pl.col("SALAIRE_BRUT").max().round(0).alias("salaire_brut_max"),
+                pl.col("SALAIRE_BRUT").median().round(0).alias("salaire_brut_mediane"),
+                pl.len().alias("nb_obs"),
+            ])
+            .sort("bareme_detail")
+        )
+
+total_indic = (len(indic_grade) + len(indic_grade_sexe) + len(indic_citp)
+               + len(indic_bareme) + len(indic_bareme_grade) + len(indic_bareme_sexe))
+print(f"   Grade            : {len(indic_grade):,} lignes")
+print(f"   Grade × Sexe     : {len(indic_grade_sexe):,} lignes")
+print(f"   CITP             : {len(indic_citp):,} lignes")
+if BAREME_DISPONIBLE:
+    print(f"   Barème           : {len(indic_bareme):,} lignes")
+    print(f"   Barème × Grade   : {len(indic_bareme_grade):,} lignes")
+    print(f"   Barème × Sexe    : {len(indic_bareme_sexe):,} lignes")
+print(f"   Total            : {total_indic:,} lignes\n")
 
 # ============================================================
 # 10. INDICATEURS SALAIRE BRUT (par ligne, pivot grade)
@@ -633,6 +845,138 @@ ecrire_feuille(wb, "SALAIRE_BRUT_Moyen",        brut_moyen_wide)
 ecrire_feuille(wb, "SALAIRE_BRUT_Median",       brut_median_wide)
 ecrire_feuille(wb, "MULTI_Par_Grade_NbPostes",  multi_effectif)
 ecrire_feuille(wb, "MULTI_Distribution",        distrib_postes)
+
+# --- Feuilles barème (si disponibles) ---
+if BAREME_DISPONIBLE:
+    ecrire_feuille(wb, "REVENU_Bareme_Detail",  indic_bareme)
+    ecrire_feuille(wb, "REVENU_Bareme_Grade",   indic_bareme_grade)
+    ecrire_feuille(wb, "REVENU_Bareme_Sexe",    indic_bareme_sexe)
+
+    # --- Feuille MODELE_ANSTAT ---
+    # Format identique à l'EXEMPLE_STATISTIQUE du fichier ANSTAT :
+    # lignes = secteurs / sous-groupes, colonnes = min / moyen / max salaire brut
+    if global_brut is not None and len(stats_bareme_detail) > 0:
+        ws_anstat = wb.create_sheet("MODELE_ANSTAT")
+        ws_anstat.sheet_view.showGridLines = False
+
+        fill_titre   = PatternFill("solid", fgColor="1F4E79")
+        fill_entete  = PatternFill("solid", fgColor="2E75B6")
+        fill_global  = PatternFill("solid", fgColor="FFF2CC")
+        fill_secteur = PatternFill("solid", fgColor="D6E4F0")
+        fill_alt     = [PatternFill("solid", fgColor="EBF3FB"),
+                        PatternFill("solid", fgColor="FFFFFF")]
+
+        font_titre   = Font(bold=True, color="FFFFFF", size=12)
+        font_entete  = Font(bold=True, color="FFFFFF", size=10)
+        font_global  = Font(bold=True, color="7F6000", size=11)
+        font_secteur = Font(bold=True, color="1F4E79", size=10)
+        font_sous    = Font(size=10, italic=True)
+        font_montant = Font(size=10)
+
+        al_centre  = Alignment(horizontal="center", vertical="center")
+        al_gauche  = Alignment(horizontal="left",   vertical="center")
+        al_droite  = Alignment(horizontal="right",  vertical="center")
+        al_indent  = Alignment(horizontal="left",   vertical="center", indent=2)
+
+        annee_max_label = ""
+        if "ANNEE" in base.columns:
+            annees = base["ANNEE"].drop_nulls().unique().to_list()
+            if annees:
+                annee_max_label = str(sorted(annees)[-1])
+
+        # Titre
+        ws_anstat.merge_cells("A1:D1")
+        titre_cell = ws_anstat.cell(
+            row=1, column=1,
+            value=f"MODÈLE DE DONNÉES DE SALAIRE DES FONCTIONNAIRES"
+                  f"{' POUR ' + annee_max_label if annee_max_label else ''}"
+        )
+        titre_cell.font      = font_titre
+        titre_cell.fill      = fill_titre
+        titre_cell.alignment = al_centre
+        ws_anstat.row_dimensions[1].height = 28
+
+        # En-têtes colonnes
+        ws_anstat.cell(row=2, column=1, value="salaires en FCFA").font = Font(size=10)
+        for col_i, label in enumerate(
+            ["salaire brut minimum", "salaire brut moyen", "salaire brut maximum"],
+            start=2
+        ):
+            c = ws_anstat.cell(row=2, column=col_i, value=label)
+            c.font      = font_entete
+            c.fill      = fill_entete
+            c.alignment = al_centre
+        ws_anstat.row_dimensions[2].height = 22
+
+        # Lookup dans stats_bareme_detail
+        def get_val_anstat(key: str, col: str):
+            if key == "_GLOBAL_":
+                return global_brut.get(col)
+            rows = stats_bareme_detail.filter(pl.col("bareme_detail") == key)
+            if len(rows) == 0:
+                return None
+            return rows.row(0, named=True).get(col)
+
+        row_anstat = 3
+        sous_idx   = 0
+        for libelle, bareme_key in ORDRE_MODELE_ANSTAT:
+            est_global   = bareme_key == "_GLOBAL_"
+            est_titre    = bareme_key is None
+            est_sous_gpe = not est_global and not est_titre
+
+            if est_global:
+                for col_i, val in enumerate([
+                    "TOUS SECTEURS CONFONDUS",
+                    get_val_anstat("_GLOBAL_", "salaire_brut_min"),
+                    get_val_anstat("_GLOBAL_", "salaire_brut_moyen"),
+                    get_val_anstat("_GLOBAL_", "salaire_brut_max"),
+                ], start=1):
+                    c = ws_anstat.cell(row=row_anstat, column=col_i, value=val)
+                    c.font      = font_global
+                    c.fill      = fill_global
+                    c.alignment = al_gauche if col_i == 1 else al_centre
+                    if col_i > 1 and isinstance(val, (int, float)):
+                        c.number_format = "#,##0"
+                ws_anstat.row_dimensions[row_anstat].height = 22
+
+            elif est_titre:
+                ws_anstat.merge_cells(
+                    start_row=row_anstat, start_column=1,
+                    end_row=row_anstat,   end_column=4
+                )
+                c = ws_anstat.cell(row=row_anstat, column=1, value=libelle)
+                c.font      = font_secteur
+                c.fill      = fill_secteur
+                c.alignment = al_gauche
+                ws_anstat.row_dimensions[row_anstat].height = 20
+
+            else:
+                bg = fill_alt[sous_idx % 2]
+                sous_idx += 1
+                c1 = ws_anstat.cell(row=row_anstat, column=1, value=libelle)
+                c1.font      = font_sous
+                c1.fill      = bg
+                c1.alignment = al_indent
+                for col_i, stat_key in enumerate(
+                    ["salaire_brut_min", "salaire_brut_moyen", "salaire_brut_max"],
+                    start=2
+                ):
+                    val = get_val_anstat(bareme_key, stat_key)
+                    c = ws_anstat.cell(row=row_anstat, column=col_i, value=val)
+                    c.font          = font_montant
+                    c.fill          = bg
+                    c.alignment     = al_droite
+                    c.number_format = "#,##0"
+                ws_anstat.row_dimensions[row_anstat].height = 18
+
+            row_anstat += 1
+
+        # Largeurs colonnes
+        ws_anstat.column_dimensions["A"].width = 55
+        for col_letter in ["B", "C", "D"]:
+            ws_anstat.column_dimensions[col_letter].width = 22
+        ws_anstat.freeze_panes = "A3"
+        print(f"   ✓ MODELE_ANSTAT ({row_anstat - 3} lignes)")
 
 buf_xlsx = io.BytesIO()
 wb.save(buf_xlsx)

@@ -11,8 +11,17 @@
 #
 # Table produite : nessie.bronze.panel_admin_solde_mensuel
 #
+# Architecture :
+#   pandas+calamine → lecture Excel (calamine = moteur Rust, ~5× plus rapide qu'openpyxl)
+#                     fallback openpyxl si calamine non installé
+#   Polars          → transformations, concat, cast
+#   PySpark + Arrow → écriture Iceberg (Arrow évite la sérialisation Row-by-Row)
+#
+# Parallélisme :
+#   ThreadPoolExecutor → téléchargements et lectures Excel en parallèle (I/O bound)
+#
 # Dépendances :
-#   pip install pyspark boto3 openpyxl pandas python-dotenv unicodedata2
+#   pip install polars pandas python-calamine openpyxl boto3 python-dotenv pyspark
 # ============================================================
 
 import os
@@ -20,12 +29,20 @@ import re
 import tempfile
 import unicodedata
 from math import ceil
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dotenv import load_dotenv
 import boto3
 from botocore.client import Config
 import pandas as pd
+import polars as pl
 from pyspark.sql import SparkSession
-from pyspark.sql import functions as F
+
+# Moteur Excel : calamine (Rust, rapide) avec fallback openpyxl
+try:
+    import python_calamine  # noqa: F401
+    EXCEL_ENGINE = "calamine"
+except ImportError:
+    EXCEL_ENGINE = "openpyxl"
 
 load_dotenv(".env")
 
@@ -47,6 +64,7 @@ BUCKET          = "staging"
 PREFIX_MENSUELS = "panel_admin/fichiers_mensuels"
 TABLE_BRONZE    = "nessie.bronze.panel_admin_solde_mensuel"
 TAILLE_LOT      = 12   # 12 mois traités puis écrits en batch
+NB_WORKERS      = 4    # téléchargements/lectures Excel en parallèle
 
 # --- CLIENT S3 (MinIO) ---
 s3 = boto3.client(
@@ -79,23 +97,36 @@ def normaliser_nom_colonne(nom):
     return nom.strip("_")
 
 
-def detecter_entete(fichier, sheet):
-    """Détecte la ligne d'en-tête contenant 'matricule'."""
+def detecter_entete(fichier, sheet_id):
+    """Détecte la ligne d'en-tête contenant 'matricule' (0-indexed)."""
     try:
-        preview = pd.read_excel(fichier, sheet_name=sheet, header=None, nrows=20)
+        preview = pd.read_excel(
+            fichier, sheet_name=sheet_id, header=None,
+            nrows=20, engine=EXCEL_ENGINE,
+        )
         if len(preview) > 1:
             preview = preview.iloc[:-1]
         for i, row in preview.iterrows():
-            ligne_lower = [str(v).lower().strip() for v in row]
-            if any("matricule" in v for v in ligne_lower):
-                return i  # 0-indexed
-        return 1 if sheet == 1 else 0
+            if any("matricule" in str(v).lower() for v in row):
+                return i
+        return 1 if sheet_id == 1 else 0
     except Exception:
-        return 1 if sheet == 1 else 0
+        return 1 if sheet_id == 1 else 0
+
+
+def lire_feuille(fichier, sheet_id, skiprows):
+    """Lit une feuille Excel → Polars DataFrame (tout en string)."""
+    return pl.from_pandas(
+        pd.read_excel(
+            fichier, sheet_name=sheet_id,
+            skiprows=skiprows, dtype=str,
+            engine=EXCEL_ENGINE,
+        )
+    )
 
 
 # ============================================================
-# CONNEXION SPARK
+# CONNEXION SPARK (pour l'écriture Iceberg uniquement)
 # ============================================================
 
 spark = (
@@ -121,6 +152,7 @@ spark = (
     .config("spark.hadoop.fs.s3a.impl",                       "org.apache.hadoop.fs.s3a.S3AFileSystem")
     .config("spark.hadoop.fs.s3a.aws.credentials.provider",
             "org.apache.hadoop.fs.s3a.SimpleAWSCredentialsProvider")
+    .config("spark.sql.execution.arrow.pyspark.enabled", "true")
     .getOrCreate()
 )
 
@@ -153,100 +185,118 @@ print(f"Taille des lots       : {TAILLE_LOT} fichiers")
 print(f"Nombre de lots        : {nb_lots}\n")
 
 # ============================================================
-# TRAITEMENT PAR LOTS
+# TRAITEMENT PAR LOTS  (Polars + parallélisme)
 # ============================================================
+
+def traiter_fichier(chemin_objet):
+    """
+    Télécharge et traite un fichier Excel.
+    Retourne (periode, DataFrame) ou (periode, None) en cas d'erreur.
+    Conçu pour être appelé en parallèle via ThreadPoolExecutor.
+    """
+    periode     = os.path.splitext(os.path.basename(chemin_objet))[0]
+    nom_fichier = os.path.basename(chemin_objet)
+    tmp_path    = None
+    try:
+        with tempfile.NamedTemporaryFile(suffix=".xlsx", delete=False) as tmp:
+            tmp_path = tmp.name
+        s3.download_file(BUCKET, chemin_objet, tmp_path)
+
+        # --- LECTURE FEUILLE 1 (données agents) ---
+        skip_f1  = detecter_entete(tmp_path, sheet_id=0)
+        feuille1 = lire_feuille(tmp_path, sheet_id=0, skiprows=skip_f1)
+
+        # Normalisation des noms de colonnes
+        noms = [normaliser_nom_colonne(c) for c in feuille1.columns]
+        seen = {}
+        noms_uniques = []
+        for n in noms:
+            if n in seen:
+                seen[n] += 1
+                noms_uniques.append(f"{n}_{seen[n]}")
+            else:
+                seen[n] = 1
+                noms_uniques.append(n)
+        feuille1 = feuille1.rename(dict(zip(feuille1.columns, noms_uniques)))
+
+        # --- LECTURE FEUILLE 2 (codes numériques) ---
+        skip_f2  = detecter_entete(tmp_path, sheet_id=1)
+        feuille2 = lire_feuille(tmp_path, sheet_id=1, skiprows=skip_f2)
+
+        # Trouver la clé de jointure F2
+        nom_cle_f2 = next(
+            (c for c in feuille2.columns
+             if re.search(r"MATRICULE.*\|\|", str(c), re.IGNORECASE)),
+            None,
+        )
+
+        if nom_cle_f2:
+            feuille2 = feuille2.rename({nom_cle_f2: "CLE_UNIQUE_F2"})
+            autres_cols_f2 = [c for c in feuille2.columns if c != "CLE_UNIQUE_F2"]
+            rename_f2 = {c: normaliser_nom_colonne(c) + "_F2" for c in autres_cols_f2}
+            feuille2 = feuille2.rename(rename_f2)
+
+            cle_f1 = "CLE_UNIQUE" if "CLE_UNIQUE" in feuille1.columns else "MATRICULE"
+            if cle_f1 in feuille1.columns:
+                feuille1 = feuille1.join(
+                    feuille2, left_on=cle_f1, right_on="CLE_UNIQUE_F2", how="left",
+                )
+
+        # Métadonnées
+        feuille1 = feuille1.with_columns([
+            pl.lit(periode).alias("PERIODE"),
+            pl.lit(nom_fichier).alias("FICHIER_SOURCE"),
+        ])
+
+        return periode, feuille1
+
+    except Exception as e:
+        return periode, e
+    finally:
+        if tmp_path and os.path.exists(tmp_path):
+            os.unlink(tmp_path)
+
 
 premier_lot = True
 
 for i_lot, fichiers_lot in enumerate(lots, start=1):
-    print(f"[LOT {i_lot}/{nb_lots}] {len(fichiers_lot)} fichiers")
+    print(f"[LOT {i_lot}/{nb_lots}] {len(fichiers_lot)} fichiers  "
+          f"[moteur Excel : {EXCEL_ENGINE}]")
     print("-" * 70)
 
-    resultats_lot = {}
+    resultats_lot = []
 
-    for chemin_objet in fichiers_lot:
-        periode     = os.path.splitext(os.path.basename(chemin_objet))[0]
-        nom_fichier = os.path.basename(chemin_objet)
-        print(f"  [{periode}] Téléchargement... ", end="", flush=True)
+    # Téléchargements et lectures en parallèle
+    with ThreadPoolExecutor(max_workers=NB_WORKERS) as executor:
+        futures = {executor.submit(traiter_fichier, f): f for f in fichiers_lot}
+        for future in as_completed(futures):
+            periode, result = future.result()
+            if isinstance(result, Exception):
+                print(f"  [{periode}] ✗ ERREUR : {result}")
+            else:
+                resultats_lot.append(result)
+                print(f"  [{periode}] ✓ {len(result):,} lignes × {len(result.columns)} cols")
 
-        tmp_path = None
-        try:
-            with tempfile.NamedTemporaryFile(suffix=".xlsx", delete=False) as tmp:
-                tmp_path = tmp.name
-            s3.download_file(BUCKET, chemin_objet, tmp_path)
-
-            # --- LECTURE FEUILLE 1 (données agents) ---
-            skip_f1  = detecter_entete(tmp_path, sheet=0)
-            feuille1 = pd.read_excel(tmp_path, sheet_name=0,
-                                     skiprows=skip_f1, dtype=str)
-
-            # Normalisation des noms de colonnes
-            noms = [normaliser_nom_colonne(c) for c in feuille1.columns]
-            # Gérer les doublons
-            seen = {}
-            for idx, n in enumerate(noms):
-                if n in seen:
-                    seen[n] += 1
-                    noms[idx] = f"{n}_{seen[n]}"
-                else:
-                    seen[n] = 1
-            feuille1.columns = noms
-
-            # --- LECTURE FEUILLE 2 (codes numériques) ---
-            skip_f2  = detecter_entete(tmp_path, sheet=1)
-            feuille2 = pd.read_excel(tmp_path, sheet_name=1,
-                                     skiprows=skip_f2, dtype=str)
-
-            # Trouver la clé de jointure F2
-            nom_cle_f2 = next(
-                (c for c in feuille2.columns
-                 if re.search(r"MATRICULE.*\|\|", str(c), re.IGNORECASE)),
-                None
-            )
-
-            if nom_cle_f2:
-                feuille2 = feuille2.rename(columns={nom_cle_f2: "CLE_UNIQUE_F2"})
-                autres_cols_f2 = [c for c in feuille2.columns if c != "CLE_UNIQUE_F2"]
-                rename_f2 = {c: normaliser_nom_colonne(c) + "_F2" for c in autres_cols_f2}
-                feuille2 = feuille2.rename(columns=rename_f2)
-
-                cle_f1 = "CLE_UNIQUE" if "CLE_UNIQUE" in feuille1.columns else "MATRICULE"
-                if cle_f1 in feuille1.columns:
-                    feuille1 = feuille1.merge(
-                        feuille2, left_on=cle_f1, right_on="CLE_UNIQUE_F2", how="left"
-                    )
-
-            # Métadonnées
-            feuille1["PERIODE"]        = periode
-            feuille1["FICHIER_SOURCE"] = nom_fichier
-
-            resultats_lot[periode] = feuille1
-            os.unlink(tmp_path)
-
-            print(f"✓ {len(feuille1):,} lignes × {len(feuille1.columns)} cols")
-
-        except Exception as e:
-            print(f"✗ ERREUR : {e}")
-            if tmp_path and os.path.exists(tmp_path):
-                os.unlink(tmp_path)
-
-    # --- CONSOLIDATION DU LOT ---
+    # --- CONSOLIDATION DU LOT (Polars) ---
     if not resultats_lot:
         continue
 
     print(f"\n  Consolidation lot {i_lot}...")
 
-    base_lot = pd.concat(resultats_lot.values(), axis=0, ignore_index=True)
+    # diagonal : aligne par nom de colonne, remplit les colonnes manquantes avec null
+    base_lot = pl.concat(resultats_lot, how="diagonal")
 
-    # Tout en string pour Bronze
-    base_lot = base_lot.astype(str).replace("nan", None)
+    # Tout en String pour Bronze (les null restent null)
+    base_lot = base_lot.with_columns([
+        pl.col(c).cast(pl.Utf8) for c in base_lot.columns
+    ])
 
     print(f"  ✓ Lot {i_lot} : {len(base_lot):,} lignes × {len(base_lot.columns)} colonnes")
 
-    # --- ÉCRITURE VERS BRONZE ICEBERG ---
+    # --- ÉCRITURE VERS BRONZE ICEBERG (via Spark) ---
     print(f"  Écriture vers {TABLE_BRONZE}... ", end="", flush=True)
 
-    df_spark = spark.createDataFrame(base_lot)
+    df_spark = spark.createDataFrame(base_lot.to_pandas())
     mode = "overwrite" if premier_lot else "append"
     df_spark.writeTo(TABLE_BRONZE).using("iceberg").mode(mode).createOrReplace()
 

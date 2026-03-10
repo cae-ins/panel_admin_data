@@ -1,8 +1,7 @@
 # ============================================================
 # PANEL ADMIN — ÉTAPE 4 : VALIDATION DE LA TABLE SILVER
 # ============================================================
-# Effectue les mêmes contrôles qualité que le script original,
-# directement sur la table Silver Iceberg via PySpark/SQL.
+# Effectue les contrôles qualité sur la table Silver Iceberg.
 #
 # Contrôles :
 #   1. Complétude des colonnes clés
@@ -13,16 +12,19 @@
 #
 # Les rapports sont sauvegardés dans staging/panel_admin/validation/
 #
+# Architecture :
+#   PySpark → lecture Iceberg (catalogue Nessie)
+#   Polars  → tous les contrôles qualité
+#
 # Dépendances :
-#   pip install pyspark boto3 pandas python-dotenv
+#   pip install polars boto3 python-dotenv pyspark
 # ============================================================
 
 import io
-import os
 from dotenv import load_dotenv
 import boto3
 from botocore.client import Config
-import pandas as pd
+import polars as pl
 from pyspark.sql import SparkSession
 
 load_dotenv(".env")
@@ -58,19 +60,17 @@ s3 = boto3.client(
 
 
 def sauvegarder_rapport(df, nom_fichier):
-    buf = io.StringIO()
-    df.to_csv(buf, index=False)
-    buf.seek(0)
+    csv_bytes = df.write_csv().encode("utf-8")
     s3.put_object(
-        Bucket = BUCKET,
-        Key    = f"{PREFIX_VALID}/{nom_fichier}",
-        Body   = buf.getvalue().encode("utf-8"),
+        Bucket=BUCKET,
+        Key=f"{PREFIX_VALID}/{nom_fichier}",
+        Body=csv_bytes,
     )
     print(f"  ✓ Rapport : {nom_fichier}")
 
 
 # ============================================================
-# CONNEXION SPARK
+# CONNEXION SPARK (lecture Iceberg uniquement)
 # ============================================================
 
 spark = (
@@ -99,13 +99,19 @@ spark = (
     .getOrCreate()
 )
 
+# ============================================================
+# LECTURE SILVER → CONVERSION POLARS
+# ============================================================
+
 print("=" * 70)
 print("POST-VALIDATION : CONTRÔLE QUALITÉ TABLE SILVER")
 print("=" * 70)
 print()
 
-df       = spark.table(TABLE_SILVER)
-nb_total = df.count()
+df = pl.from_pandas(spark.table(TABLE_SILVER).toPandas())
+spark.stop()  # Spark n'est plus nécessaire après la lecture
+
+nb_total = len(df)
 nb_cols  = len(df.columns)
 cols_all = df.columns
 
@@ -120,19 +126,15 @@ print("CONTRÔLE 1 : COMPLÉTUDE DES COLONNES CLÉS")
 print("=" * 70)
 print()
 
-colonnes_cles = [c for c in ["matricule", "nom", "montant_brut", "montant_net",
-                               "CODE_ORGANISME", "CODE_GRADE", "CODE_EMPLOI",
-                               "situation_normalisee", "periode"]
-                 if c in cols_all]
-
-select_parts = ", ".join(
-    f"ROUND(100.0 * COUNT(`{c}`) / COUNT(*), 1) AS `{c}_pct`"
-    for c in colonnes_cles
-)
-completude = spark.sql(f"SELECT {select_parts} FROM {TABLE_SILVER}").toPandas()
+colonnes_cles = [
+    c for c in ["matricule", "nom", "montant_brut", "montant_net",
+                "CODE_ORGANISME", "CODE_GRADE", "CODE_EMPLOI",
+                "situation_normalisee", "periode"]
+    if c in cols_all
+]
 
 for col in colonnes_cles:
-    pct  = completude[f"{col}_pct"].iloc[0]
+    pct  = round(100.0 * df[col].is_not_null().sum() / nb_total, 1)
     flag = "⚠️ " if pct < 95 else "✓ "
     print(f"  {flag}{col:<30} : {pct:.1f}% complet")
 print()
@@ -146,37 +148,41 @@ print("CONTRÔLE 2 : COLONNES SUSPECTES (NA variable selon l'année)")
 print("=" * 70)
 print()
 
-cols_a_surveiller = [c for c in ["matricule", "nom", "montant_brut", "montant_net",
-                                   "organisme", "grade", "emploi", "lieu_affectation", "service"]
-                     if c in cols_all]
+cols_a_surveiller = [
+    c for c in ["matricule", "nom", "montant_brut", "montant_net",
+                "organisme", "grade", "emploi", "lieu_affectation", "service"]
+    if c in cols_all
+]
 
-na_parts = ", ".join(
-    f"ROUND(100.0 * SUM(CASE WHEN `{c}` IS NULL THEN 1 ELSE 0 END) / COUNT(*), 1) AS `{c}_pct_na`"
-    for c in cols_a_surveiller
-)
-na_par_annee = spark.sql(f"""
-    SELECT
-        SUBSTR(periode, 1, 4) AS annee,
-        COUNT(*) AS n,
-        {na_parts}
-    FROM {TABLE_SILVER}
-    GROUP BY SUBSTR(periode, 1, 4)
-    ORDER BY annee
-""").toPandas()
+if "periode" in cols_all:
+    df_avec_annee = df.with_columns(
+        pl.col("periode").str.slice(0, 4).alias("annee")
+    )
 
-colonnes_suspectes = []
-for col in cols_a_surveiller:
-    col_na = f"{col}_pct_na"
-    if col_na in na_par_annee.columns:
-        pcts = na_par_annee[col_na].dropna()
-        if pcts.max() > 95 and pcts.min() < 5:
-            colonnes_suspectes.append(col)
-            print(f"⚠️  {col} : NA varie de {pcts.min():.1f}% à {pcts.max():.1f}% selon l'année")
+    na_par_annee_rows = []
+    for (annee,), groupe in df_avec_annee.group_by("annee"):
+        row = {"annee": annee, "n": len(groupe)}
+        for col in cols_a_surveiller:
+            row[f"{col}_pct_na"] = round(100.0 * groupe[col].is_null().sum() / len(groupe), 1)
+        na_par_annee_rows.append(row)
 
-if not colonnes_suspectes:
-    print("✓ Aucune colonne suspecte détectée")
+    na_par_annee = pl.DataFrame(na_par_annee_rows).sort("annee")
+
+    colonnes_suspectes = []
+    for col in cols_a_surveiller:
+        col_na = f"{col}_pct_na"
+        if col_na in na_par_annee.columns:
+            pcts = na_par_annee[col_na].drop_nulls()
+            if pcts.max() > 95 and pcts.min() < 5:
+                colonnes_suspectes.append(col)
+                print(f"⚠️  {col} : NA varie de {pcts.min():.1f}% à {pcts.max():.1f}% selon l'année")
+
+    if not colonnes_suspectes:
+        print("✓ Aucune colonne suspecte détectée")
+    else:
+        sauvegarder_rapport(na_par_annee, "na_par_annee_colonnes_surveillees.csv")
 else:
-    sauvegarder_rapport(na_par_annee, "na_par_annee_colonnes_surveillees.csv")
+    print("  (colonne 'periode' absente — contrôle ignoré)")
 print()
 
 # ============================================================
@@ -188,23 +194,25 @@ print("CONTRÔLE 3 : DOUBLONS MATRICULE × PÉRIODE")
 print("=" * 70)
 print()
 
-doublons = spark.sql(f"""
-    SELECT matricule, periode, COUNT(*) AS n
-    FROM {TABLE_SILVER}
-    WHERE matricule IS NOT NULL
-    GROUP BY matricule, periode
-    HAVING COUNT(*) > 1
-    ORDER BY n DESC
-""").toPandas()
+if "matricule" in cols_all and "periode" in cols_all:
+    doublons = (
+        df.filter(pl.col("matricule").is_not_null())
+        .group_by(["matricule", "periode"])
+        .agg(pl.len().alias("n"))
+        .filter(pl.col("n") > 1)
+        .sort("n", descending=True)
+    )
 
-if len(doublons) > 0:
-    print(f"⚠️  {len(doublons):,} combinaisons matricule × période en doublon")
-    print("  Top 5 doublons :")
-    for _, row in doublons.head(5).iterrows():
-        print(f"    {row['matricule']} | {row['periode']} | {row['n']} occurrences")
-    sauvegarder_rapport(doublons, "doublons_matricule_periode.csv")
+    if len(doublons) > 0:
+        print(f"⚠️  {len(doublons):,} combinaisons matricule × période en doublon")
+        print("  Top 5 doublons :")
+        for row in doublons.head(5).iter_rows(named=True):
+            print(f"    {row['matricule']} | {row['periode']} | {row['n']} occurrences")
+        sauvegarder_rapport(doublons, "doublons_matricule_periode.csv")
+    else:
+        print("✓ Aucun doublon matricule × période")
 else:
-    print("✓ Aucun doublon matricule × période")
+    print("  (colonnes 'matricule' ou 'periode' absentes — contrôle ignoré)")
 print()
 
 # ============================================================
@@ -216,20 +224,23 @@ print("CONTRÔLE 4 : COHÉRENCE MONTANTS (net > brut)")
 print("=" * 70)
 print()
 
-incoherences = spark.sql(f"""
-    SELECT COUNT(*) AS nb,
-           ROUND(100.0 * COUNT(*) / {nb_total}, 2) AS pct
-    FROM {TABLE_SILVER}
-    WHERE montant_net IS NOT NULL
-      AND montant_brut IS NOT NULL
-      AND montant_net > montant_brut
-""").toPandas()
-
-nb_inc = incoherences["nb"].iloc[0]
-if nb_inc > 0:
-    print(f"⚠️  Net > Brut : {nb_inc:,} lignes ({incoherences['pct'].iloc[0]:.2f}%)")
+if "montant_net" in cols_all and "montant_brut" in cols_all:
+    nb_inc = (
+        df.filter(
+            pl.col("montant_net").is_not_null()
+            & pl.col("montant_brut").is_not_null()
+            & (pl.col("montant_net") > pl.col("montant_brut"))
+        )
+        .select(pl.len())
+        .item()
+    )
+    pct_inc = round(100.0 * nb_inc / nb_total, 2)
+    if nb_inc > 0:
+        print(f"⚠️  Net > Brut : {nb_inc:,} lignes ({pct_inc:.2f}%)")
+    else:
+        print("✓ Tous les montants sont cohérents (net ≤ brut)")
 else:
-    print("✓ Tous les montants sont cohérents (net ≤ brut)")
+    print("  (colonnes 'montant_net' ou 'montant_brut' absentes — contrôle ignoré)")
 print()
 
 # ============================================================
@@ -241,17 +252,19 @@ print("CONTRÔLE 5 : DISTRIBUTION DES SITUATIONS")
 print("=" * 70)
 print()
 
-dist_sit = spark.sql(f"""
-    SELECT situation_normalisee,
-           COUNT(*) AS nb,
-           ROUND(100.0 * COUNT(*) / {nb_total}, 1) AS pct
-    FROM {TABLE_SILVER}
-    GROUP BY situation_normalisee
-    ORDER BY nb DESC
-""").toPandas()
-
-for _, row in dist_sit.iterrows():
-    print(f"  {row['situation_normalisee']:<25} : {row['nb']:,} ({row['pct']:.1f}%)")
+if "situation_normalisee" in cols_all:
+    dist_sit = (
+        df.group_by("situation_normalisee")
+        .agg(pl.len().alias("nb"))
+        .with_columns(
+            (pl.col("nb") * 100.0 / nb_total).round(1).alias("pct")
+        )
+        .sort("nb", descending=True)
+    )
+    for row in dist_sit.iter_rows(named=True):
+        print(f"  {row['situation_normalisee']:<25} : {row['nb']:,} ({row['pct']:.1f}%)")
+else:
+    print("  (colonne 'situation_normalisee' absente — contrôle ignoré)")
 print()
 
 # ============================================================
@@ -263,22 +276,18 @@ print("RÉSUMÉ VALIDATION")
 print("=" * 70)
 print()
 
-periodes_stats = spark.sql(f"""
-    SELECT MIN(periode) AS premiere, MAX(periode) AS derniere,
-           COUNT(DISTINCT periode) AS nb_periodes,
-           COUNT(DISTINCT matricule) AS agents_uniques
-    FROM {TABLE_SILVER}
-""").toPandas()
-
-row = periodes_stats.iloc[0]
 print(f"Lignes totales  : {nb_total:,}")
 print(f"Colonnes        : {nb_cols}")
-print(f"Périodes        : {row['premiere']} à {row['derniere']} ({row['nb_periodes']} périodes)")
-print(f"Agents uniques  : {row['agents_uniques']:,}")
+
+if "periode" in cols_all:
+    print(f"Périodes        : {df['periode'].min()} à {df['periode'].max()} "
+          f"({df['periode'].n_unique()} périodes)")
+
+if "matricule" in cols_all:
+    print(f"Agents uniques  : {df['matricule'].n_unique():,}")
+
 print()
 print("=" * 70)
 print("✓ VALIDATION TERMINÉE")
 print("=" * 70)
 print("Prochaine étape : exécuter 05_silver_to_gold.py")
-
-spark.stop()

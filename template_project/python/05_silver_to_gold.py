@@ -11,16 +11,19 @@
 #   nessie.gold.panel_admin_effectifs
 #     → Effectifs, agents uniques, distribution par période
 #
+# Architecture :
+#   PySpark → lecture/écriture Iceberg (catalogue Nessie)
+#   Polars  → toutes les agrégations
+#
 # Dépendances :
-#   pip install pyspark boto3 pandas python-dotenv
+#   pip install polars boto3 python-dotenv pyspark
 # ============================================================
 
 import io
-import os
 from dotenv import load_dotenv
 import boto3
 from botocore.client import Config
-import pandas as pd
+import polars as pl
 from pyspark.sql import SparkSession
 
 load_dotenv(".env")
@@ -57,7 +60,7 @@ s3 = boto3.client(
 )
 
 # ============================================================
-# CONNEXION SPARK
+# CONNEXION SPARK (lecture Silver + écriture Gold)
 # ============================================================
 
 spark = (
@@ -88,9 +91,32 @@ spark = (
 
 spark.sql("CREATE NAMESPACE IF NOT EXISTS nessie.gold")
 
-df_silver = spark.table(TABLE_SILVER)
-nb_silver = df_silver.count()
+# ============================================================
+# LECTURE SILVER → CONVERSION POLARS
+# ============================================================
+
+print("Lecture de la table Silver...")
+df_silver = pl.from_pandas(spark.table(TABLE_SILVER).toPandas())
+nb_silver = len(df_silver)
 print(f"Silver lu : {nb_silver:,} lignes\n")
+
+
+def ecrire_gold_spark(df_polars, table_name):
+    """Convertit un DataFrame Polars en Spark et écrit dans Iceberg."""
+    df_sp = spark.createDataFrame(df_polars.to_pandas())
+    df_sp.writeTo(table_name).using("iceberg").mode("overwrite").createOrReplace()
+
+
+def exporter_vers_staging(df, nom_fichier):
+    """Exporte un DataFrame Polars en CSV vers MinIO staging."""
+    csv_bytes = df.write_csv().encode("utf-8")
+    s3.put_object(
+        Bucket=BUCKET,
+        Key=f"{PREFIX_EXPORTS}/{nom_fichier}",
+        Body=csv_bytes,
+    )
+    print(f"  ✓ {nom_fichier} ({len(df):,} lignes)")
+
 
 # ============================================================
 # TABLE GOLD 1 : MASSE SALARIALE PAR PÉRIODE × ORGANISME
@@ -101,37 +127,40 @@ print("GOLD 1 : Masse salariale par période × organisme")
 print("=" * 70)
 print()
 
-df_masse_salariale = spark.sql(f"""
-    SELECT
-        periode,
-        SUBSTR(periode, 1, 4)                              AS annee,
-        SUBSTR(periode, 6, 2)                              AS mois,
-        COALESCE(CODE_ORGANISME, 'NON_CODE')               AS code_organisme,
-        COALESCE(organisme, 'NON_IDENTIFIE')               AS organisme,
-        situation_normalisee,
-        COUNT(*)                                           AS nb_lignes,
-        COUNT(DISTINCT matricule)                          AS nb_agents_uniques,
-        ROUND(SUM(montant_brut), 0)                        AS masse_brute,
-        ROUND(SUM(montant_net), 0)                         AS masse_nette,
-        ROUND(AVG(montant_brut), 0)                        AS salaire_brut_moyen,
-        ROUND(AVG(montant_net), 0)                         AS salaire_net_moyen,
-        ROUND(PERCENTILE_APPROX(montant_brut, 0.5), 0)     AS salaire_brut_mediane,
-        ROUND(PERCENTILE_APPROX(montant_net, 0.5), 0)      AS salaire_net_mediane
-    FROM {TABLE_SILVER}
-    WHERE montant_brut IS NOT NULL
-      AND montant_net IS NOT NULL
-    GROUP BY
-        periode, SUBSTR(periode, 1, 4), SUBSTR(periode, 6, 2),
-        COALESCE(CODE_ORGANISME, 'NON_CODE'),
-        COALESCE(organisme, 'NON_IDENTIFIE'),
-        situation_normalisee
-    ORDER BY periode, organisme
-""")
+df_masse_salariale = (
+    df_silver
+    .filter(
+        pl.col("montant_brut").is_not_null()
+        & pl.col("montant_net").is_not_null()
+    )
+    .with_columns([
+        pl.col("periode").str.slice(0, 4).alias("annee"),
+        pl.col("periode").str.slice(5, 2).alias("mois"),
+        pl.col("CODE_ORGANISME").fill_null("NON_CODE").alias("code_organisme"),
+        pl.col("organisme").fill_null("NON_IDENTIFIE").alias("organisme"),
+    ])
+    .group_by([
+        "periode", "annee", "mois",
+        "code_organisme", "organisme",
+        "situation_normalisee",
+    ])
+    .agg([
+        pl.len().alias("nb_lignes"),
+        pl.col("matricule").n_unique().alias("nb_agents_uniques"),
+        pl.col("montant_brut").sum().round(0).alias("masse_brute"),
+        pl.col("montant_net").sum().round(0).alias("masse_nette"),
+        pl.col("montant_brut").mean().round(0).alias("salaire_brut_moyen"),
+        pl.col("montant_net").mean().round(0).alias("salaire_net_moyen"),
+        pl.col("montant_brut").quantile(0.5, interpolation="nearest").round(0).alias("salaire_brut_mediane"),
+        pl.col("montant_net").quantile(0.5, interpolation="nearest").round(0).alias("salaire_net_mediane"),
+    ])
+    .sort(["periode", "organisme"])
+)
 
-nb_ms = df_masse_salariale.count()
+nb_ms = len(df_masse_salariale)
 print(f"✓ {nb_ms:,} lignes produites")
 
-df_masse_salariale.writeTo(TABLE_GOLD_SALAIRES).using("iceberg").mode("overwrite").createOrReplace()
+ecrire_gold_spark(df_masse_salariale, TABLE_GOLD_SALAIRES)
 print(f"✓ Table écrite : {TABLE_GOLD_SALAIRES}\n")
 
 # ============================================================
@@ -143,29 +172,30 @@ print("GOLD 2 : Effectifs par période")
 print("=" * 70)
 print()
 
-df_effectifs = spark.sql(f"""
-    SELECT
-        periode,
-        SUBSTR(periode, 1, 4)                        AS annee,
-        SUBSTR(periode, 6, 2)                        AS mois,
-        situation_normalisee,
-        COALESCE(CODE_ORGANISME, 'NON_CODE')         AS code_organisme,
-        COUNT(*)                                     AS nb_lignes,
-        COUNT(DISTINCT matricule)                    AS nb_agents_uniques,
-        SUM(CASE WHEN sexe = '1' THEN 1 ELSE 0 END) AS nb_hommes,
-        SUM(CASE WHEN sexe = '2' THEN 1 ELSE 0 END) AS nb_femmes
-    FROM {TABLE_SILVER}
-    GROUP BY
-        periode, SUBSTR(periode, 1, 4), SUBSTR(periode, 6, 2),
-        situation_normalisee,
-        COALESCE(CODE_ORGANISME, 'NON_CODE')
-    ORDER BY periode, situation_normalisee
-""")
+df_effectifs = (
+    df_silver
+    .with_columns([
+        pl.col("periode").str.slice(0, 4).alias("annee"),
+        pl.col("periode").str.slice(5, 2).alias("mois"),
+        pl.col("CODE_ORGANISME").fill_null("NON_CODE").alias("code_organisme"),
+    ])
+    .group_by([
+        "periode", "annee", "mois",
+        "situation_normalisee", "code_organisme",
+    ])
+    .agg([
+        pl.len().alias("nb_lignes"),
+        pl.col("matricule").n_unique().alias("nb_agents_uniques"),
+        (pl.col("sexe") == "1").sum().alias("nb_hommes"),
+        (pl.col("sexe") == "2").sum().alias("nb_femmes"),
+    ])
+    .sort(["periode", "situation_normalisee"])
+)
 
-nb_eff = df_effectifs.count()
+nb_eff = len(df_effectifs)
 print(f"✓ {nb_eff:,} lignes produites")
 
-df_effectifs.writeTo(TABLE_GOLD_EFFECTIFS).using("iceberg").mode("overwrite").createOrReplace()
+ecrire_gold_spark(df_effectifs, TABLE_GOLD_EFFECTIFS)
 print(f"✓ Table écrite : {TABLE_GOLD_EFFECTIFS}\n")
 
 # ============================================================
@@ -177,23 +207,8 @@ print("EXPORT CSV vers staging")
 print("=" * 70)
 print()
 
-
-def exporter_vers_staging(df_spark, nom_fichier):
-    df_local = df_spark.toPandas()
-    buf = io.StringIO()
-    df_local.to_csv(buf, index=False)
-    buf.seek(0)
-    s3.put_object(
-        Bucket = BUCKET,
-        Key    = f"{PREFIX_EXPORTS}/{nom_fichier}",
-        Body   = buf.getvalue().encode("utf-8"),
-    )
-    print(f"  ✓ {nom_fichier} ({len(df_local):,} lignes)")
-    return df_local
-
-
-df_ms_local  = exporter_vers_staging(df_masse_salariale, "masse_salariale_par_periode_organisme.csv")
-df_eff_local = exporter_vers_staging(df_effectifs,       "effectifs_par_periode.csv")
+exporter_vers_staging(df_masse_salariale, "masse_salariale_par_periode_organisme.csv")
+exporter_vers_staging(df_effectifs,       "effectifs_par_periode.csv")
 
 # ============================================================
 # RÉSUMÉ
@@ -205,8 +220,8 @@ print("RÉSUMÉ GOLD")
 print("=" * 70)
 print()
 
-print(f"{TABLE_GOLD_SALAIRES:<40} : {nb_ms:,} lignes")
-print(f"{TABLE_GOLD_EFFECTIFS:<40} : {nb_eff:,} lignes")
+print(f"{TABLE_GOLD_SALAIRES:<45} : {nb_ms:,} lignes")
+print(f"{TABLE_GOLD_EFFECTIFS:<45} : {nb_eff:,} lignes")
 print(f"\nExports CSV : s3://{BUCKET}/{PREFIX_EXPORTS}/")
 print("\n✓ PIPELINE PANEL ADMIN COMPLET")
 print("=" * 70)
