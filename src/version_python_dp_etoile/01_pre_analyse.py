@@ -27,16 +27,11 @@ load_dotenv(".env")
 # --- CONFIGURATION ---
 
 # LORSQU'ON TRAVAILLE DEPUIS SA MACHINE LOCAL
-MINIO_ENDPOINT   = "http://192.168.1.230:30137"
-MINIO_ACCESS_KEY = "datalab-team"
-MINIO_SECRET_KEY = "minio-datalabteam123"
+MINIO_ENDPOINT   = os.getenv("MINIO_ENDPOINT",   "http://192.168.1.230:30137")
+MINIO_ACCESS_KEY = os.getenv("MINIO_ACCESS_KEY", "datalab-team")
+MINIO_SECRET_KEY = os.getenv("MINIO_SECRET_KEY", "minio-datalabteam123")
 
-# LORSQU'ON TRAVAILLE SUR JHUB
-# MINIO_ENDPOINT   = "http://minio.mon-namespace.svc.cluster.local:80"
-# MINIO_ACCESS_KEY = "datalab-team"
-# MINIO_SECRET_KEY = "minio-datalabteam123"
-
-BUCKET          = "staging"
+BUCKET          = os.getenv("BUCKET_STAGING", "staging")
 PREFIX_MENSUELS = "panel_admin/fichiers_mensuels"
 PREFIX_SORTIE   = "panel_admin/pre_analyse"
 

@@ -72,17 +72,12 @@ MIN_OBS_WINS      = 100
 # ============================================================
 
 # LORSQU'ON TRAVAILLE DEPUIS SA MACHINE LOCAL
-MINIO_ENDPOINT   = "http://192.168.1.230:30137"
-MINIO_ACCESS_KEY = "datalab-team"
-MINIO_SECRET_KEY = "minio-datalabteam123"
+MINIO_ENDPOINT   = os.getenv("MINIO_ENDPOINT",   "http://192.168.1.230:30137")
+MINIO_ACCESS_KEY = os.getenv("MINIO_ACCESS_KEY", "datalab-team")
+MINIO_SECRET_KEY = os.getenv("MINIO_SECRET_KEY", "minio-datalabteam123")
 
-# LORSQU'ON TRAVAILLE SUR JHUB
-# MINIO_ENDPOINT   = "http://minio.mon-namespace.svc.cluster.local:80"
-# MINIO_ACCESS_KEY = "datalab-team"
-# MINIO_SECRET_KEY = "minio-datalabteam123"
-
-BUCKET_GOLD    = "gold"
-BUCKET_STAGING = "staging"
+BUCKET_GOLD    = os.getenv("BUCKET_GOLD",    "gold")
+BUCKET_STAGING = os.getenv("BUCKET_STAGING", "staging")
 PREFIX_PANEL   = "panel_admin"
 PREFIX_EXPORTS = "panel_admin/exports_gold"
 KEY_CORRESPONDANCE = "panel_admin/references/CORRESPONDANCE_GRILLE_EMPLOI.xlsx"

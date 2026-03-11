@@ -1,0 +1,7 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(cd \"C:\\\\Users\\\\f.migone\\\\Desktop\\\\projects\\\\panel_admin_data\\\\src\\\\version_python_dp_etoile\" && python -m pytest tests/ -v --tb=short 2>&1)"
+    ]
+  }
+}

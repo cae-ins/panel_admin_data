@@ -38,22 +38,18 @@ load_dotenv(".env")
 # --- CONFIGURATION ---
 
 # LORSQU'ON TRAVAILLE DEPUIS SA MACHINE LOCAL
-MINIO_ENDPOINT   = "http://192.168.1.230:30137"
-MINIO_ACCESS_KEY = "datalab-team"
-MINIO_SECRET_KEY = "minio-datalabteam123"
+MINIO_ENDPOINT   = os.getenv("MINIO_ENDPOINT",   "http://192.168.1.230:30137")
+MINIO_ACCESS_KEY = os.getenv("MINIO_ACCESS_KEY", "datalab-team")
+MINIO_SECRET_KEY = os.getenv("MINIO_SECRET_KEY", "minio-datalabteam123")
 
-# LORSQU'ON TRAVAILLE SUR JHUB
-# MINIO_ENDPOINT   = "http://minio.mon-namespace.svc.cluster.local:80"
-# MINIO_ACCESS_KEY = "datalab-team"
-# MINIO_SECRET_KEY = "minio-datalabteam123"
-
-BUCKET_SILVER  = "silver"
-BUCKET_GOLD    = "gold"
-BUCKET_STAGING = "staging"
+BUCKET_SILVER  = os.getenv("BUCKET_SILVER",  "silver")
+BUCKET_GOLD    = os.getenv("BUCKET_GOLD",    "gold")
+BUCKET_STAGING = os.getenv("BUCKET_STAGING", "staging")
 PREFIX_SILVER  = "panel_admin"
 KEY_GOLD_MS    = "panel_admin/masse_salariale.parquet"
 KEY_GOLD_EFF   = "panel_admin/effectifs.parquet"
 PREFIX_EXPORTS = "panel_admin/exports_gold"
+
 
 # --- CLIENT S3 (MinIO) ---
 s3 = boto3.client(
@@ -137,13 +133,11 @@ for cle in cles_silver:
     print(f"✓  {len(df):,} lignes", flush=True)
 
     # --- GOLD 1 : Masse salariale ---
+    # Les nulls résiduels (NON_IMPUTABLE) sont ignorés nativement
+    # par Polars dans sum/mean — pas besoin de filtre explicite.
     if "montant_brut" in df.columns and "montant_net" in df.columns:
         ms = (
             df
-            .filter(
-                pl.col("montant_brut").is_not_null()
-                & pl.col("montant_net").is_not_null()
-            )
             .with_columns([
                 pl.col("mois_annee").str.slice(2, 4).alias("annee"),
                 pl.col("mois_annee").str.slice(0, 2).alias("mois"),

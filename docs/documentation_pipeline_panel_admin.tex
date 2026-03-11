@@ -1,0 +1,2045 @@
+\documentclass[12pt,a4paper,french]{report}
+
+\usepackage[utf8]{inputenc}
+\usepackage[T1]{fontenc}
+\usepackage{babel}
+\usepackage{geometry}
+\usepackage{xcolor}
+\usepackage{hyperref}
+\usepackage{graphicx}
+\usepackage{listings}
+\usepackage{fancyhdr}
+\usepackage{titlesec}
+\usepackage{tcolorbox}
+\usepackage{enumitem}
+\usepackage{booktabs}
+\usepackage{longtable}
+\usepackage{array}
+\usepackage{tabularx}
+\usepackage{float}
+\usepackage{tikz}
+\usepackage{amsmath}
+\usepackage{setspace}
+\usepackage{parskip}
+\usepackage{charter}
+
+% ─── Géométrie ───────────────────────────────────────────────
+\geometry{
+  top=2.5cm, bottom=2.5cm,
+  left=2.5cm, right=2.5cm,
+  headheight=15pt
+}
+
+% ─── Couleurs ────────────────────────────────────────────────
+\definecolor{primaryblue}{RGB}{31,78,121}
+\definecolor{lightblue}{RGB}{214,228,240}
+\definecolor{accentblue}{RGB}{70,130,180}
+\definecolor{darkgray}{RGB}{64,64,64}
+\definecolor{lightgray}{RGB}{245,245,245}
+\definecolor{successgreen}{RGB}{0,128,0}
+\definecolor{warningorange}{RGB}{204,102,0}
+\definecolor{errored}{RGB}{180,30,30}
+\definecolor{codebg}{RGB}{248,248,248}
+
+% ─── Hyperref ────────────────────────────────────────────────
+\hypersetup{
+  colorlinks=true,
+  linkcolor=primaryblue,
+  urlcolor=accentblue,
+  citecolor=primaryblue,
+  pdftitle={Documentation Pipeline Panel Admin},
+  pdfauthor={Data Engineering Team},
+}
+
+% ─── En-têtes / pieds de page ────────────────────────────────
+\pagestyle{fancy}
+\fancyhf{}
+\fancyhead[L]{\small\color{darkgray} Pipeline Panel Admin — Documentation Technique}
+\fancyhead[R]{\small\color{darkgray} \leftmark}
+\fancyfoot[C]{\small\color{darkgray} \thepage}
+\renewcommand{\headrulewidth}{0.4pt}
+\renewcommand{\footrulewidth}{0pt}
+
+% ─── Titres de chapitres ─────────────────────────────────────
+\titleformat{\chapter}[block]
+  {\normalfont\huge\bfseries\color{primaryblue}}
+  {\thechapter.}{1em}{}
+  [\vspace{0.5ex}\titlerule[1pt]]
+
+\titleformat{\section}[block]
+  {\normalfont\Large\bfseries\color{primaryblue}}
+  {\thesection}{1em}{}
+
+\titleformat{\subsection}[block]
+  {\normalfont\large\bfseries\color{accentblue}}
+  {\thesubsection}{1em}{}
+
+\titleformat{\subsubsection}[block]
+  {\normalfont\normalsize\bfseries\color{darkgray}}
+  {\thesubsubsection}{1em}{}
+
+% ─── Boîtes colorées ─────────────────────────────────────────
+\tcbuselibrary{skins,breakable}
+
+\newtcolorbox{infobox}[1][]{
+  enhanced, breakable,
+  colback=lightblue!30, colframe=primaryblue,
+  fonttitle=\bfseries\color{primaryblue},
+  title={#1}, left=6pt, right=6pt, top=4pt, bottom=4pt
+}
+
+\newtcolorbox{warningbox}[1][Attention]{
+  enhanced, breakable,
+  colback=orange!10, colframe=warningorange,
+  fonttitle=\bfseries\color{warningorange},
+  title={#1}, left=6pt, right=6pt, top=4pt, bottom=4pt
+}
+
+\newtcolorbox{codebox}[1][]{
+  enhanced, breakable,
+  colback=codebg, colframe=darkgray!40,
+  fonttitle=\bfseries\small\color{darkgray},
+  title={#1}, left=6pt, right=6pt, top=4pt, bottom=4pt,
+  fontupper=\small\ttfamily
+}
+
+% ─── Listings ────────────────────────────────────────────────
+\lstset{
+  backgroundcolor=\color{codebg},
+  basicstyle=\small\ttfamily,
+  breaklines=true,
+  captionpos=b,
+  commentstyle=\color{successgreen},
+  keywordstyle=\color{primaryblue}\bfseries,
+  stringstyle=\color{errored},
+  numberstyle=\tiny\color{darkgray},
+  numbers=left,
+  stepnumber=1,
+  numbersep=8pt,
+  frame=single,
+  framesep=4pt,
+  rulecolor=\color{darkgray!40},
+  showstringspaces=false,
+  tabsize=4,
+  language=Python,
+  literate={é}{{\'e}}1 {è}{{\`e}}1 {ê}{{\^e}}1 {à}{{\`a}}1 {â}{{\^a}}1
+           {î}{{\^i}}1 {ô}{{\^o}}1 {ù}{{\`u}}1 {û}{{\^u}}1
+           {É}{{\'E}}1 {È}{{\`E}}1 {Â}{{\^A}}1 {Ô}{{\^O}}1
+}
+
+% ─── Commandes utilitaires ───────────────────────────────────
+\newcommand{\scriptname}[1]{\texttt{\textbf{#1}}}
+\newcommand{\bucket}[1]{\texttt{s3://#1}}
+\newcommand{\colname}[1]{\texttt{#1}}
+\newcommand{\etape}[2]{\textbf{Étape #1} — #2}
+
+% ─── Espacement ──────────────────────────────────────────────
+\setlength{\parskip}{6pt}
+\setlength{\parindent}{0pt}
+\onehalfspacing
+
+% ─────────────────────────────────────────────────────────────
+\begin{document}
+
+% ─── Page de titre ───────────────────────────────────────────
+\begin{titlepage}
+  \centering
+  \vspace*{2cm}
+  {\huge\bfseries\color{primaryblue}
+    Pipeline de Données\\[0.4em]
+    Panel Administratif\\[0.4em]
+    2015--2025
+  \par}
+  \vspace{1.5cm}
+  \textcolor{accentblue}{\rule{10cm}{2pt}}
+  \vspace{1cm}
+
+  {\Large\bfseries Documentation Technique Complète\par}
+  \vspace{0.5cm}
+  {\large Version 2.0 — Architecture Python / Polars / MinIO\par}
+  \vspace{2cm}
+
+  \begin{tcolorbox}[colback=lightblue!40, colframe=primaryblue, width=12cm]
+    \centering
+    \textbf{Périmètre :} Indicateurs de la masse salariale des agents de l'État\\[4pt]
+    \textbf{Couverture temporelle :} Janvier 2015 -- Décembre 2025\\[4pt]
+    \textbf{Technologie :} Python · Polars · MinIO (S3) · openpyxl
+  \end{tcolorbox}
+
+  \vfill
+  {\small\color{darkgray} Document généré le \today\par}
+\end{titlepage}
+
+% ─── Table des matières ──────────────────────────────────────
+\tableofcontents
+\newpage
+
+% ═════════════════════════════════════════════════════════════
+% CHAPITRE 1 — RÉSUMÉ EXÉCUTIF
+% ═════════════════════════════════════════════════════════════
+\chapter{Résumé exécutif}
+
+Ce document décrit le pipeline de traitement de données qui produit les
+indicateurs statistiques sur les salaires des agents de la fonction publique
+à partir des fichiers de solde mensuels bruts (2015--2025).
+
+\section{Vue d'ensemble}
+
+Le pipeline transforme environ 120 fichiers Excel mensuels bruts en un panel
+individu $\times$ période exploitable, puis calcule les indicateurs de
+rémunération diffusés dans un fichier Excel structuré.
+
+\begin{infobox}[Architecture en médaillon (Medallion Architecture)]
+  \begin{itemize}[nosep]
+    \item \textbf{Staging} : dépôt initial des fichiers sources (Excel mensuels +
+          référentiels)
+    \item \textbf{Bronze} : données brutes converties en Parquet, tout en
+          \texttt{String}, sans transformation
+    \item \textbf{Silver} : données enrichies, types corrects, situations
+          normalisées, codes ANSTAT rattachés
+    \item \textbf{Gold} : agrégats (masse salariale, effectifs) + panel
+          individu $\times$ période avec grades imputés
+  \end{itemize}
+\end{infobox}
+
+\section{Livrables produits}
+
+\begin{enumerate}
+  \item \textbf{Panel complet} \bucket{gold/panel\_admin/panel\_complet.parquet}
+        et fichiers annuels \texttt{panel\_YYYY.parquet} : une ligne par
+        agent $\times$ mois, avec grade imputé, code CITP, barème salarial.
+
+  \item \textbf{Tables Gold d'agrégats} :
+        \begin{itemize}[nosep]
+          \item \bucket{gold/panel\_admin/masse\_salariale.parquet}
+          \item \bucket{gold/panel\_admin/effectifs.parquet}
+        \end{itemize}
+
+  \item \textbf{Fichier d'indicateurs} : \texttt{indicateurs\_\{mode\}\_\{periode\}\_\{zeros\}.xlsx}
+        (multi-feuilles : grades, CITP, barèmes, multi-postes, modèle ANSTAT)
+
+  \item \textbf{Fichier avec sommaire navigable} : \texttt{indicateurs\_*\_SOMMAIRE.xlsx}
+        (5 sections cliquables, feuilles de détail par grade/CITP/sexe/barème)
+
+  \item \textbf{Rapports de qualité} dans \bucket{staging/panel\_admin/validation/} :
+        taux de matching ANSTAT, doublons, colonnes suspectes.
+\end{enumerate}
+
+\section{Référentiels Staging}
+
+Trois types de fichiers de référence sont déposés dans
+\bucket{staging/panel\_admin/references/} avant toute exécution du pipeline :
+
+\begin{enumerate}
+  \item \textbf{FICHIER\_ANSTAT\_CODE.xlsx} — dictionnaire de codes administratifs
+        (organisme, grade, emploi, affectation, service, fonction, poste) avec
+        libellés normalisés pour le matching textuel.
+  \item \textbf{CORRESPONDANCE\_GRILLE\_EMPLOI.xlsx} \textbf{(nouveau)} — table de
+        correspondance emploi $\rightarrow$ barème / grille salariale, utilisée pour
+        le fuzzy join de l'étape 07.
+  \item Fichiers Excel mensuels déposés dans
+        \bucket{staging/panel\_admin/fichiers\_mensuels/}.
+\end{enumerate}
+
+\section{Suppressions de lignes dans le pipeline}
+
+Le pipeline supprime des lignes à deux étapes clés :
+
+\begin{itemize}
+  \item \textbf{Étape 03 (Bronze $\rightarrow$ Silver)} : toute ligne dont
+        \colname{situation\_normalisee} vaut \texttt{autre} est supprimée.
+        Les situations conservées sont \texttt{en\_activite},
+        \texttt{regul\_indemnites}, \texttt{demi\_solde}. Les données F2
+        associées à ces lignes sont également écartées.
+  \item \textbf{Étape 07 (Calcul indicateurs)} : les lignes dont
+        \colname{GRADE\_SOURCE} est \texttt{NF\_NON\_IMPUTABLE} sont exclues
+        des calculs. Les agents de sexe inconnu sont aussi exclus.
+\end{itemize}
+
+% ═════════════════════════════════════════════════════════════
+% CHAPITRE 2 — CONTEXTE ET OBJECTIFS
+% ═════════════════════════════════════════════════════════════
+\chapter{Contexte et objectifs}
+
+\section{Contexte}
+
+La production des indicateurs de la masse salariale de la fonction publique
+repose sur des fichiers de solde mensuels (format Excel, deux feuilles :
+données agents et codes de rémunération). Ces fichiers, produits depuis 2015,
+présentent des hétérogénéités structurelles importantes : noms de colonnes
+variables, lignes d'en-tête décalées, formats de date divers.
+
+Le pipeline automatise l'intégralité de la chaîne de traitement, de
+l'ingestion brute jusqu'à la production des indicateurs statistiques.
+
+\section{Objectifs techniques}
+
+\begin{itemize}
+  \item Centraliser tous les fichiers sources sur un stockage objet partagé
+        (MinIO) pour permettre le travail collaboratif depuis JupyterHub.
+  \item Standardiser les données sur l'ensemble de la série temporelle malgré
+        les hétérogénéités structurelles.
+  \item Constituer un panel longitudinal individu $\times$ période de qualité,
+        avec grades validés et codes CITP rattachés.
+  \item Produire des indicateurs salariaux fiables (P25, P50, P75, min, max,
+        moyenne) par grade, CITP, sexe, barème salarial.
+  \item Générer un fichier Excel navigable destiné aux utilisateurs métier.
+\end{itemize}
+
+\section{Contraintes de conception}
+
+\begin{itemize}
+  \item \textbf{Mémoire limitée} : le panel complet (120+ fichiers, plusieurs
+        millions de lignes) est traité en streaming via
+        \texttt{scan\_parquet} / \texttt{sink\_parquet} de Polars.
+  \item \textbf{Robustesse} : chaque étape gère les erreurs fichier par fichier.
+        Un fichier en erreur n'arrête pas le traitement des autres.
+  \item \textbf{Traçabilité} : chaque ligne du panel conserve son
+        \colname{fichier\_source} et son \colname{GRADE\_SOURCE}
+        (\texttt{OBSERVE}/\texttt{IMPUTE}/\texttt{NF\_NON\_IMPUTABLE}).
+  \item \textbf{Reproductibilité} : les paramètres de calcul (période, mode
+        salaire, seuil de winsorisation) sont centralisés en tête de chaque
+        script.
+\end{itemize}
+
+% ═════════════════════════════════════════════════════════════
+% CHAPITRE 3 — ARCHITECTURE TECHNIQUE
+% ═════════════════════════════════════════════════════════════
+\chapter{Architecture technique}
+
+\section{Stack technologique}
+
+\begin{tabularx}{\textwidth}{lX}
+  \toprule
+  \textbf{Composant} & \textbf{Rôle} \\
+  \midrule
+  Python 3.10+ & Langage de traitement \\
+  Polars & Manipulation de DataFrames (plus rapide que pandas, API Lazy) \\
+  boto3 & Client S3 pour MinIO \\
+  fastexcel & Lecture Excel rapide (backend Polars) \\
+  openpyxl & Écriture Excel stylisée (sortie finale) \\
+  python-dotenv & Gestion des variables d'environnement \\
+  MinIO & Stockage objet S3-compatible (auto-hébergé) \\
+  JupyterHub & Environnement d'exécution partagé \\
+  \bottomrule
+\end{tabularx}
+
+\section{Organisation du stockage objet}
+
+\begin{codebox}[Structure des buckets MinIO]
+staging/
+  panel\_admin/
+    fichiers\_mensuels/       ← Fichiers Excel sources (MMYYYY.xlsx)
+    references/
+      FICHIER\_ANSTAT\_CODE.xlsx
+      CORRESPONDANCE\_GRILLE\_EMPLOI.xlsx   ← NOUVEAU
+    pre\_analyse/             ← Rapports 01 (CSV)
+    validation/              ← Rapports 04 + 03 (CSV qualité)
+    exports\_gold/            ← Fichiers Excel finaux + CSV exports
+
+bronze/
+  panel\_admin/
+    MMYYYY.parquet            ← Un fichier par mois (ex: 012015.parquet)
+
+silver/
+  panel\_admin/
+    YYYY.parquet              ← Un fichier par année (ex: 2020.parquet)
+
+gold/
+  panel\_admin/
+    masse\_salariale.parquet  ← Agrégats masse salariale
+    effectifs.parquet         ← Agrégats effectifs
+    panel\_YYYY.parquet       ← Panel annuel (ex: panel\_2020.parquet)
+    panel\_complet.parquet    ← Panel toutes années fusionné
+\end{codebox}
+
+\section{Flux de données}
+
+\begin{tikzpicture}[
+  node distance=1.5cm,
+  box/.style={rectangle, draw=primaryblue, fill=lightblue!30,
+              minimum width=3cm, minimum height=0.8cm,
+              text centered, font=\small\bfseries},
+  arrow/.style={->, thick, color=primaryblue}
+]
+  \node[box] (staging) {STAGING\\(Excel)};
+  \node[box, right=of staging] (bronze) {BRONZE\\(Parquet brut)};
+  \node[box, right=of bronze] (silver) {SILVER\\(Parquet enrichi)};
+  \node[box, right=of silver] (gold) {GOLD\\(Panel + agrégats)};
+  \node[box, below=of gold] (xlsx) {Excel\\Indicateurs};
+
+  \draw[arrow] (staging) -- (bronze) node[midway, above, font=\tiny] {02};
+  \draw[arrow] (bronze)  -- (silver) node[midway, above, font=\tiny] {03};
+  \draw[arrow] (silver)  -- (gold)   node[midway, above, font=\tiny] {05/06};
+  \draw[arrow] (gold)    -- (xlsx)   node[midway, right, font=\tiny] {07/08};
+\end{tikzpicture}
+
+\section{Connexion à MinIO}
+
+Chaque script supporte deux modes de connexion :
+
+\begin{codebox}[Configuration locale vs JupyterHub]
+# Depuis la machine locale
+MINIO\_ENDPOINT   = "http://192.168.1.230:30137"
+MINIO\_ACCESS\_KEY = "datalab-team"
+MINIO\_SECRET\_KEY = "minio-datalabteam123"
+
+# Depuis JupyterHub (décommenter)
+# MINIO\_ENDPOINT = "http://minio.mon-namespace.svc.cluster.local:80"
+\end{codebox}
+
+Les scripts des étapes 03 à 07 utilisent des paramètres de retry renforcés :
+5 tentatives maximum, mode adaptatif, \texttt{connect\_timeout=30s},
+\texttt{read\_timeout=120s}.
+
+% ═════════════════════════════════════════════════════════════
+% CHAPITRE 4 — DESCRIPTION DES SCRIPTS
+% ═════════════════════════════════════════════════════════════
+\chapter{Description des scripts}
+
+% ─────────────────────────────────────────────────────────────
+\section{00\_upload\_staging.py — Dépôt initial des sources}
+% ─────────────────────────────────────────────────────────────
+
+\begin{warningbox}[À exécuter une seule fois]
+  Ce script doit être lancé \textbf{une seule fois} avant toute exécution du
+  pipeline. Il transfère les fichiers sources depuis le poste local vers
+  MinIO staging, et crée les quatre buckets s'ils n'existent pas.
+\end{warningbox}
+
+\subsection{Objectif}
+
+Déposer les fichiers sources sur MinIO afin que toute l'équipe puisse
+travailler depuis staging, sans dépendance aux chemins locaux.
+
+\subsection{Variables configurables}
+
+\begin{tabularx}{\textwidth}{lX}
+  \toprule
+  \textbf{Variable} & \textbf{Description} \\
+  \midrule
+  \texttt{DOSSIER\_EXCEL} &
+    Chemin local vers le dossier contenant les fichiers Excel mensuels
+    (parcours récursif \texttt{**/*.xlsx}).
+    Défaut : \texttt{consolidation\_solde\_2015\_2025/01\_data\_sources/fichiers\_solde\_mensuels} \\
+  \texttt{FICHIER\_ANSTAT} &
+    Chemin local vers le fichier ANSTAT\_CODE.
+    Défaut : \texttt{.../FICHIER\_ANSTAT\_CODE\_2025.xlsx} \\
+  \texttt{FICHIER\_CORRESPONDANCE} &
+    \textbf{(Nouveau)} Chemin local vers la table de correspondance
+    emploi $\rightarrow$ barème.
+    Défaut : \texttt{.../CORRESPONDANCE\_GRILLE\_EMPLOI.xlsx} \\
+  \texttt{MINIO\_ENDPOINT} & URL du serveur MinIO \\
+  \texttt{MINIO\_ACCESS\_KEY} & Clé d'accès MinIO \\
+  \texttt{MINIO\_SECRET\_KEY} & Clé secrète MinIO \\
+  \bottomrule
+\end{tabularx}
+
+\subsection{Comportement détaillé}
+
+\textbf{Création automatique des buckets.} Le script vérifie l'existence des
+quatre buckets (\texttt{staging}, \texttt{bronze}, \texttt{silver},
+\texttt{gold}) via \texttt{head\_bucket} et les crée si nécessaire.
+
+\textbf{Upload des fichiers mensuels.} Tous les fichiers \texttt{.xlsx}
+trouvés récursivement dans \texttt{DOSSIER\_EXCEL} sont uploadés vers
+\bucket{staging/panel\_admin/fichiers\_mensuels/\{nom\_fichier\}}.
+Un compteur OK/erreurs est affiché à la fin.
+
+\textbf{Upload du fichier ANSTAT.} Le fichier \texttt{FICHIER\_ANSTAT} est
+uploadé vers \bucket{staging/panel\_admin/references/\{nom\}}.
+
+\textbf{Upload de la table de correspondance.} \textbf{(Nouveau)}
+\texttt{CORRESPONDANCE\_GRILLE\_EMPLOI.xlsx} est uploadé vers
+\bucket{staging/panel\_admin/references/CORRESPONDANCE\_GRILLE\_EMPLOI.xlsx}.
+Si le fichier est absent localement, un message indique le chemin attendu
+sans arrêter le script.
+
+\subsection{Dépendances Python}
+
+\begin{codebox}[]
+pip install boto3 python-dotenv
+\end{codebox}
+
+\textit{Note : Polars n'est pas requis pour cette étape.}
+
+\subsection{Fichiers produits}
+
+\begin{itemize}[nosep]
+  \item \bucket{staging/panel\_admin/fichiers\_mensuels/*.xlsx}
+  \item \bucket{staging/panel\_admin/references/FICHIER\_ANSTAT\_CODE.xlsx}
+  \item \bucket{staging/panel\_admin/references/CORRESPONDANCE\_GRILLE\_EMPLOI.xlsx}
+\end{itemize}
+
+% ─────────────────────────────────────────────────────────────
+\section{01\_pre\_analyse.py — Pré-analyse des colonnes}
+% ─────────────────────────────────────────────────────────────
+
+\subsection{Objectif}
+
+Analyse la structure des fichiers Excel en staging et produit des rapports
+CSV sur les variations de colonnes d'une période à l'autre. Étape exploratoire,
+sans modification des données.
+
+\subsection{Variables configurables}
+
+\begin{tabularx}{\textwidth}{lX}
+  \toprule
+  \textbf{Variable} & \textbf{Description} \\
+  \midrule
+  \texttt{BUCKET} & Bucket source. Défaut : \texttt{staging} \\
+  \texttt{PREFIX\_MENSUELS} & Préfixe des fichiers mensuels.
+    Défaut : \texttt{panel\_admin/fichiers\_mensuels} \\
+  \texttt{PREFIX\_SORTIE} & Préfixe de sortie des rapports.
+    Défaut : \texttt{panel\_admin/pre\_analyse} \\
+  \bottomrule
+\end{tabularx}
+
+\subsection{Logique technique}
+
+\textbf{Listage et tri.} Les fichiers \texttt{.xlsx} sont listés via
+paginateur S3 et triés par nom (ordre alphabétique = ordre chronologique,
+car les noms sont au format \texttt{MMYYYY}).
+
+\textbf{Lecture des en-têtes.} Chaque fichier est téléchargé dans un fichier
+temporaire (\texttt{download\_file} puis \texttt{NamedTemporaryFile}), puis lu
+avec :
+
+\begin{codebox}[]
+f1 = pl.read\_excel(tmp\_path, sheet\_id=1, read\_options={"n\_rows": 0})
+f2 = pl.read\_excel(tmp\_path, sheet\_id=2, read\_options={"n\_rows": 0})
+\end{codebox}
+
+Le paramètre \texttt{read\_options=\{"n\_rows": 0\}} (et non
+\texttt{engine\_options}) charge uniquement les en-têtes sans les données,
+pour des raisons de performance.
+
+\textbf{Extraction des codes numériques F2.} Les colonnes dont le nom est
+purement numérique sont identifiées par :
+
+\begin{codebox}[]
+codes\_num\_f2 = [c for c in f2.columns if str(c).strip().isdigit()]
+\end{codebox}
+
+\textbf{Gestion des erreurs.} Un fichier en erreur est ajouté à la liste
+\texttt{erreurs} et n'arrête pas l'analyse des fichiers suivants.
+
+\subsection{Analyses réalisées}
+
+\begin{itemize}
+  \item Colonnes apparues / disparues entre deux périodes consécutives
+        (Feuille 1)
+  \item Codes numériques apparus / disparus entre deux périodes
+        consécutives (Feuille 2)
+  \item Statistiques globales (min/max/moyenne du nombre de colonnes par
+        fichier, codes F2 min/max)
+\end{itemize}
+
+\subsection{Fichiers produits}
+
+\begin{tabularx}{\textwidth}{lX}
+  \toprule
+  \textbf{Fichier} & \textbf{Contenu} \\
+  \midrule
+  \texttt{colonnes\_f1\_uniques.csv} & Liste de toutes les colonnes F1
+    distinctes sur l'ensemble des périodes \\
+  \texttt{codes\_f2\_uniques.csv} & Liste de tous les codes numériques F2
+    distincts \\
+  \texttt{stats\_par\_periode.csv} & Nombre de colonnes F1/F2/codes par
+    période \\
+  \texttt{changements\_f1.csv} & Colonnes apparues / disparues F1
+    (si changements détectés) \\
+  \texttt{changements\_codes\_f2.csv} & Codes numériques apparus / disparus F2
+    (si changements détectés) \\
+  \bottomrule
+\end{tabularx}
+
+Tous ces fichiers sont déposés dans
+\bucket{staging/panel\_admin/pre\_analyse/}.
+
+% ─────────────────────────────────────────────────────────────
+\section{02\_staging\_to\_bronze.py — Staging vers Bronze}
+% ─────────────────────────────────────────────────────────────
+
+\subsection{Objectif}
+
+Convertit chaque fichier Excel mensuel en un fichier Parquet Bronze. Bronze =
+données brutes, tout en \texttt{String} (\texttt{Utf8}), sans transformation
+métier. Un fichier Parquet par période est produit.
+
+\subsection{Variables configurables}
+
+\begin{tabularx}{\textwidth}{lX}
+  \toprule
+  \textbf{Variable} & \textbf{Description} \\
+  \midrule
+  \texttt{BUCKET\_STAGING} & Bucket source. Défaut : \texttt{staging} \\
+  \texttt{BUCKET\_BRONZE} & Bucket cible. Défaut : \texttt{bronze} \\
+  \texttt{PREFIX\_MENSUELS} &
+    Défaut : \texttt{panel\_admin/fichiers\_mensuels} \\
+  \texttt{PREFIX\_BRONZE} & Défaut : \texttt{panel\_admin} \\
+  \bottomrule
+\end{tabularx}
+
+\subsection{Fonctions utilitaires}
+
+\subsubsection{normaliser\_nom\_colonne(nom)}
+
+Normalise un nom de colonne brut en identifiant standardisé :
+\begin{enumerate}[nosep]
+  \item Supprime les préfixes du type \texttt{SHEET1.} via regex
+        \texttt{\^{}[A-Z\_]+[0-9]+\textbackslash.}
+  \item Passe en majuscules
+  \item Remplace les caractères \texttt{-}, \texttt{/}, \texttt{\_},
+        espace par \texttt{\_}
+  \item Remplace les points par \texttt{\_}
+  \item Normalisation Unicode NFKD + suppression des combinants
+        (suppression des accents)
+  \item Supprime tous les caractères non alphanumériques sauf \texttt{\_}
+  \item Déduplique les \texttt{\_} consécutifs
+  \item Supprime les \texttt{\_} en début/fin
+\end{enumerate}
+
+\subsubsection{deduplication\_noms(noms)}
+
+Rend une liste de noms de colonnes unique en suffixant les doublons avec
+\texttt{\_2}, \texttt{\_3}, etc. Exemple :
+\texttt{[NOM, NOM, NOM]} $\rightarrow$ \texttt{[NOM, NOM\_2, NOM\_3]}.
+
+\subsubsection{detecter\_entete(fichier, sheet\_id)}
+
+Détecte automatiquement la ligne d'en-tête contenant ``matricule'' :
+\begin{enumerate}[nosep]
+  \item Lit les 20 premières lignes sans en-tête
+        (\texttt{header\_row=None, n\_rows=20})
+  \item Parcourt chaque ligne à la recherche du mot ``matricule''
+        (insensible à la casse)
+  \item Renvoie le numéro de ligne (0-indexé) si trouvé
+  \item Défaut : ligne 1 pour Feuille 1, ligne 0 pour Feuille 2
+\end{enumerate}
+
+\subsection{Logique de traitement}
+
+Pour chaque fichier Excel mensuel :
+
+\begin{enumerate}
+  \item Téléchargement dans un fichier temporaire (\texttt{download\_file})
+  \item Détection de la ligne d'en-tête F1 et F2 via
+        \texttt{detecter\_entete()}
+  \item Lecture Feuille 1 avec \texttt{header\_row=skip\_f1}
+  \item Normalisation et déduplication des noms de colonnes F1
+  \item Lecture Feuille 2 avec \texttt{header\_row=skip\_f2}
+  \item Jointure F2 sur la clé \textbf{matricule\textbar\textbar{}code\_organisme} :
+    \begin{itemize}[nosep]
+      \item La colonne clé F2 est détectée par regex
+            \texttt{MATRICULE.*\textbackslash|\textbackslash|}
+      \item Renommée en \texttt{CLE\_UNIQUE\_F2}
+      \item Toutes les autres colonnes F2 reçoivent le suffixe
+            \texttt{\_F2} (ex: \texttt{124\_F2}, \texttt{228\_F2})
+      \item Jointure \texttt{left} sur \texttt{CLE\_UNIQUE} ou
+            \texttt{MATRICULE} selon disponibilité
+    \end{itemize}
+  \item Ajout de deux colonnes de métadonnées :
+    \begin{itemize}[nosep]
+      \item \colname{PERIODE} : nom du fichier sans extension
+            (format \texttt{MMYYYY})
+      \item \colname{FICHIER\_SOURCE} : nom du fichier avec extension
+    \end{itemize}
+  \item Cast de toutes les colonnes en \texttt{Utf8} (String)
+  \item Écriture Parquet avec compression Snappy :
+        \bucket{bronze/panel\_admin/\{periode\}.parquet}
+  \item Suppression du fichier temporaire
+\end{enumerate}
+
+\subsection{Nommage du fichier Parquet}
+
+Le nom du fichier Parquet Bronze est le nom du fichier Excel source sans
+l'extension, soit le format \texttt{MMYYYY} (ex: \texttt{012015.parquet}).
+
+\subsection{Comportement en cas d'erreur}
+
+Un fichier en erreur incrémente le compteur \texttt{nb\_err} et n'arrête
+pas le traitement des autres fichiers. Le fichier temporaire est supprimé
+même en cas d'erreur (bloc \texttt{finally}).
+
+\subsection{Fichiers produits}
+
+\bucket{bronze/panel\_admin/MMYYYY.parquet} — un fichier par mois.
+
+% ─────────────────────────────────────────────────────────────
+\section{03\_bronze\_to\_silver.py — Bronze vers Silver}
+% ─────────────────────────────────────────────────────────────
+
+\subsection{Objectif}
+
+Applique la logique métier sur les données brutes Bronze : mapping des
+colonnes vers des noms standardisés, normalisation des situations
+administratives, enrichissement avec les codes ANSTAT, cast en types
+numériques, suivi du taux de matching par période.
+
+\subsection{Variables configurables}
+
+\begin{tabularx}{\textwidth}{lX}
+  \toprule
+  \textbf{Variable} & \textbf{Description} \\
+  \midrule
+  \texttt{BUCKET\_STAGING} & \texttt{staging} \\
+  \texttt{BUCKET\_BRONZE} & \texttt{bronze} \\
+  \texttt{BUCKET\_SILVER} & \texttt{silver} \\
+  \texttt{PREFIX\_BRONZE} & \texttt{panel\_admin} \\
+  \texttt{PREFIX\_SILVER} & \texttt{panel\_admin} \\
+  \texttt{PREFIX\_REFS} & \texttt{panel\_admin/references} \\
+  \texttt{PREFIX\_VALID} & \texttt{panel\_admin/validation} \\
+  \texttt{CODES\_A\_SURVEILLER} &
+    \texttt{["CODE\_ORGANISME", "CODE\_GRADE", "CODE\_EMPLOI"]} ---
+    codes dont le taux de matching est loggué en temps réel \\
+  \bottomrule
+\end{tabularx}
+
+\subsection{Fonctions utilitaires}
+
+\subsubsection{normaliser\_pour\_matching(texte)}
+
+Normalisation textuelle utilisée pour le fuzzy join sur les libellés ANSTAT :
+\begin{enumerate}[nosep]
+  \item Remplace les tirets par des espaces
+  \item Remplace les caractères \texttt{.,;:()\textbackslash[]/ } par des
+        espaces
+  \item Remplace les apostrophes (droite, courbe, unicode U+2019) par des
+        espaces
+  \item Passage en majuscules
+  \item Normalisation Unicode NFKD + suppression des combinants
+  \item Normalisation des espaces multiples
+\end{enumerate}
+
+\subsubsection{mapper\_colonnes(noms\_colonnes)}
+
+Mappe chaque colonne brute vers un nom standardisé via 26 patrons regex.
+Le tableau suivant liste le mapping complet :
+
+\begin{longtable}{lp{7.5cm}}
+  \toprule
+  \textbf{Nom standardisé} & \textbf{Patterns regex} \\
+  \midrule
+  \endhead
+  \texttt{cle\_unique} &
+    \texttt{MATRICULE.*CODE.*ORGANISME}, \texttt{MATRICULE.*\textbar\textbar.*CODE} \\
+  \texttt{matricule} & \texttt{\^{}MATRICULE\$}, \texttt{\^{}MATRIC\$} \\
+  \texttt{nom} & \texttt{\^{}NOM\$}, \texttt{\^{}NOM\_PRENOM\$},
+    \texttt{\^{}NOM\_ET\_PRENOM\$} \\
+  \texttt{date\_naissance} & \texttt{DATE.*NAISSANCE}, \texttt{DATE\_NAISS},
+    \texttt{NAISSANCE} \\
+  \texttt{sexe} & \texttt{\^{}SEXE\$} \\
+  \texttt{situation\_matrimoniale} & \texttt{SITUATION.*MATRIMONIALE},
+    \texttt{STATUT.*MATRIMONIAL} \\
+  \texttt{nombre\_enfant} & \texttt{NOMBRE.*ENFANT}, \texttt{NBR.*ENFANT} \\
+  \texttt{situation} & \texttt{\^{}SITUATION\$},
+    \texttt{SITUATION\_ADMINISTRATIVE} \\
+  \texttt{date\_debut\_situation} & \texttt{DATE.*DEBUT.*SITUATION},
+    \texttt{DATE\_SITUATION} \\
+  \texttt{montant\_brut} & \texttt{MONTANT\_BRUT}, \texttt{SALAIRE\_BRUT},
+    \texttt{REMUNERATION\_BRUTE}, \texttt{\^{}BRUT\$} \\
+  \texttt{montant\_net} & \texttt{MONTANT\_NET}, \texttt{SALAIRE\_NET},
+    \texttt{REMUNERATION\_NETTE}, \texttt{\^{}NET\$} \\
+  \texttt{retenue\_pension} & \texttt{RETENUE.*PENSION}, \texttt{\^{}PENSION\$},
+    \texttt{COTISATION.*PENSION} \\
+  \texttt{impot} & \texttt{\^{}IMPOT\$}, \texttt{\^{}IGR\$},
+    \texttt{IMPOT.*REVENU} \\
+  \texttt{charge\_patronale} & \texttt{CHARGE.*PATRONALE},
+    \texttt{CHARGES.*PATRONALES} \\
+  \texttt{organisme} & \texttt{\^{}ORGANISME\$}, \texttt{MINISTERE},
+    \texttt{DIRECTION} \\
+  \texttt{lieu\_affectation} & \texttt{LIEU.*AFFECTATION},
+    \texttt{\^{}AFFECTATION\$} \\
+  \texttt{service} & \texttt{\^{}SERVICE\$} \\
+  \texttt{emploi} & \texttt{\^{}EMPLOI\$}, \texttt{\^{}CORPS\$},
+    \texttt{CORPS.*EMPLOI} \\
+  \texttt{fonction} & \texttt{\^{}FONCTION\$} \\
+  \texttt{grade} & \texttt{CLASSE.*ECHELON}, \texttt{CLASSE\_ECHELON} \\
+  \texttt{statut\_fonctionnaire} & \texttt{\^{}GRADE\$} \\
+  \texttt{poste} & \texttt{\^{}POSTE\$}, \texttt{LIBELLE.*POSTE} \\
+  \texttt{prise\_service} & \texttt{PRISE.*SERVICE},
+    \texttt{DATE.*PRISE.*SERVICE} \\
+  \texttt{date\_retraite} & \texttt{DATE.*RETRAITE} \\
+  \texttt{age\_retraite} & \texttt{AGE.*RETRAITE} \\
+  \texttt{mois\_annee} & \texttt{MOIS.*ANNEE}, \texttt{\^{}PERIODE\$} \\
+  \bottomrule
+\end{longtable}
+
+Si aucun patron ne correspond, le nom normalisé (minuscules) est conservé.
+
+\subsubsection{normaliser\_situation(situation)}
+
+Mappe la valeur brute de situation vers une catégorie normalisée :
+\begin{itemize}[nosep]
+  \item \texttt{en\_activite} : \texttt{EN ACTIVITE}, \texttt{ACTIVITE}
+  \item \texttt{regul\_indemnites} : \texttt{REGUL. INDEMNITES},
+        \texttt{REGUL INDEMNITES}, \texttt{REGULARISATION INDEMNITES}
+  \item \texttt{demi\_solde} : \texttt{DEMI-SOLDE}, \texttt{DEMI SOLDE},
+        \texttt{DEMISOLDE}, \texttt{1/2 SOLDE}
+  \item \texttt{autre} : toute valeur non reconnue (y compris null, vide)
+\end{itemize}
+
+\subsubsection{charger\_table\_codes(...)}
+
+Charge un onglet du fichier ANSTAT, identifie la colonne libellé par pattern,
+la normalise pour le matching, et renvoie un dictionnaire avec la table,
+le nom de la colonne code, et la colonne de jointure source.
+
+\subsection{Chargement des tables ANSTAT}
+
+Huit tables de référence sont chargées depuis le fichier ANSTAT :
+
+\begin{tabularx}{\textwidth}{llX}
+  \toprule
+  \textbf{Code} & \textbf{Onglet} & \textbf{Colonnes extra} \\
+  \midrule
+  \texttt{CODE\_AFFECTATION} & \textit{lieu affectation} &
+    CODE\_RÉGION, CODE\_SITE, CODE\_DRB, CODE\_DÉPARTEMENT,
+    MONTANT TRANSPORT \\
+  \texttt{CODE\_ORGANISME} & \textit{ORGANISME\_OK} &
+    CODE\_ÉTABLISSEMENT, CODE\_ACCT \\
+  \texttt{CODE\_POSITION\_SOLDE} & \textit{CODE\_SITUATION\_SOLDE} & --- \\
+  \texttt{CODE\_EMPLOI} & \textit{HISTORIQUE\_ECHELLES\_CORPS} &
+    GRADE\_ADMINISTRATIF\_ASSOCIE, Code\_CITP, Metier\_CITP \\
+  \texttt{CODE\_SERVICE} & \textit{SERVICE} & --- \\
+  \texttt{CODE\_FONCTION} & \textit{FONCTION} & --- \\
+  \texttt{CODE\_GRADE} & \textit{GRADE} & --- \\
+  \texttt{CODE\_POSTE} & \textit{LIBELLE POSTE} & --- \\
+  \bottomrule
+\end{tabularx}
+
+\subsection{Logique de traitement par période}
+
+Pour chaque fichier Bronze mensuel :
+
+\begin{enumerate}
+  \item Lecture du Parquet depuis MinIO Bronze
+  \item Mapping des colonnes via \texttt{mapper\_colonnes()},
+        avec déduplication des noms standards si collision
+  \item \textbf{Forçage de mois\_annee} depuis le nom du fichier source
+        (plus fiable que la valeur interne --- certains fichiers Bronze
+        contiennent un \texttt{mois\_annee} erroné car il s'agit de doublons)
+  \item Normalisation des situations et filtrage : les lignes
+        \texttt{autre} sont \textbf{supprimées}
+  \item Enrichissement ANSTAT : pour chaque code, jointure gauche sur
+        libellé normalisé ; calcul du taux de matching
+  \item Cast numérique des montants et des codes numériques (colonnes
+        commençant par un chiffre)
+  \item Accumulation dans \texttt{frames\_par\_annee}
+\end{enumerate}
+
+\subsection{Rapport de matching ANSTAT}
+
+Un rapport \texttt{taux\_matching\_anstat\_par\_periode.csv} est sauvegardé
+dans \bucket{staging/panel\_admin/validation/}. Il contient, pour chaque
+période, le taux de matching (en \%) pour chacun des 8 codes ANSTAT.
+
+Les codes \texttt{CODES\_A\_SURVEILLER} (CODE\_ORGANISME, CODE\_GRADE,
+CODE\_EMPLOI) voient leur taux loggué en temps réel pendant l'exécution.
+
+\subsection{Fichiers produits}
+
+\bucket{silver/panel\_admin/YYYY.parquet} --- un fichier par année.
+
+% ─────────────────────────────────────────────────────────────
+\section{04\_validation\_silver.py — Validation qualité}
+% ─────────────────────────────────────────────────────────────
+
+\subsection{Objectif}
+
+Contrôles qualité sur les tables Silver. Étape \textbf{optionnelle} dans
+l'orchestrateur : un échec n'arrête pas le pipeline.
+
+\subsection{Variables configurables}
+
+\begin{tabularx}{\textwidth}{lX}
+  \toprule
+  \textbf{Variable} & \textbf{Description} \\
+  \midrule
+  \texttt{COLONNES\_CLES} &
+    Colonnes dont la complétude est contrôlée toutes années confondues :
+    \texttt{matricule}, \texttt{nom}, \texttt{montant\_brut},
+    \texttt{montant\_net}, \texttt{CODE\_ORGANISME}, \texttt{CODE\_GRADE},
+    \texttt{CODE\_EMPLOI}, \texttt{situation\_normalisee},
+    \texttt{mois\_annee} \\
+  \texttt{COLONNES\_NA\_SURVEY} &
+    Colonnes dont le taux de NA est suivi par année :
+    \texttt{matricule}, \texttt{nom}, \texttt{montant\_brut},
+    \texttt{montant\_net}, \texttt{organisme}, \texttt{grade},
+    \texttt{emploi}, \texttt{lieu\_affectation}, \texttt{service} \\
+  \bottomrule
+\end{tabularx}
+
+\subsection{Contrôles réalisés}
+
+\begin{enumerate}
+  \item \textbf{Complétude des colonnes clés} (toutes années confondues).
+        Alerte si taux de complétion $<$ 95\%.
+
+  \item \textbf{Colonnes suspectes} (NA variable selon l'année).
+        Seuil : taux NA $>$ 95\% au max ET $<$ 5\% au min (variation $>$ 90
+        points entre années). Si des colonnes suspectes sont détectées,
+        le rapport \texttt{na\_par\_annee\_colonnes\_surveillees.csv} est
+        sauvegardé.
+
+  \item \textbf{Doublons matricule $\times$ mois\_annee}. Le rapport
+        \texttt{doublons\_matricule\_periode.csv} est sauvegardé si des
+        doublons existent.
+
+  \item \textbf{Cohérence des montants} (net $>$ brut) : comptage des lignes
+        incohérentes.
+
+  \item \textbf{Distribution des situations administratives} : répartition
+        \texttt{en\_activite} / \texttt{regul\_indemnites} /
+        \texttt{demi\_solde}.
+\end{enumerate}
+
+\subsection{Résumé final}
+
+À l'issue de la validation, le script affiche le nombre d'agents uniques
+(matricules distincts), la plage temporelle, et le nombre de périodes
+distinctes présentes dans le Silver.
+
+\subsection{Fichiers produits (si anomalies)}
+
+\begin{itemize}[nosep]
+  \item \bucket{staging/panel\_admin/validation/na\_par\_annee\_colonnes\_surveillees.csv}
+  \item \bucket{staging/panel\_admin/validation/doublons\_matricule\_periode.csv}
+\end{itemize}
+
+% ─────────────────────────────────────────────────────────────
+\section{05\_silver\_to\_gold.py — Silver vers Gold}
+% ─────────────────────────────────────────────────────────────
+
+\subsection{Objectif}
+
+Produit deux tables Gold d'agrégats à partir des tables Silver annuelles.
+
+\subsection{Variables configurables}
+
+\begin{tabularx}{\textwidth}{lX}
+  \toprule
+  \textbf{Variable} & \textbf{Description} \\
+  \midrule
+  \texttt{BUCKET\_SILVER} & \texttt{silver} \\
+  \texttt{BUCKET\_GOLD} & \texttt{gold} \\
+  \texttt{BUCKET\_STAGING} & \texttt{staging} \\
+  \texttt{KEY\_GOLD\_MS} &
+    \texttt{panel\_admin/masse\_salariale.parquet} \\
+  \texttt{KEY\_GOLD\_EFF} &
+    \texttt{panel\_admin/effectifs.parquet} \\
+  \texttt{PREFIX\_EXPORTS} &
+    \texttt{panel\_admin/exports\_gold} \\
+  \bottomrule
+\end{tabularx}
+
+\subsection{Table Gold 1 : masse\_salariale.parquet}
+
+Agrégation par \texttt{mois\_annee} $\times$ \texttt{annee} $\times$
+\texttt{mois} $\times$ \texttt{code\_organisme} $\times$
+\texttt{organisme} $\times$ \texttt{situation\_normalisee}.
+
+Colonnes produites :
+
+\begin{tabularx}{\textwidth}{lX}
+  \toprule
+  \textbf{Colonne} & \textbf{Définition} \\
+  \midrule
+  \texttt{nb\_lignes} & Nombre de lignes dans le groupe \\
+  \texttt{nb\_agents\_uniques} & Nombre de matricules distincts \\
+  \texttt{masse\_brute} & Somme des montants bruts \\
+  \texttt{masse\_nette} & Somme des montants nets \\
+  \texttt{salaire\_brut\_moyen} & Moyenne du montant brut \\
+  \texttt{salaire\_net\_moyen} & Moyenne du montant net \\
+  \texttt{salaire\_brut\_mediane} & Médiane du montant brut (P50) \\
+  \texttt{salaire\_net\_mediane} & Médiane du montant net (P50) \\
+  \bottomrule
+\end{tabularx}
+
+\textit{Note :} seules les lignes où \texttt{montant\_brut} ET
+\texttt{montant\_net} sont non nuls participent à cette agrégation.
+\texttt{code\_organisme} vaut \texttt{NON\_CODE} si null, \texttt{organisme}
+vaut \texttt{NON\_IDENTIFIE} si null.
+
+\subsection{Table Gold 2 : effectifs.parquet}
+
+Agrégation par \texttt{mois\_annee} $\times$ \texttt{annee} $\times$
+\texttt{mois} $\times$ \texttt{situation\_normalisee} $\times$
+\texttt{code\_organisme}.
+
+Colonnes produites :
+
+\begin{tabularx}{\textwidth}{lX}
+  \toprule
+  \textbf{Colonne} & \textbf{Définition} \\
+  \midrule
+  \texttt{nb\_lignes} & Nombre de lignes dans le groupe \\
+  \texttt{nb\_agents\_uniques} & Nombre de matricules distincts \\
+  \texttt{nb\_hommes} & Nombre de lignes où \texttt{sexe == "1"} \\
+  \texttt{nb\_femmes} & Nombre de lignes où \texttt{sexe == "2"} \\
+  \bottomrule
+\end{tabularx}
+
+\subsection{Export CSV}
+
+Deux exports CSV sont déposés dans
+\bucket{staging/panel\_admin/exports\_gold/} :
+\begin{itemize}[nosep]
+  \item \texttt{masse\_salariale\_par\_periode\_organisme.csv}
+  \item \texttt{effectifs\_par\_periode.csv}
+\end{itemize}
+
+% ─────────────────────────────────────────────────────────────
+\section{06\_compiler\_panel.py — Compilation du panel}
+% ─────────────────────────────────────────────────────────────
+
+\subsection{Objectif}
+
+Construit le panel individu $\times$ période à partir des tables Silver
+annuelles. Produit des fichiers annuels et un fichier complet en streaming.
+
+\subsection{Colonnes du panel (ordre exact)}
+
+\begin{longtable}{lll}
+  \toprule
+  \textbf{Groupe} & \textbf{Colonne} & \textbf{Type} \\
+  \midrule
+  \endhead
+  Identité & \texttt{matricule} & Utf8 \\
+  & \texttt{nom} & Utf8 \\
+  & \texttt{sexe} & Utf8 \\
+  & \texttt{date\_naissance} & Utf8 \\
+  & \texttt{situation\_matrimoniale} & Utf8 \\
+  & \texttt{nombre\_enfant} & Utf8 \\
+  \midrule
+  Position & \texttt{situation\_normalisee} & Utf8 \\
+  & \texttt{CODE\_ORGANISME} & Utf8 \\
+  & \texttt{organisme} & Utf8 \\
+  & \texttt{CODE\_EMPLOI} & Utf8 \\
+  & \texttt{emploi} & Utf8 \\
+  & \texttt{Code\_CITP} & Utf8 \\
+  & \texttt{Metier\_CITP} & Utf8 \\
+  & \texttt{CODE\_GRADE} & Utf8 \\
+  & \texttt{grade} & Utf8 \\
+  & \texttt{statut\_fonctionnaire} & Utf8 \\
+  & \texttt{CODE\_FONCTION} & Utf8 \\
+  & \texttt{fonction} & Utf8 \\
+  & \texttt{CODE\_SERVICE} & Utf8 \\
+  & \texttt{service} & Utf8 \\
+  & \texttt{CODE\_AFFECTATION} & Utf8 \\
+  & \texttt{lieu\_affectation} & Utf8 \\
+  & \texttt{CODE\_POSTE} & Utf8 \\
+  & \texttt{prise\_service} & Utf8 \\
+  & \texttt{date\_retraite} & Utf8 \\
+  & \texttt{age\_retraite} & Utf8 \\
+  \midrule
+  Temporel & \texttt{mois\_annee} & String (brut Silver) \\
+  & \texttt{annee} & Int32 \\
+  & \texttt{mois} & Int32 \\
+  \midrule
+  Salaires & \texttt{montant\_brut} & Float64 \\
+  & \texttt{montant\_net} & Float64 \\
+  & \texttt{retenue\_pension} & Float64 \\
+  & \texttt{impot} & Float64 \\
+  & \texttt{charge\_patronale} & Float64 \\
+  \midrule
+  Traçabilité & \texttt{fichier\_source} & Utf8 \\
+  \bottomrule
+\end{longtable}
+
+\begin{infobox}[Note sur GRADE et GRADE\_SOURCE]
+  Ces deux colonnes sont ajoutées par l'étape \textbf{06b}
+  (\texttt{06b\_imputer\_grades.py}), pas par 06. Elles sont placées juste
+  après \texttt{statut\_fonctionnaire} dans l'ordre final.
+\end{infobox}
+
+\subsection{Fonction construire\_panel\_annee(df)}
+
+Pour chaque table Silver annuelle :
+
+\begin{enumerate}
+  \item Extraction de \texttt{annee} et \texttt{mois} depuis
+        \texttt{mois\_annee}. Deux formats supportés :
+    \begin{itemize}[nosep]
+      \item Format MMYYYY (6 caractères) : \texttt{annee = slice(2,4)},
+            \texttt{mois = slice(0,2)}
+      \item Format YYYY-MM : \texttt{annee = slice(0,4)},
+            \texttt{mois = slice(5,2)}
+    \end{itemize}
+  \item Sélection des colonnes présentes dans \texttt{COLONNES\_PANEL}
+        (ordre préservé, colonnes absentes ignorées)
+  \item Déduplication sur \texttt{matricule $\times$ mois\_annee}
+        (garde la \textbf{première} occurrence)
+  \item Tri par \texttt{matricule} $\rightarrow$ \texttt{annee}
+        $\rightarrow$ \texttt{mois}
+\end{enumerate}
+
+\subsection{Fusion complète en streaming}
+
+Le fichier \texttt{panel\_complet.parquet} est produit par :
+\begin{enumerate}
+  \item Téléchargement de tous les fichiers \texttt{panel\_YYYY.parquet}
+        dans un répertoire temporaire (\texttt{TemporaryDirectory})
+  \item \texttt{pl.scan\_parquet(chemins\_locaux)} : lecture en mode lazy,
+        sans charger les données en mémoire
+  \item \texttt{.sort([...]).sink\_parquet(chemin, compression="snappy")} :
+        écriture en streaming, jamais tout en RAM
+  \item Upload du fichier local vers MinIO Gold
+\end{enumerate}
+
+Cette approche permet de traiter le panel complet (millions de lignes) sans
+surcharger la mémoire.
+
+\subsection{Statistiques affichées}
+
+Par année : \texttt{nb\_obs}, \texttt{nb\_individus}, \texttt{brut\_moyen},
+\texttt{brut\_mediane}.
+
+\subsection{Fichiers produits}
+
+\begin{itemize}[nosep]
+  \item \bucket{gold/panel\_admin/panel\_YYYY.parquet} (un par année)
+  \item \bucket{gold/panel\_admin/panel\_complet.parquet}
+\end{itemize}
+
+% ─────────────────────────────────────────────────────────────
+\section{06b\_imputer\_grades.py — Imputation des grades}
+% ─────────────────────────────────────────────────────────────
+
+\subsection{Objectif}
+
+Calcule les grades manquants ou invalides par imputation statistique en
+cascade sur la colonne \texttt{emploi}, puis met à jour tous les fichiers
+Gold (panel annuels + panel complet).
+
+\subsection{Pourquoi une étape dédiée ?}
+
+L'imputation de niveau P3 (global, toutes années) est d'autant plus fiable
+qu'elle s'appuie sur l'intégralité de l'historique. Travailler année par
+année donnerait des lookups instables pour les emplois rares.
+
+\subsection{Constantes}
+
+\begin{codebox}[]
+GRADES\_VALIDES = A1..A7, B1..B6, C1..C5, D1..D3  # 21 grades
+GRADES\_INVALIDES = ["B7", "C7", "D7", "A", "B", "C", "D"]
+\end{codebox}
+
+\subsection{Fonction extraire\_grade(statut)}
+
+Extrait le grade depuis \texttt{statut\_fonctionnaire} via l'expression
+régulière \texttt{Cat[eé]gorie\textbackslash{}s+([ABCD][0-9]*)}
+(insensible à la casse). Exemples : ``Catégorie A3'' $\rightarrow$
+\texttt{A3}, ``Catégorie b2'' $\rightarrow$ \texttt{B2}.
+
+Si aucun grade n'est trouvé, retourne \texttt{"NF"}.
+
+\textit{Note :} les grades NF (non-fonctionnaires ou valeur non reconnue)
+restent \texttt{NF} et ne sont pas imputés.
+
+\subsection{Séquence en 6 étapes}
+
+\textbf{Étape 1.} Chargement du \texttt{panel\_complet.parquet}.
+
+\textbf{Étape 2.} Extraction du grade brut via \texttt{extraire\_grade()}.
+Bilan : grades valides / invalides / NF affiché.
+
+\textbf{Étape 3.} Imputation en cascade (si \texttt{n\_invalides > 0}) :
+\begin{itemize}
+  \item Extraction de \texttt{\_ANNEE} (slice 2:4 de mois\_annee) et
+        \texttt{\_MOIS\_NUM} (slice 0:2) pour les lookups
+  \item Construction de la base des grades valides uniquement
+  \item \textbf{Lookup P1} : \texttt{GRADE.mode().first()} groupé par
+        \texttt{emploi $\times$ \_ANNEE $\times$ \_MOIS\_NUM}
+  \item \textbf{Lookup P2} : \texttt{GRADE.mode().first()} groupé par
+        \texttt{emploi $\times$ \_ANNEE}
+  \item \textbf{Lookup P3} : \texttt{GRADE.mode().first()} groupé par
+        \texttt{emploi} (global, toutes années)
+  \item Application de la cascade : si grade invalide, tenter P1 $\rightarrow$
+        P2 $\rightarrow$ P3, conserver l'invalide si aucun lookup n'aboutit
+\end{itemize}
+
+\textbf{Étape 4.} Réordonnancement : \colname{GRADE} et
+\colname{GRADE\_SOURCE} placés juste après \texttt{statut\_fonctionnaire}.
+
+Colonnes temporaires supprimées : \texttt{\_ANNEE}, \texttt{\_MOIS\_NUM},
+\texttt{GRADE\_P1}, \texttt{GRADE\_P2}, \texttt{GRADE\_P3},
+\texttt{GRADE\_SOURCE\_TMP}.
+
+\textbf{Étape 5.} Mise à jour des fichiers Gold annuels : jointure sur
+\texttt{(matricule, mois\_annee)} pour injecter \colname{GRADE} et
+\colname{GRADE\_SOURCE}.
+
+\textbf{Étape 6.} Mise à jour du \texttt{panel\_complet.parquet}.
+
+\subsection{Valeurs de GRADE\_SOURCE}
+
+\begin{tabularx}{\textwidth}{lX}
+  \toprule
+  \textbf{Valeur} & \textbf{Signification} \\
+  \midrule
+  \texttt{OBSERVE} & Grade extrait directement de \texttt{statut\_fonctionnaire},
+    valide \\
+  \texttt{IMPUTE} & Grade remplacé par le mode statistique de l'emploi (P1/P2/P3) \\
+  \texttt{NF\_NON\_IMPUTABLE} & Aucun grade valide trouvé ni imputé
+    (non-fonctionnaire ou emploi sans historique de grade valide) \\
+  \bottomrule
+\end{tabularx}
+
+\subsection{Bilan affiché}
+
+Pourcentage OBSERVE / IMPUTE / NF\_NON\_IMPUTABLE + nombre de grades encore
+invalides après imputation.
+
+% ─────────────────────────────────────────────────────────────
+\section{07\_calcul\_indicateur.py — Calcul des indicateurs}
+% ─────────────────────────────────────────────────────────────
+
+\subsection{Objectif}
+
+Produit les indicateurs statistiques complets sur les rémunérations à partir
+des fichiers Gold panel. Requiert que \texttt{06b\_imputer\_grades.py} ait
+été exécuté au préalable (colonnes GRADE et GRADE\_SOURCE obligatoires).
+
+\subsection{Variables configurables}
+
+\begin{tabularx}{\textwidth}{lX}
+  \toprule
+  \textbf{Variable} & \textbf{Défaut} & \\
+  \midrule
+  \texttt{MODE\_SALAIRE\_BRUT} & \texttt{True} &
+    \texttt{True} = agrégation par \texttt{cle\_unique} (salaire brut) ;
+    \texttt{False} = agrégation par \texttt{matricule} (revenu salarial) \\
+  \texttt{PERIODE\_RECENTE} & \texttt{True} &
+    \texttt{True} = années 2024--2025 ; \texttt{False} = 2015 $\rightarrow$
+    dernière année \\
+  \texttt{INCLURE\_ZEROS} & \texttt{True} &
+    \texttt{True} = inclure salaires = 0 ou NA \\
+  \texttt{SEUIL\_WINS} & \texttt{0.01} &
+    Seuil de winsorisation P1/P99. Mettre \texttt{None} pour désactiver \\
+  \texttt{MIN\_OBS\_WINS} & \texttt{100} &
+    Effectif minimum par cellule mois $\times$ grade $\times$ CITP pour
+    appliquer la winsorisation CITP \\
+  \texttt{KEY\_CORRESPONDANCE} &
+    \texttt{panel\_admin/references/CORRESPONDANCE\_GRILLE\_EMPLOI.xlsx} &
+    Clé S3 de la table barème \\
+  \bottomrule
+\end{tabularx}
+
+\subsection{Composantes du salaire brut}
+
+\begin{codebox}[]
+COMPOSANTES\_SALAIRE = ["124\_f2", "228\_f2", "271\_f2", "421\_f2", "425\_f2"]
+\end{codebox}
+
+Ces colonnes correspondent aux codes de rémunération de la Feuille 2, avec
+le suffixe \texttt{\_f2} ajouté lors de l'étape 02. Si aucune composante
+n'est trouvée dans le Gold, le script utilise \texttt{montant\_brut} comme
+fallback.
+
+\subsection{Nom du fichier de sortie (dynamique)}
+
+\begin{codebox}[]
+indicateurs\_{mode\_label}\_{periode\_label}\_{zeros\_label}.xlsx
+# Exemples :
+indicateurs\_salaire\_brut\_2024\_2025\_avec\_zeros.xlsx
+indicateurs\_revenu\_salarial\_2015\_recent\_sans\_zeros.xlsx
+\end{codebox}
+
+\subsection{Constantes barème}
+
+\begin{codebox}[]
+GRADES\_PRIMAIRE = \{"B3", "C3", "D1", "D2"\}
+
+ORDRE\_MODELE\_ANSTAT = [
+    ("TOUS SECTEURS CONFONDUS",                       "\_GLOBAL\_"),
+    ("SECTEUR EDUCATION",                             None),
+    ("Primaire",                                      "ENS SEC \& PRIM\_PRIM"),
+    ("Secondaire",                                    "ENS SEC \& PRIM\_SEC"),
+    ("Supérieur",                                     "ENS SUP"),
+    ("SECTEUR SANTE",                                 None),
+    ("Cadres supérieurs",  "Cadre-Sup-Santé Generaliste \& Specialiste"),
+    ("Personnels Techniques",                         "Tech-Santé"),
+    ("AUTRES SECTEURS",                               None),
+    ("Para-militaire / Douanes / Eaux \& Forêts",     "police"),
+    ("Barème Général",                                "Barême Général"),
+    ("PERSONNELS SOUS STATUT PARTICULIER",            None),
+    ("Magistrat",                                     "MAGISTRAT "),
+    ("Corps préfectoral",                             "CORPS PREF"),
+    ("Corps diplomatique",                            "CORPS DIPL"),
+    ("Greffier",                                      "GREFFE"),
+]
+\end{codebox}
+
+\subsection{Séquence complète en 12 étapes}
+
+\subsubsection{Étape 1 — Chargement}
+
+Chargement des fichiers \texttt{panel\_YYYY.parquet} (pas le
+\texttt{panel\_complet}, pour éviter de le charger deux fois). Concaténation
+diagonale en mémoire.
+
+\subsubsection{Étape 2 — Vérification GRADE / GRADE\_SOURCE}
+
+Si l'une des deux colonnes est absente, le script lève une
+\texttt{RuntimeError} et demande d'exécuter \texttt{06b} d'abord.
+
+\subsubsection{Étape 3 — Extraction ANNEE / MOIS}
+
+Depuis \texttt{mois\_annee} en format MMYYYY :
+\texttt{ANNEE = slice(2,4)}, \texttt{MOIS\_NUM = slice(0,2)}.
+Filtre sur \texttt{ANNEES\_ANALYSE}.
+
+\subsubsection{Étape 4 — Calcul SALAIRE\_BRUT}
+
+Somme horizontale des composantes présentes. Fallback :
+\texttt{montant\_brut}. Fallback ultime : 0.
+
+\subsubsection{Étape 5 — Standardisation SEXE\_STD}
+
+\begin{tabularx}{\textwidth}{lX}
+  \toprule
+  \textbf{SEXE\_STD} & \textbf{Valeurs reconnues} \\
+  \midrule
+  \texttt{Homme} & MASCULIN, M, H, HOMME, MALE, 1 \\
+  \texttt{Femme} & FEMININ, F, FEMME, FEMALE, 2, FÉMININ, FEMININE \\
+  \texttt{Inconnu} & Tout autre $\rightarrow$ \textbf{exclu des calculs} \\
+  \bottomrule
+\end{tabularx}
+
+\subsubsection{Étape 6 — Détection multi-postes}
+
+Comptage du nombre de lignes par \texttt{matricule $\times$ mois\_annee}
+$\rightarrow$ colonne \texttt{NB\_POSTES}.
+
+\subsubsection{Étape 7 — Filtrage grades valides}
+
+Filtre sur \texttt{GRADE.is\_in(GRADES\_VALIDES)}.
+Si \texttt{INCLURE\_ZEROS=False}, filtre additionnel \texttt{SALAIRE\_BRUT > 0}.
+Les \texttt{NF\_NON\_IMPUTABLE} sont exclus.
+
+\subsubsection{Étape 7b — Fuzzy join emploi $\rightarrow$ barème}
+
+\textbf{(Nouveau)} Trois fonctions :
+\begin{itemize}
+  \item \texttt{charger\_table\_bareme()} : télécharge
+        \texttt{CORRESPONDANCE\_GRILLE\_EMPLOI.xlsx} depuis staging, normalise
+        \texttt{emploi\_ref} pour le matching, retourne une table
+        \texttt{(emploi\_ref\_norm, bareme, grade\_ref)}. Si le fichier est
+        absent : retourne \texttt{None}, \texttt{BAREME\_DISPONIBLE=False},
+        feuilles barème ignorées.
+  \item \texttt{fuzzy\_join\_bareme(df, table\_join, col\_emploi)} : ajoute les
+        colonnes \texttt{bareme} et \texttt{grade\_ref} via jointure gauche sur
+        libellé normalisé. Avertissement si taux $<$ 20\%.
+  \item \texttt{ajouter\_bareme\_detail(df, col\_grade)} : scinde
+        \texttt{ENS SEC \& PRIM} en \texttt{ENS SEC \& PRIM\_PRIM} (grades B/C/D
+        dans \texttt{GRADES\_PRIMAIRE}) et \texttt{ENS SEC \& PRIM\_SEC} (grades A).
+\end{itemize}
+
+\subsubsection{Étape 8 — Agrégation REVENU\_TOTAL}
+
+Agrégation par \texttt{(ANNEE, MOIS\_NUM, MOIS, cle\_unique|matricule)} :
+\begin{itemize}[nosep]
+  \item \texttt{REVENU\_TOTAL} = somme de \texttt{SALAIRE\_BRUT}
+  \item \texttt{GRADE\_PRINCIPAL} : grade du poste le plus élevé (valeur
+        ordinale : A=80+n, B=70+n, C=60+n, D=50+n)
+  \item \texttt{GRADE\_SOURCE\_PRINCIPAL} : source du grade principal
+  \item \texttt{SEXE\_STD}, \texttt{Code\_CITP}, \texttt{Metier\_CITP},
+        \texttt{bareme}, \texttt{bareme\_detail}
+\end{itemize}
+
+\subsubsection{Étape 8b — Winsorisation REVENU\_TOTAL}
+
+\textbf{(Nouveau)} Appliquée en mémoire uniquement (le Gold n'est pas modifié) :
+\begin{itemize}
+  \item Si n\_obs dans le groupe \texttt{mois $\times$ grade $\times$ CITP}
+        $\geq$ \texttt{MIN\_OBS\_WINS} : clip à P1/P99 du groupe CITP
+  \item Sinon : clip à P1/P99 du groupe \texttt{mois $\times$ grade} (repli)
+  \item Crée la colonne \texttt{REVENU\_TOTAL\_W} utilisée pour les indicateurs
+\end{itemize}
+
+\subsubsection{Étape 9 — Indicateurs REVENU TOTAL}
+
+Fonction \texttt{compute\_indicators()} : effectif, moyenne, médiane, min,
+max, P25, P75 par groupe. Groupements produits :
+\begin{itemize}[nosep]
+  \item Par grade
+  \item Par grade $\times$ sexe
+  \item Par CITP $\times$ métier
+  \item Par barème (si \texttt{BAREME\_DISPONIBLE})
+  \item Par barème $\times$ grade (si \texttt{BAREME\_DISPONIBLE})
+  \item Par barème $\times$ sexe (si \texttt{BAREME\_DISPONIBLE})
+\end{itemize}
+
+\subsubsection{Étape 10 — Indicateurs SALAIRE BRUT (pivot grade)}
+
+\textbf{(Nouveau)} Calcul sur les lignes individuelles (non agrégées par agent) :
+\begin{itemize}[nosep]
+  \item Winsorisation identique à 8b mais sur \texttt{SALAIRE\_BRUT}
+  \item Moyenne par \texttt{(ANNEE, MOIS\_NUM, MOIS, GRADE)} $\rightarrow$
+        pivot grade $\rightarrow$ \texttt{brut\_moyen\_wide}
+  \item Médiane par \texttt{(ANNEE, MOIS\_NUM, MOIS, GRADE)} $\rightarrow$
+        pivot grade $\rightarrow$ \texttt{brut\_median\_wide}
+\end{itemize}
+
+\subsubsection{Étape 11 — Multi-postes}
+
+Effectifs par \texttt{GRADE\_PRINCIPAL $\times$ NB\_POSTES} (pivot sur
+\texttt{1/2/3/4/5+}). Distribution globale mono/multi-postes avec revenu moyen.
+
+\subsubsection{Étape 12 — Export Excel}
+
+Toutes les tables sont écrites dans un fichier Excel multi-feuilles avec
+style d'en-tête bleu et gel de la première ligne.
+
+\subsection{Feuilles produites}
+
+\begin{longtable}{lX}
+  \toprule
+  \textbf{Feuille} & \textbf{Contenu} \\
+  \midrule
+  \endhead
+  \texttt{REVENU\_Grade\_Detail} &
+    Effectif, moy, méd, min, max, P25, P75 par
+    \texttt{ANNEE $\times$ MOIS $\times$ GRADE\_PRINCIPAL} \\
+  \texttt{REVENU\_Grade\_Sexe} &
+    Idem par \texttt{GRADE $\times$ SEXE\_STD} \\
+  \texttt{REVENU\_CITP\_Detail} &
+    Idem par \texttt{Code\_CITP $\times$ Metier\_CITP}
+    (si CITP disponible) \\
+  \texttt{SALAIRE\_BRUT\_Moyen} &
+    Salaire brut moyen par \texttt{ANNEE $\times$ MOIS} (pivot grade) \\
+  \texttt{SALAIRE\_BRUT\_Median} &
+    Salaire brut médian par \texttt{ANNEE $\times$ MOIS} (pivot grade) \\
+  \texttt{MULTI\_Par\_Grade\_NbPostes} &
+    Effectifs par \texttt{GRADE $\times$ NB\_POSTES}
+    (pivot 1/2/3/4/5+) \\
+  \texttt{MULTI\_Distribution} &
+    Distribution globale mono/multi-postes avec revenu moyen \\
+  \texttt{REVENU\_Bareme\_Detail} &
+    Indicateurs par barème / grille salariale
+    (si \texttt{BAREME\_DISPONIBLE}) \\
+  \texttt{REVENU\_Bareme\_Grade} &
+    Indicateurs par barème $\times$ grade
+    (si \texttt{BAREME\_DISPONIBLE}) \\
+  \texttt{REVENU\_Bareme\_Sexe} &
+    Indicateurs par barème $\times$ sexe
+    (si \texttt{BAREME\_DISPONIBLE}) \\
+  \texttt{MODELE\_ANSTAT} &
+    Format hiérarchique min/moyen/max par secteur (si barème disponible) \\
+  \bottomrule
+\end{longtable}
+
+\subsection{Feuille MODELE\_ANSTAT}
+
+Format calqué sur le modèle statistique de l'ANSTAT :
+\begin{itemize}
+  \item \textbf{Ligne 1} : titre fusionné A1:D1, fond bleu foncé
+        (\texttt{1F4E79}), ``MODÈLE DE DONNÉES DE SALAIRE DES
+        FONCTIONNAIRES POUR \{annee\}''
+  \item \textbf{Ligne 2} : en-têtes (fond bleu \texttt{2E75B6}) :
+        salaire brut minimum / moyen / maximum
+  \item \textbf{TOUS SECTEURS CONFONDUS} : fond jaune \texttt{FFF2CC},
+        valeurs globales
+  \item \textbf{Titres secteur} (SECTEUR EDUCATION, SECTEUR SANTE, etc.) :
+        fond bleu clair \texttt{D6E4F0}, cellule fusionnée A:D
+  \item \textbf{Sous-groupes} : alternance blanc/bleu très clair
+        \texttt{FFFFFF}/\texttt{EBF3FB}, indentation, format \texttt{\#,\#\#0}
+  \item Largeurs : colonne A = 55, colonnes B-D = 22
+\end{itemize}
+
+Basé sur \texttt{SALAIRE\_BRUT} ligne par ligne (pas sur le
+\texttt{REVENU\_TOTAL} agrégé par agent).
+
+% ─────────────────────────────────────────────────────────────
+\section{08\_creation\_fichier\_excel\_avec\_sommaire.py}
+% ─────────────────────────────────────────────────────────────
+
+\subsection{Objectif}
+
+Lit le fichier d'indicateurs produit par 07 et génère un fichier Excel
+navigable avec un sommaire à 5 sections et des feuilles de détail.
+
+\begin{warningbox}[Synchronisation des paramètres]
+  Les trois paramètres \texttt{MODE\_SALAIRE\_BRUT}, \texttt{PERIODE\_RECENTE}
+  et \texttt{INCLURE\_ZEROS} doivent être \textbf{identiques} à ceux utilisés
+  lors de l'exécution de \texttt{07\_calcul\_indicateur.py}, afin que le script
+  retrouve le bon fichier source.
+\end{warningbox}
+
+\subsection{Fichiers source et sortie}
+
+\begin{itemize}[nosep]
+  \item \textbf{Source} :
+        \bucket{staging/panel\_admin/exports\_gold/indicateurs\_\{mode\}\_\{periode\}\_\{zeros\}.xlsx}
+  \item \textbf{Sortie} :
+        \bucket{staging/panel\_admin/exports\_gold/indicateurs\_\{mode\}\_\{periode\}\_\{zeros\}\_SOMMAIRE.xlsx}
+\end{itemize}
+
+\subsection{Fonctions utilitaires Excel}
+
+\begin{tabularx}{\textwidth}{lX}
+  \toprule
+  \textbf{Fonction} & \textbf{Rôle} \\
+  \midrule
+  \texttt{style\_cell(cell, fill, font, align)} &
+    Applique fill, font et alignment en une seule ligne \\
+  \texttt{merge\_titre(ws, texte, row, n\_cols, fill, font)} &
+    Crée un titre fusionné stylisé sur \texttt{n\_cols} colonnes \\
+  \texttt{lien\_interne(ws, row, col, texte, feuille\_cible)} &
+    Crée un hyperlien Excel interne :
+    \texttt{=HYPERLINK("\#FEUILLE!A1","texte")} \\
+  \texttt{ecrire\_entetes(ws, entetes, row)} &
+    Ligne d'en-tête stylisée (fond bleu, police blanche) \\
+  \texttt{ecrire\_df\_dans\_feuille(ws, df, start\_row=4)} &
+    Écrit un DataFrame à partir de la ligne 4 (lignes 1-3 réservées :
+    titre, lien retour, vide) \\
+  \texttt{ajouter\_lien\_retour(ws, row=2)} &
+    Lien \texttt{<- Retour au sommaire} en ligne 2 \\
+  \texttt{ajuster\_largeurs(ws, \{col\_index: width\})} &
+    Définit les largeurs de colonnes par index \\
+  \texttt{extract\_grand\_groupe(code\_citp)} &
+    Extrait le premier chiffre d'un code CITP (grand groupe 1-9) \\
+  \bottomrule
+\end{tabularx}
+
+\subsection{Structure du sommaire (5 sections)}
+
+\textbf{Section 1 — CITP.}
+En-têtes : Code, Grand Groupe CITP, Effectif total, Nb métiers.
+9 grands groupes (1 = Directeurs...9 = Professions élémentaires).
+Lien vers feuille \texttt{CITP\_GG\{n\}}.
+
+\textbf{Section 2 — Grade.}
+En-têtes : Grade, Description (Catégorie A/B/C/D), Effectif total,
+Revenu moyen (pondéré). Lien vers feuille \texttt{GRADE\_\{grade\}}.
+
+\textbf{Section 3 — Sexe.}
+En-têtes : Sexe, Description, Effectif total, Revenu moyen (pondéré).
+Lien vers feuille \texttt{SEXE\_\{Homme|Femme\}}.
+
+\textbf{Section 4 — Multi-postes.}
+En-têtes : Grade, Description, Mono-postes (NB\_POSTES=1),
+Multi-postes (NB\_POSTES$\geq$2). Lien vers feuille
+\texttt{MULTI\_\{grade\}}.
+
+\textbf{Section 5 — Barème (nouveau, si \texttt{BAREME\_DISPONIBLE}).}
+En-têtes : Barème / Grille salariale, Effectif total, Revenu moyen,
+Détail grade (lien), Détail sexe (lien).
+En bas de section : lien vers \texttt{MODELE\_ANSTAT}.
+
+\subsection{Feuilles de détail créées}
+
+\begin{tabularx}{\textwidth}{lX}
+  \toprule
+  \textbf{Feuilles} & \textbf{Contenu} \\
+  \midrule
+  \texttt{CITP\_GG1} \ldots \texttt{CITP\_GG9} &
+    Données CITP filtrées par grand groupe \\
+  \texttt{GRADE\_A1} \ldots \texttt{GRADE\_D3} &
+    Indicateurs filtrés par grade \\
+  \texttt{SEXE\_Homme}, \texttt{SEXE\_Femme} &
+    Indicateurs filtrés par sexe \\
+  \texttt{MULTI\_A1} \ldots \texttt{MULTI\_D3} &
+    Multi-postes filtrés par grade \\
+  \texttt{BAREME\_\{nom\}} &
+    Indicateurs par barème (1 feuille par barème) \\
+  \texttt{BAREME\_G\_\{nom\}} &
+    Indicateurs barème $\times$ grade \\
+  \texttt{BAREME\_S\_\{nom\}} &
+    Indicateurs barème $\times$ sexe \\
+  \texttt{MODELE\_ANSTAT} &
+    Copie directe depuis le fichier 07 \\
+  \bottomrule
+\end{tabularx}
+
+Chaque feuille de détail comporte en ligne 1 un titre fusionné, en ligne 2
+un lien ``$\leftarrow$ Retour au sommaire'', et les données à partir de la
+ligne 4.
+
+% ═════════════════════════════════════════════════════════════
+% CHAPITRE 5 — L'ORCHESTRATEUR
+% ═════════════════════════════════════════════════════════════
+\chapter{L'orchestrateur}
+
+\section{Présentation}
+
+\scriptname{orchestrateur.py} lance l'ensemble du pipeline ou une sélection
+d'étapes. Il gère l'ordre d'exécution, la durée, et l'arrêt en cas d'échec.
+
+\begin{warningbox}[Étape 00 non incluse dans l'orchestrateur]
+  L'étape \texttt{00\_upload\_staging.py} est intentionnellement exclue de
+  l'orchestrateur car elle ne doit être exécutée qu'une seule fois
+  (dépôt initial). Lancez-la manuellement avant d'appeler l'orchestrateur.
+\end{warningbox}
+
+\section{Étapes gérées}
+
+\begin{tabularx}{\textwidth}{llX}
+  \toprule
+  \textbf{ID} & \textbf{Script} & \textbf{Optionnelle ?} \\
+  \midrule
+  01 & \texttt{01\_pre\_analyse.py} & Non \\
+  02 & \texttt{02\_staging\_to\_bronze.py} & Non \\
+  03 & \texttt{03\_bronze\_to\_silver.py} & Non \\
+  04 & \texttt{04\_validation\_silver.py} & \textbf{Oui} \\
+  05 & \texttt{05\_silver\_to\_gold.py} & Non \\
+  06 & \texttt{06\_compiler\_panel.py} & Non \\
+  06b & \texttt{06b\_imputer\_grades.py} & Non \\
+  07 & \texttt{07\_calcul\_indicateur.py} & Non \\
+  08 & \texttt{08\_creation\_fichier\_excel\_avec\_sommaire.py} & Non \\
+  \bottomrule
+\end{tabularx}
+
+\section{Arguments en ligne de commande}
+
+\begin{codebox}[]
+python orchestrateur.py                          # pipeline complet
+python orchestrateur.py --depuis 03             # reprend à partir de 03
+python orchestrateur.py --etapes 06b 07 08      # étapes spécifiques
+python orchestrateur.py --dry-run               # affiche le plan sans exécuter
+python orchestrateur.py --depuis 07 --dry-run   # plan partiel
+python orchestrateur.py --repertoire /mon/chemin # scripts dans un autre dossier
+\end{codebox}
+
+\begin{tabularx}{\textwidth}{lX}
+  \toprule
+  \textbf{Argument} & \textbf{Description} \\
+  \midrule
+  \texttt{--depuis ID} &
+    Reprend à partir de l'étape ID (incluse). IDs valides :
+    01, 02, 03, 04, 05, 06, 06b, 07, 08 \\
+  \texttt{--etapes ID...} &
+    Lance uniquement les étapes listées (ordre du pipeline préservé) \\
+  \texttt{--dry-run} &
+    Affiche le plan d'exécution sans lancer aucun script \\
+  \texttt{--repertoire DIR} &
+    Répertoire contenant les scripts.
+    Défaut : dossier de l'orchestrateur (\texttt{\_\_file\_\_}) \\
+  \bottomrule
+\end{tabularx}
+
+\section{Gestion des échecs}
+
+Pour chaque étape, deux types d'issues distingués :
+
+\begin{itemize}
+  \item \textbf{ÉCHEC} : le script s'est terminé avec un code retour non nul
+        (erreur Python non interceptée, sys.exit(1), etc.)
+  \item \textbf{EXCEPTION} : le sous-processus n'a pas pu être lancé (fichier
+        script introuvable, permission refusée, etc.)
+\end{itemize}
+
+Comportement selon le type d'étape :
+
+\begin{tabularx}{\textwidth}{llX}
+  \toprule
+  \textbf{Type} & \textbf{Issue} & \textbf{Comportement} \\
+  \midrule
+  Obligatoire & ÉCHEC & Arrêt du pipeline \\
+  Obligatoire & EXCEPTION & Arrêt du pipeline \\
+  Optionnelle (04) & ÉCHEC & Pipeline continue \\
+  Optionnelle (04) & EXCEPTION & Pipeline continue \\
+  \bottomrule
+\end{tabularx}
+
+\section{Résumé final}
+
+À la fin de l'exécution, l'orchestrateur affiche :
+\begin{itemize}[nosep]
+  \item Le statut (succès / échec) de chaque étape avec sa durée
+  \item Les étapes non lancées (suite à un arrêt anticipé)
+  \item La durée totale du pipeline
+  \item La commande pour reprendre depuis le premier échec :
+        \texttt{python orchestrateur.py --depuis \{id\_premier\_echec\}}
+\end{itemize}
+
+% ═════════════════════════════════════════════════════════════
+% CHAPITRE 6 — GUIDE DE DÉMARRAGE RAPIDE
+% ═════════════════════════════════════════════════════════════
+\chapter{Guide de démarrage rapide}
+
+\section{Prérequis}
+
+\begin{itemize}
+  \item Python 3.10+ avec les dépendances installées :
+        \texttt{pip install polars fastexcel boto3 python-dotenv openpyxl}
+  \item Serveur MinIO accessible (local ou JupyterHub)
+  \item Fichiers sources disponibles localement :
+    \begin{itemize}[nosep]
+      \item Dossier des fichiers Excel mensuels
+      \item \texttt{FICHIER\_ANSTAT\_CODE.xlsx}
+      \item \texttt{CORRESPONDANCE\_GRILLE\_EMPLOI.xlsx}
+    \end{itemize}
+\end{itemize}
+
+\section{Étapes d'exécution complète}
+
+\textbf{Étape 1 --- Configurer les chemins locaux dans 00.}
+
+Ouvrir \texttt{00\_upload\_staging.py} et modifier les trois variables :
+
+\begin{codebox}[]
+DOSSIER\_EXCEL          = "chemin/vers/fichiers\_excel/"
+FICHIER\_ANSTAT         = "chemin/vers/FICHIER\_ANSTAT\_CODE.xlsx"
+FICHIER\_CORRESPONDANCE = "chemin/vers/CORRESPONDANCE\_GRILLE\_EMPLOI.xlsx"
+\end{codebox}
+
+\textbf{Étape 2 --- Configurer la connexion MinIO.}
+
+Dans chaque script, vérifier les valeurs de \texttt{MINIO\_ENDPOINT},
+\texttt{MINIO\_ACCESS\_KEY}, \texttt{MINIO\_SECRET\_KEY}. Décommenter le
+bloc JupyterHub si nécessaire.
+
+\textbf{Étape 3 --- Déposer les fichiers sources (une seule fois).}
+
+\begin{codebox}[]
+python 00\_upload\_staging.py
+\end{codebox}
+
+Vérifier que les compteurs \texttt{OK / erreurs} sont cohérents.
+
+\textbf{Étape 4 --- (Facultatif) Pré-analyser la structure.}
+
+\begin{codebox}[]
+python 01\_pre\_analyse.py
+\end{codebox}
+
+Consulter les rapports dans \bucket{staging/panel\_admin/pre\_analyse/}
+pour identifier les variations de colonnes entre périodes.
+
+\textbf{Étape 5 --- Lancer le pipeline complet.}
+
+\begin{codebox}[]
+python orchestrateur.py
+\end{codebox}
+
+Ou, si l'étape 01 a déjà été exécutée manuellement :
+
+\begin{codebox}[]
+python orchestrateur.py --depuis 02
+\end{codebox}
+
+\textbf{Étape 6 --- Vérifier la qualité (Silver).}
+
+Consulter le rapport de matching dans
+\bucket{staging/panel\_admin/validation/taux\_matching\_anstat\_par\_periode.csv}.
+Un taux de matching faible sur \texttt{CODE\_ORGANISME} indique des libellés
+non reconnus dans le fichier ANSTAT.
+
+\textbf{Étape 7 --- Vérifier le panel Gold.}
+
+Consulter les fichiers dans \bucket{gold/panel\_admin/} et les statistiques
+affichées par \texttt{06\_compiler\_panel.py}.
+
+\textbf{Étape 8 --- Configurer les paramètres d'indicateurs.}
+
+Ouvrir \texttt{07\_calcul\_indicateur.py} et ajuster :
+\begin{codebox}[]
+MODE\_SALAIRE\_BRUT = True   # ou False pour revenu salarial
+PERIODE\_RECENTE   = True   # ou False pour la série complète
+INCLURE\_ZEROS     = True   # ou False
+SEUIL\_WINS        = 0.01   # ou None pour désactiver
+\end{codebox}
+
+\textbf{Étape 9 --- Relancer les étapes 07 et 08 seulement.}
+
+\begin{codebox}[]
+python orchestrateur.py --etapes 07 08
+\end{codebox}
+
+\textbf{Étape 10 --- Récupérer le fichier Excel final.}
+
+Télécharger depuis
+\bucket{staging/panel\_admin/exports\_gold/indicateurs\_*\_SOMMAIRE.xlsx}.
+
+\section{Erreurs fréquentes}
+
+\begin{tabularx}{\textwidth}{lX}
+  \toprule
+  \textbf{Erreur} & \textbf{Cause et solution} \\
+  \midrule
+  \texttt{Fichier ANSTAT introuvable dans s3://staging/...} &
+    Le fichier ANSTAT n'a pas été uploadé. Vérifier le chemin dans
+    \texttt{FICHIER\_ANSTAT} et relancer \texttt{00\_upload\_staging.py}. \\
+  \texttt{Colonnes GRADE et/ou GRADE\_SOURCE absentes du Gold} &
+    L'étape 06b n'a pas encore été exécutée.
+    Lancer \texttt{python orchestrateur.py --depuis 06b}. \\
+  \texttt{Fichier introuvable : s3://staging/.../indicateurs\_*.xlsx} &
+    Les paramètres \texttt{MODE\_SALAIRE\_BRUT} / \texttt{PERIODE\_RECENTE} /
+    \texttt{INCLURE\_ZEROS} dans 08 diffèrent de ceux utilisés dans 07.
+    Les aligner. \\
+  \texttt{Aucune donnée pour les années [2024, 2025]} &
+    Les données ne couvrent pas les années sélectionnées.
+    Passer \texttt{PERIODE\_RECENTE = False}. \\
+  \texttt{Taux matching barème $<$ 20\%} &
+    Peu d'emplois reconnus dans \texttt{CORRESPONDANCE\_GRILLE\_EMPLOI.xlsx}.
+    Vérifier les libellés d'emploi dans ce fichier. \\
+  \texttt{ConnectionRefusedError / EndpointResolutionError} &
+    MinIO inaccessible. Vérifier \texttt{MINIO\_ENDPOINT} (local vs JupyterHub). \\
+  \texttt{NoSuchBucket} &
+    Buckets non créés. Relancer \texttt{00\_upload\_staging.py} qui les crée
+    automatiquement. \\
+  \bottomrule
+\end{tabularx}
+
+\section{Relancer depuis un point d'échec}
+
+Si l'orchestrateur s'arrête sur l'étape 03 :
+\begin{codebox}[]
+# Corriger le problème, puis :
+python orchestrateur.py --depuis 03
+\end{codebox}
+
+Si seuls les indicateurs doivent être recalculés (paramètres modifiés) :
+\begin{codebox}[]
+python orchestrateur.py --etapes 07 08
+\end{codebox}
+
+% ═════════════════════════════════════════════════════════════
+% CHAPITRE 7 — RÉFÉRENCE RAPIDE
+% ═════════════════════════════════════════════════════════════
+\chapter{Référence rapide}
+
+\section{Séquence complète des scripts}
+
+\begin{tabularx}{\textwidth}{llX}
+  \toprule
+  \textbf{Script} & \textbf{Buckets} & \textbf{Résultat} \\
+  \midrule
+  \texttt{00\_upload\_staging.py} &
+    local $\rightarrow$ staging &
+    Fichiers Excel + référentiels dans staging \\
+  \texttt{01\_pre\_analyse.py} &
+    staging $\rightarrow$ staging &
+    Rapports CSV de structure des colonnes \\
+  \texttt{02\_staging\_to\_bronze.py} &
+    staging $\rightarrow$ bronze &
+    \texttt{MMYYYY.parquet} (tout String) \\
+  \texttt{03\_bronze\_to\_silver.py} &
+    bronze + staging $\rightarrow$ silver &
+    \texttt{YYYY.parquet} (enrichi, typé) \\
+  \texttt{04\_validation\_silver.py} &
+    silver $\rightarrow$ staging &
+    Rapports qualité CSV (optionnel) \\
+  \texttt{05\_silver\_to\_gold.py} &
+    silver $\rightarrow$ gold + staging &
+    \texttt{masse\_salariale.parquet},
+    \texttt{effectifs.parquet}, CSV exports \\
+  \texttt{06\_compiler\_panel.py} &
+    silver $\rightarrow$ gold &
+    \texttt{panel\_YYYY.parquet},
+    \texttt{panel\_complet.parquet} \\
+  \texttt{06b\_imputer\_grades.py} &
+    gold $\rightarrow$ gold &
+    Mise à jour GRADE + GRADE\_SOURCE dans tous les fichiers Gold \\
+  \texttt{07\_calcul\_indicateur.py} &
+    gold + staging $\rightarrow$ staging &
+    \texttt{indicateurs\_*.xlsx} \\
+  \texttt{08\_creation\_fichier\_excel\_avec\_sommaire.py} &
+    staging $\rightarrow$ staging &
+    \texttt{indicateurs\_*\_SOMMAIRE.xlsx} \\
+  \bottomrule
+\end{tabularx}
+
+\section{Colonnes du Gold (panel)}
+
+Le tableau suivant liste toutes les colonnes du panel Gold après exécution
+complète du pipeline (étapes 06 + 06b) :
+
+\begin{longtable}{lll}
+  \toprule
+  \textbf{Colonne} & \textbf{Type} & \textbf{Origine} \\
+  \midrule
+  \endhead
+  \texttt{matricule} & Utf8 & F1 \\
+  \texttt{nom} & Utf8 & F1 \\
+  \texttt{sexe} & Utf8 & F1 \\
+  \texttt{date\_naissance} & Utf8 & F1 \\
+  \texttt{situation\_matrimoniale} & Utf8 & F1 \\
+  \texttt{nombre\_enfant} & Utf8 & F1 \\
+  \texttt{situation\_normalisee} & Utf8 & 03 (calcul) \\
+  \texttt{CODE\_ORGANISME} & Utf8 & ANSTAT (03) \\
+  \texttt{organisme} & Utf8 & F1 \\
+  \texttt{CODE\_EMPLOI} & Utf8 & ANSTAT (03) \\
+  \texttt{emploi} & Utf8 & F1 \\
+  \texttt{Code\_CITP} & Utf8 & ANSTAT (03) \\
+  \texttt{Metier\_CITP} & Utf8 & ANSTAT (03) \\
+  \texttt{CODE\_GRADE} & Utf8 & ANSTAT (03) \\
+  \texttt{grade} & Utf8 & F1 \\
+  \texttt{statut\_fonctionnaire} & Utf8 & F1 \\
+  \texttt{GRADE} & Utf8 & \textbf{06b} (OBSERVE/IMPUTE/NF) \\
+  \texttt{GRADE\_SOURCE} & Utf8 & \textbf{06b} \\
+  \texttt{CODE\_FONCTION} & Utf8 & ANSTAT (03) \\
+  \texttt{fonction} & Utf8 & F1 \\
+  \texttt{CODE\_SERVICE} & Utf8 & ANSTAT (03) \\
+  \texttt{service} & Utf8 & F1 \\
+  \texttt{CODE\_AFFECTATION} & Utf8 & ANSTAT (03) \\
+  \texttt{lieu\_affectation} & Utf8 & F1 \\
+  \texttt{CODE\_POSTE} & Utf8 & ANSTAT (03) \\
+  \texttt{prise\_service} & Utf8 & F1 \\
+  \texttt{date\_retraite} & Utf8 & F1 \\
+  \texttt{age\_retraite} & Utf8 & F1 \\
+  \texttt{mois\_annee} & Utf8 & Nom de fichier (03) \\
+  \texttt{annee} & Int32 & 06 (calcul) \\
+  \texttt{mois} & Int32 & 06 (calcul) \\
+  \texttt{montant\_brut} & Float64 & F1 \\
+  \texttt{montant\_net} & Float64 & F1 \\
+  \texttt{retenue\_pension} & Float64 & F1 \\
+  \texttt{impot} & Float64 & F1 \\
+  \texttt{charge\_patronale} & Float64 & F1 \\
+  \texttt{fichier\_source} & Utf8 & 02 (métadonnée) \\
+  \texttt{124\_F2} \ldots \texttt{N\_F2} & Float64 & F2 (via 02) \\
+  \texttt{CODE\_RÉGION} & Utf8 & ANSTAT (03) \\
+  \texttt{CODE\_SITE} & Utf8 & ANSTAT (03) \\
+  \texttt{CODE\_DRB} & Utf8 & ANSTAT (03) \\
+  \texttt{CODE\_DÉPARTEMENT} & Utf8 & ANSTAT (03) \\
+  \texttt{MONTANT TRANSPORT} & Utf8 & ANSTAT (03) \\
+  \texttt{CODE\_ÉTABLISSEMENT} & Utf8 & ANSTAT (03) \\
+  \texttt{CODE\_ACCT} & Utf8 & ANSTAT (03) \\
+  \texttt{GRADE\_ADMINISTRATIF\_ASSOCIE} & Utf8 & ANSTAT (03) \\
+  \bottomrule
+\end{longtable}
+
+\section{Feuilles Excel produites par 07}
+
+Voir section 4.9 (tableau des feuilles produites).
+
+\section{Exemple de chargement du panel}
+
+\begin{codebox}[Charger le panel en Python]
+import polars as pl, io, boto3
+from botocore.client import Config
+
+s3 = boto3.client("s3", endpoint\_url="http://192.168.1.230:30137",
+                  aws\_access\_key\_id="datalab-team",
+                  aws\_secret\_access\_key="minio-datalabteam123",
+                  config=Config(signature\_version="s3v4"),
+                  region\_name="us-east-1", verify=False)
+
+# Charger une seule année
+buf = io.BytesIO()
+s3.download\_fileobj("gold", "panel\_admin/panel\_2023.parquet", buf)
+buf.seek(0)
+panel = pl.read\_parquet(buf)
+
+# Charger toutes les années
+frames = []
+for annee in range(2015, 2026):
+    buf = io.BytesIO()
+    s3.download\_fileobj("gold", f"panel\_admin/panel\_{annee}.parquet", buf)
+    buf.seek(0)
+    frames.append(pl.read\_parquet(buf))
+panel = pl.concat(frames, how="diagonal")
+
+# Exemple : brut moyen par organisme et mois
+panel.group\_by(["annee", "mois", "CODE\_ORGANISME"]).agg(
+    pl.col("montant\_brut").mean().alias("brut\_moyen"),
+    pl.col("matricule").n\_unique().alias("nb\_agents"),
+).sort(["annee", "mois"])
+\end{codebox}
+
+% ═════════════════════════════════════════════════════════════
+% CHAPITRE 8 — GLOSSAIRE
+% ═════════════════════════════════════════════════════════════
+\chapter{Glossaire}
+
+\begin{description}[leftmargin=3cm, labelwidth=2.8cm, style=nextline]
+
+  \item[ANSTAT] Système national de codification administrative. Le fichier
+  \texttt{FICHIER\_ANSTAT\_CODE.xlsx} contient les dictionnaires de codes pour
+  les organismes, grades, emplois, affectations, services, fonctions et postes.
+
+  \item[Barème salarial] Grille de rémunération associée à un corps d'emploi
+  (ex: Barème Général, ENS SUP, MAGISTRAT). La table
+  \texttt{CORRESPONDANCE\_GRILLE\_EMPLOI.xlsx} fait correspondre chaque libellé
+  d'emploi à son barème.
+
+  \item[Bronze] Couche de données brutes : données issues des fichiers Excel,
+  converties en Parquet sans aucune transformation métier, tout en
+  \texttt{String}. Philosophie : ``Bronze = fidèle à la source''.
+
+  \item[CITP] Classification Internationale Type des Professions.
+  Le code CITP est rattaché via la table ANSTAT (\texttt{CODE\_EMPLOI}).
+  Le premier chiffre identifie le grand groupe (1 = cadres, 2 = professions
+  intellectuelles, etc.).
+
+  \item[CLE\_UNIQUE] Identifiant composite formé par la concaténation du
+  matricule et du code organisme (\texttt{matricule||code\_organisme}).
+  Utilisé pour la jointure entre la Feuille 1 et la Feuille 2 des fichiers
+  Excel.
+
+  \item[CORRESPONDANCE\_GRILLE\_EMPLOI.xlsx] \textbf{(Nouveau)} Référentiel
+  de correspondance entre libellé d'emploi et barème salarial, utilisé pour
+  le fuzzy join dans l'étape 07.
+
+  \item[F1 / F2] Les deux feuilles de chaque fichier Excel mensuel.
+  F1 = données agents (identité, situation, montants).
+  F2 = codes de rémunération élémentaires (composantes du salaire brut,
+  identifiées par codes numériques).
+
+  \item[Fuzzy join] Jointure sur libellé normalisé (après suppression des
+  accents, ponctuation, passage en majuscules). Utilisée pour rattacher les
+  codes ANSTAT et les barèmes malgré les variations orthographiques.
+
+  \item[Gold] Couche de données finales prêtes à l'analyse : agrégats
+  (masse salariale, effectifs) et panel individu$\times$période enrichi.
+
+  \item[GRADE] Colonne ajoutée par l'étape 06b. Contient le grade fonctionnaire
+  extrait ou imputé (ex: A3, B2, C1). Distinct de \texttt{grade} (libellé brut
+  issu de F1).
+
+  \item[GRADE\_SOURCE] Traçabilité du grade : \texttt{OBSERVE} (extrait
+  directement), \texttt{IMPUTE} (inféré statistiquement par cascade emploi),
+  \texttt{NF\_NON\_IMPUTABLE} (non-fonctionnaire ou emploi sans historique).
+
+  \item[Imputation en cascade] Méthode d'imputation du grade en trois niveaux
+  de priorité : P1 = mode du grade pour cet emploi ce mois précis,
+  P2 = mode pour cet emploi cette année, P3 = mode pour cet emploi sur toute
+  la série.
+
+  \item[Medallion Architecture] Architecture en couches Bronze / Silver / Gold
+  inspirée du \textit{Data Lakehouse}. Chaque couche améliore la qualité et la
+  valeur des données.
+
+  \item[MinIO] Serveur de stockage objet compatible S3, auto-hébergé.
+  Accessible via le client boto3 de la même façon qu'AWS S3.
+
+  \item[MMYYYY] Format des noms de fichiers mensuels (ex: \texttt{012015} =
+  janvier 2015). Utilisé comme identifiant de période dans le pipeline.
+
+  \item[MODELE\_ANSTAT] Feuille Excel au format hiérarchique présentant les
+  statistiques de salaire brut (min/moyen/max) par secteur d'activité, dans
+  la structure définie par l'ANSTAT pour la comparaison internationale.
+
+  \item[Panel] Base de données longitudinale où chaque ligne représente un
+  agent à un mois donné (format \textit{individu $\times$ période}).
+
+  \item[Parquet] Format de fichier colonne binaire, compressé (Snappy dans ce
+  pipeline), optimisé pour l'analyse analytique. Lecture rapide par Polars.
+
+  \item[Polars] Bibliothèque Python de manipulation de DataFrames, alternative
+  à pandas, avec API Lazy (scan/sink) permettant le streaming de grands
+  volumes.
+
+  \item[Silver] Couche de données enrichies : types corrects (Float64 pour les
+  montants), situations normalisées, codes ANSTAT rattachés, lignes
+  ``autre'' supprimées.
+
+  \item[Staging] Couche d'atterrissage des fichiers sources. Zone de dépôt
+  initiale et stockage des référentiels et rapports intermédiaires.
+
+  \item[statut\_fonctionnaire] Colonne brute F1 contenant la description
+  textuelle du grade (ex: ``Catégorie A3 -- Échelon 2''). La fonction
+  \texttt{extraire\_grade()} en extrait le grade via regex.
+
+  \item[Winsorisation] Écrêtage statistique des valeurs extrêmes. Dans ce
+  pipeline, le REVENU\_TOTAL est écrêté à P1/P99 dans chaque cellule
+  \texttt{mois $\times$ grade $\times$ CITP} (avec repli sur
+  \texttt{mois $\times$ grade} si effectif insuffisant). Le Gold n'est pas
+  modifié : la winsorisation est appliquée en mémoire uniquement.
+
+\end{description}
+
+\end{document}

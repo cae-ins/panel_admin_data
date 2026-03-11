@@ -6,12 +6,13 @@
 #
 # Pipeline :
 #   01  Pré-analyse des colonnes (staging)
-#   02  Staging → Bronze (Excel → Parquet brut)
-#   03  Bronze → Silver  (mapping, normalisation, ANSTAT)
+#   02  Staging → Bronze  (Excel → Parquet brut)
+#   03  Bronze → Silver   (mapping, normalisation, ANSTAT)
+#   03b Imputation grades Silver (cascade emploi P1/P2/P3)
+#   03c Imputation salaires Silver (LOCF + médiane cascade)
 #   04  Validation Silver (contrôles qualité)
 #   05  Silver → Gold     (agrégations mensuelles)
 #   06  Compilation panel individu × période
-#   06b Imputation des grades invalides (cascade emploi)
 #   07  Calcul des indicateurs salaires
 #   08  Fichier Excel avec sommaire structuré
 #
@@ -64,6 +65,23 @@ ETAPES = [
         "optionnelle": False,
     },
     {
+        "id":          "03b",
+        "nom":         "Imputation grades Silver",
+        "script":      "03b_imputer_grades_silver.py",
+        "description": "Grade modal par cascade emploi (P1:mois × P2:année × P3:global). "
+                       "Ajoute GRADE et GRADE_SOURCE dans le Silver.",
+        "optionnelle": False,
+    },
+    {
+        "id":          "03c",
+        "nom":         "Imputation salaires Silver",
+        "script":      "03c_imputer_salaires_silver.py",
+        "description": "LOCF par cle_unique puis médiane cascade "
+                       "(CODE_EMPLOI × GRADE × CODE_ORGANISME × mois_annee). "
+                       "Ajoute montant_brut_SOURCE et montant_net_SOURCE dans le Silver.",
+        "optionnelle": False,
+    },
+    {
         "id":          "04",
         "nom":         "Validation Silver",
         "script":      "04_validation_silver.py",
@@ -84,15 +102,6 @@ ETAPES = [
         "script":      "06_compiler_panel.py",
         "description": "Construction du panel individu × période, "
                        "déduplication et tri chronologique",
-        "optionnelle": False,
-    },
-    {
-        "id":          "06b",
-        "nom":         "Imputation grades",
-        "script":      "06b_imputer_grades.py",
-        "description": "Correction des grades invalides sur le panel complet "
-                       "par cascade emploi (P1:mois → P2:année → P3:global). "
-                       "Ajoute GRADE et GRADE_SOURCE dans le Gold.",
         "optionnelle": False,
     },
     {
@@ -170,10 +179,10 @@ parser = argparse.ArgumentParser(
     formatter_class=argparse.RawDescriptionHelpFormatter,
     epilog="""
 Exemples :
-  python orchestrateur.py                     # pipeline complet
-  python orchestrateur.py --depuis 03         # reprend à l'étape 03
-  python orchestrateur.py --etapes 06b 07 08  # étapes spécifiques
-  python orchestrateur.py --dry-run           # affiche le plan sans exécuter
+  python orchestrateur.py                        # pipeline complet
+  python orchestrateur.py --depuis 03            # reprend à l'étape 03
+  python orchestrateur.py --etapes 03b 03c 04    # étapes spécifiques
+  python orchestrateur.py --dry-run              # affiche le plan sans exécuter
   python orchestrateur.py --depuis 07 --dry-run
     """,
 )
