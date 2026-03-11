@@ -150,10 +150,15 @@ def lire_feuille(nom: str) -> pl.DataFrame | None:
 
 
 print("📖 Lecture des feuilles...")
-dt_citp       = lire_feuille("REVENU_CITP_Detail")
-dt_grade      = lire_feuille("REVENU_Grade_Detail")
-dt_grade_sexe = lire_feuille("REVENU_Grade_Sexe")
-dt_multi      = lire_feuille("MULTI_Par_Grade_NbPostes")
+dt_citp          = lire_feuille("REVENU_CITP_Detail")
+dt_grade         = lire_feuille("REVENU_Grade_Detail")
+dt_grade_sexe    = lire_feuille("REVENU_Grade_Sexe")
+dt_multi         = lire_feuille("MULTI_Par_Grade_NbPostes")
+dt_bareme        = lire_feuille("REVENU_Bareme_Detail")
+dt_bareme_grade  = lire_feuille("REVENU_Bareme_Grade")
+dt_bareme_sexe   = lire_feuille("REVENU_Bareme_Sexe")
+dt_modele_anstat = lire_feuille("MODELE_ANSTAT")
+BAREME_DISPONIBLE = dt_bareme is not None
 print()
 
 # ============================================================
@@ -292,6 +297,26 @@ grades_multi: list[str] = []
 if dt_multi is not None and "GRADE_PRINCIPAL" in dt_multi.columns:
     grades_multi = sorted(dt_multi["GRADE_PRINCIPAL"].unique().to_list())
     print(f"  ✓ Multi-postes : {len(grades_multi)} grades")
+
+# --- Section 5 : Barème ---
+baremes_liste: list[str] = []
+stats_bareme: dict[str, dict] = {}
+if BAREME_DISPONIBLE and "bareme" in dt_bareme.columns:
+    baremes_liste = sorted(dt_bareme["bareme"].drop_nulls().unique().to_list())
+    for b in baremes_liste:
+        sub = dt_bareme.filter(pl.col("bareme") == b)
+        eff = int(sub["Effectif"].sum()) if "Effectif" in sub.columns else 0
+        rev = (
+            float((sub["Effectif"] * sub["Revenu_moyen"]).sum() / sub["Effectif"].sum())
+            if "Effectif" in sub.columns and sub["Effectif"].sum() > 0 else 0.0
+        )
+        stats_bareme[b] = {
+            "effectif_total":     eff,
+            "revenu_moyen_ponde": round(rev),
+        }
+    print(f"  ✓ Barème : {len(baremes_liste)} grilles salariales")
+else:
+    print("  ℹ️  Feuilles barème absentes — section 5 ignorée")
 
 print()
 
@@ -432,8 +457,43 @@ if dt_multi is not None:
         ws_som.cell(row=current_row, column=4, value=multi)
         current_row += 1
 
+# ────────────────────────────────────────────────────────────
+# SECTION 5 : BARÈME / GRILLE SALARIALE
+# ────────────────────────────────────────────────────────────
+if BAREME_DISPONIBLE:
+    merge_titre(ws_som, "📊 SECTION 5 : CLASSIFICATION PAR BARÈME / GRILLE SALARIALE",
+                row=current_row, fill=FILL_SUBTITLE, font=FONT_SUBTITLE)
+    current_row += 1
+    ecrire_entetes(ws_som, ["Barème / Grille salariale", "Effectif total", "Revenu moyen",
+                             "Détail grade", "Détail sexe"],
+                   current_row)
+    current_row += 1
+
+    for b in baremes_liste:
+        sheet_det   = f"BAREME_{re.sub(r'[^A-Za-z0-9]', '_', b)[:25]}"
+        sheet_grade = f"BAREME_G_{re.sub(r'[^A-Za-z0-9]', '_', b)[:20]}"
+        sheet_sexe  = f"BAREME_S_{re.sub(r'[^A-Za-z0-9]', '_', b)[:20]}"
+        lien_interne(ws_som, current_row, 1, b, sheet_det)
+        ws_som.cell(row=current_row, column=2,
+                    value=stats_bareme.get(b, {}).get("effectif_total", ""))
+        ws_som.cell(row=current_row, column=3,
+                    value=stats_bareme.get(b, {}).get("revenu_moyen_ponde", ""))
+        lien_interne(ws_som, current_row, 4, "→ par grade", sheet_grade)
+        lien_interne(ws_som, current_row, 5, "→ par sexe",  sheet_sexe)
+        current_row += 1
+
+    current_row += 1
+    # Lien MODELE_ANSTAT
+    if dt_modele_anstat is not None:
+        merge_titre(ws_som, "📋 MODÈLE STATISTIQUE ANSTAT — Format hiérarchique",
+                    row=current_row, n_cols=5, fill=PatternFill("solid", fgColor="1F4E79"),
+                    font=Font(color="FFFFFF", bold=True, size=11))
+        current_row += 1
+        lien_interne(ws_som, current_row, 1, "Voir le modèle ANSTAT →", "MODELE_ANSTAT")
+        current_row += 2
+
 # Formatage colonnes sommaire
-ajuster_largeurs(ws_som, {1: 15, 2: 75, 3: 18, 4: 18})
+ajuster_largeurs(ws_som, {1: 45, 2: 18, 3: 18, 4: 18, 5: 18})
 print("  ✓ SOMMAIRE créé\n")
 
 # ============================================================
@@ -491,6 +551,61 @@ if dt_multi is not None:
         ecrire_df_dans_feuille(ws, data, start_row=4)
         ajuster_largeurs(ws, {1: 15, 2: 15, 3: 15, 4: 15, 5: 12, 6: 12, 7: 12, 8: 12})
         print(f"  ✓ {sheet_name}")
+
+# ── Section 5 : Barème ──────────────────────────────────────
+if BAREME_DISPONIBLE:
+    # Détail par barème (revenu)
+    for b in baremes_liste:
+        sheet_name = f"BAREME_{re.sub(r'[^A-Za-z0-9]', '_', b)[:25]}"
+        data = dt_bareme.filter(pl.col("bareme") == b)
+        if len(data) == 0:
+            continue
+        ws = wb.create_sheet(sheet_name)
+        merge_titre(ws, f"BARÈME : {b}", row=1, n_cols=max(len(data.columns), 5))
+        ajouter_lien_retour(ws, row=2)
+        ecrire_df_dans_feuille(ws, data, start_row=4)
+        ajuster_largeurs(ws, {1: 20, 2: 15, 3: 15, 4: 18, 5: 18, 6: 15, 7: 15, 8: 15})
+        print(f"  ✓ {sheet_name}")
+
+    # Détail par barème × grade
+    if dt_bareme_grade is not None:
+        for b in baremes_liste:
+            sheet_name = f"BAREME_G_{re.sub(r'[^A-Za-z0-9]', '_', b)[:20]}"
+            data = dt_bareme_grade.filter(pl.col("bareme") == b)
+            if len(data) == 0:
+                continue
+            ws = wb.create_sheet(sheet_name)
+            merge_titre(ws, f"BARÈME × GRADE : {b}", row=1, n_cols=max(len(data.columns), 5))
+            ajouter_lien_retour(ws, row=2)
+            ecrire_df_dans_feuille(ws, data, start_row=4)
+            ajuster_largeurs(ws, {1: 20, 2: 15, 3: 15, 4: 15, 5: 18, 6: 18, 7: 15, 8: 15})
+            print(f"  ✓ {sheet_name}")
+
+    # Détail par barème × sexe
+    if dt_bareme_sexe is not None:
+        for b in baremes_liste:
+            sheet_name = f"BAREME_S_{re.sub(r'[^A-Za-z0-9]', '_', b)[:20]}"
+            data = dt_bareme_sexe.filter(pl.col("bareme") == b)
+            if len(data) == 0:
+                continue
+            ws = wb.create_sheet(sheet_name)
+            merge_titre(ws, f"BARÈME × SEXE : {b}", row=1, n_cols=max(len(data.columns), 5))
+            ajouter_lien_retour(ws, row=2)
+            ecrire_df_dans_feuille(ws, data, start_row=4)
+            ajuster_largeurs(ws, {1: 20, 2: 15, 3: 15, 4: 15, 5: 18, 6: 18, 7: 15, 8: 15})
+            print(f"  ✓ {sheet_name}")
+
+    # MODELE_ANSTAT : copie directe depuis la feuille source
+    if dt_modele_anstat is not None and len(dt_modele_anstat) > 0:
+        ws = wb.create_sheet("MODELE_ANSTAT")
+        merge_titre(ws, "MODÈLE DE DONNÉES DE SALAIRE DES FONCTIONNAIRES",
+                    row=1, n_cols=max(len(dt_modele_anstat.columns), 4),
+                    fill=PatternFill("solid", fgColor="1F4E79"),
+                    font=Font(color="FFFFFF", bold=True, size=12))
+        ajouter_lien_retour(ws, row=2)
+        ecrire_df_dans_feuille(ws, dt_modele_anstat, start_row=4)
+        ajuster_largeurs(ws, {1: 55, 2: 22, 3: 22, 4: 22})
+        print(f"  ✓ MODELE_ANSTAT")
 
 print()
 

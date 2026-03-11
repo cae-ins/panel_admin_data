@@ -36,8 +36,9 @@ MINIO_SECRET_KEY = "minio-datalabteam123"
 
 # ============================================================
 # <<< À MODIFIER : chemins locaux vers vos fichiers sources >>>
-DOSSIER_EXCEL  = "consolidation_solde_2015_2025/01_data_sources/fichiers_solde_mensuels"
-FICHIER_ANSTAT = "consolidation_solde_2015_2025/01_data_sources/fichiers_anstat_codes/FICHIER_ANSTAT_CODE_2025.xlsx"
+DOSSIER_EXCEL          = "consolidation_solde_2015_2025/01_data_sources/fichiers_solde_mensuels"
+FICHIER_ANSTAT         = "consolidation_solde_2015_2025/01_data_sources/fichiers_anstat_codes/FICHIER_ANSTAT_CODE_2025.xlsx"
+FICHIER_CORRESPONDANCE = "consolidation_solde_2015_2025/01_data_sources/fichiers_anstat_codes/CORRESPONDANCE_GRILLE_EMPLOI.xlsx"
 # <<<----------->>>
 # ============================================================
 
@@ -110,6 +111,27 @@ if os.path.exists(fichier_anstat):
         print(f"✗ ERREUR : {e}")
 else:
     print(f"✗ Fichier non trouvé : {fichier_anstat}")
+
+# --- UPLOAD DE LA TABLE DE CORRESPONDANCE EMPLOI → BARÈME ---
+print()
+print("=" * 60)
+print("UPLOAD : Table de correspondance EMPLOI → BARÈME")
+print("=" * 60)
+print()
+
+fichier_corr = os.path.expanduser(FICHIER_CORRESPONDANCE)
+if os.path.exists(fichier_corr):
+    nom_corr  = os.path.basename(fichier_corr)
+    objet_corr = f"{PREFIX_REFS}/{nom_corr}"
+    try:
+        s3.upload_file(fichier_corr, BUCKET, objet_corr)
+        print(f"✓ {nom_corr} → s3://{BUCKET}/{objet_corr}")
+    except Exception as e:
+        print(f"✗ ERREUR : {e}")
+else:
+    print(f"✗ Fichier non trouvé : {fichier_corr}")
+    print(f"  → Placez CORRESPONDANCE_GRILLE_EMPLOI.xlsx dans :")
+    print(f"    {os.path.dirname(fichier_corr)}")
 
 print()
 print("=" * 60)
