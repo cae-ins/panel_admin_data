@@ -6,7 +6,7 @@
 #
 # Colonnes produites :
 #   — Identifiants individuels
-#       matricule, nom, sexe, date_naissance,
+#       cle_unique, matricule, nom, sexe, date_naissance,
 #       situation_matrimoniale, nombre_enfant
 #   — Position administrative
 #       situation_normalisee,
@@ -18,13 +18,17 @@
 #       CODE_AFFECTATION, lieu_affectation,
 #       CODE_POSTE,     poste,
 #       prise_service, date_retraite, age_retraite
+#   — Grade normalisé (03b)
+#       GRADE, GRADE_SOURCE
 #   — Dimensions temporelles
 #       mois_annee (String), annee (Int32), mois (Int32)
 #   — Salaires mensuels
 #       montant_brut, montant_net,
 #       retenue_pension, impot, charge_patronale
-#   — Traçabilité
-#       FICHIER_SOURCE
+#   — Traçabilité imputation salaires (03c)
+#       montant_brut_SOURCE, montant_net_SOURCE
+#   — Traçabilité fichier
+#       fichier_source
 #
 # Source  : s3://silver/panel_admin/YYYY.parquet (un par année)
 # Sortie  : s3://gold/panel_admin/panel_YYYY.parquet (un par année)
@@ -39,6 +43,7 @@ import gc
 import io
 import os
 import re
+import tempfile
 from dotenv import load_dotenv
 import boto3
 from botocore.client import Config
@@ -48,7 +53,6 @@ load_dotenv(".env")
 
 # --- CONFIGURATION ---
 
-# LORSQU'ON TRAVAILLE DEPUIS SA MACHINE LOCAL
 MINIO_ENDPOINT   = os.getenv("MINIO_ENDPOINT",   "http://192.168.1.230:30137")
 MINIO_ACCESS_KEY = os.getenv("MINIO_ACCESS_KEY", "datalab-team")
 MINIO_SECRET_KEY = os.getenv("MINIO_SECRET_KEY", "minio-datalabteam123")
@@ -77,10 +81,14 @@ s3 = boto3.client(
 # ============================================================
 # COLONNES RETENUES DANS LE PANEL
 # ============================================================
+# Ordre logique : identité → position → grade → temps → salaires → trace
+# La sélection est DÉFENSIVE : les colonnes absentes du Silver
+# sont ignorées silencieusement (cols_presentes ci-dessous).
+# Pour ajouter une colonne : l'inscrire ici suffit.
 
-# Ordre logique : identité → position → temps → salaires → trace
 COLONNES_PANEL = [
     # --- Identité individuelle ---
+    "cle_unique",            # matricule || CODE_ORGANISME (03b)
     "matricule",
     "nom",
     "sexe",
@@ -102,8 +110,12 @@ COLONNES_PANEL = [
     "date_retraite",
     "age_retraite",
 
+    # --- Grade normalisé (03b_imputer_grades_silver) ---
+    "GRADE",             # grade normalisé utilisé pour l'imputation
+    "GRADE_SOURCE",      # OBSERVE | IMPUTE_Ln | NON_IMPUTABLE
+
     # --- Dimensions temporelles ---
-    "mois_annee",           # String brut du Silver
+    "mois_annee",        # String brut du Silver (MMYYYY)
     "annee",             # Int32 extrait
     "mois",              # Int32 extrait
 
@@ -114,7 +126,11 @@ COLONNES_PANEL = [
     "impot",
     "charge_patronale",
 
-    # --- Traçabilité ---
+    # --- Traçabilité imputation salaires (03c_imputer_salaires_silver) ---
+    "montant_brut_SOURCE",   # OBSERVE | LOCF_FWD | LOCF_BWD | IMPUTE_L1..L4 | NON_IMPUTABLE
+    "montant_net_SOURCE",    # idem
+
+    # --- Traçabilité fichier ---
     "fichier_source",
 ]
 
@@ -141,23 +157,21 @@ def ecrire_parquet_s3(df: pl.DataFrame, bucket: str, key: str) -> None:
 def construire_panel_annee(df: pl.DataFrame) -> pl.DataFrame:
     """
     Applique sur un DataFrame Silver annuel :
-      - extraction annee/mois depuis PERIODE
+      - extraction annee/mois depuis mois_annee
       - sélection et réordonnancement des colonnes
       - déduplication matricule × mois_annee
       - tri matricule → annee → mois
     """
 
-    # Extraction annee et mois depuis mois_annee (format MMYYYY ou YYYY-MM)
+    # Extraction annee et mois depuis mois_annee (format MMYYYY)
     if "mois_annee" in df.columns:
         df = df.with_columns([
             pl.col("mois_annee")
               .str.replace_all(r"[_/\.]", "-")
               .alias("mois_annee"),
         ])
-        # Extraire annee et mois (robuste aux deux formats)
         df = df.with_columns([
             pl.when(pl.col("mois_annee").str.len_chars() == 6)
-              # format MMYYYY : mois = 0:2, annee = 2:6
               .then(pl.col("mois_annee").str.slice(2, 4).cast(pl.Int32, strict=False))
               .otherwise(pl.col("mois_annee").str.slice(0, 4).cast(pl.Int32, strict=False))
               .alias("annee"),
@@ -173,9 +187,13 @@ def construire_panel_annee(df: pl.DataFrame) -> pl.DataFrame:
             pl.lit(None).cast(pl.Int32).alias("mois"),
         ])
 
-    # Sélection des colonnes disponibles dans l'ordre défini
+    # Sélection défensive : colonnes de COLONNES_PANEL présentes dans df
     cols_presentes = [c for c in COLONNES_PANEL if c in df.columns]
+    cols_absentes  = [c for c in COLONNES_PANEL if c not in df.columns]
     df = df.select(cols_presentes)
+
+    if cols_absentes:
+        print(f"    ⚠️  Colonnes absentes du Silver (ignorées) : {cols_absentes}", flush=True)
 
     # Déduplication matricule × mois_annee (garde la première occurrence)
     cles_dedup = [c for c in ["matricule", "mois_annee"] if c in df.columns]
@@ -218,11 +236,10 @@ print(f"Fichiers Silver trouvés : {len(cles_silver)}\n")
 # TRAITEMENT ANNÉE PAR ANNÉE
 # ============================================================
 
-# Accumulateurs pour les stats finales
-nb_total_lignes  = 0
-nb_total_agents  = set()
-periodes_vues    = []
-stats_par_annee  = []
+nb_total_lignes = 0
+nb_total_agents = set()
+periodes_vues   = []
+stats_par_annee = []
 
 for cle in cles_silver:
     annee_str = re.search(r"20\d{2}", os.path.basename(cle))
@@ -232,16 +249,17 @@ for cle in cles_silver:
     df = lire_parquet_s3(BUCKET_SILVER, cle)
     print(f"✓  {len(df):,} lignes × {len(df.columns)} cols", flush=True)
 
-    # Construction du panel
     df_panel = construire_panel_annee(df)
     del df
     gc.collect()
 
     nb_lignes = len(df_panel)
-    cols_abs  = [c for c in COLONNES_PANEL if c not in df_panel.columns]
     print(f"    Panel : {nb_lignes:,} lignes × {len(df_panel.columns)} cols", flush=True)
-    if cols_abs:
-        print(f"    Colonnes absentes : {cols_abs}", flush=True)
+
+    # Vérification explicite des colonnes critiques
+    for col_critique in ["GRADE", "GRADE_SOURCE", "montant_brut_SOURCE", "montant_net_SOURCE"]:
+        statut = "✓" if col_critique in df_panel.columns else "✗ ABSENT"
+        print(f"    {col_critique:<25} : {statut}", flush=True)
 
     # Écriture Gold annuelle
     key_panel = f"{PREFIX_PANEL}/panel_{annee_str}.parquet"
@@ -259,7 +277,7 @@ for cle in cles_silver:
         row_stat["nb_individus"] = df_panel["matricule"].n_unique()
     if "montant_brut" in df_panel.columns:
         brut = df_panel["montant_brut"].drop_nulls()
-        row_stat["brut_moyen"]  = round(brut.mean(), 0) if len(brut) > 0 else None
+        row_stat["brut_moyen"]   = round(brut.mean(),   0) if len(brut) > 0 else None
         row_stat["brut_mediane"] = round(brut.median(), 0) if len(brut) > 0 else None
     stats_par_annee.append(row_stat)
 
@@ -295,46 +313,14 @@ print("=" * 70)
 print("✓ PANEL INDIVIDUS TERMINÉ")
 print("=" * 70)
 print(f"\nFichiers disponibles dans : s3://{BUCKET_GOLD}/{PREFIX_PANEL}/")
-print("  → panel_2015.parquet, panel_2016.parquet, ..., panel_2024.parquet")
 print()
-print("Exemple de chargement pour analyse :")
-print("""
-  import polars as pl, io, boto3
-
-  # Charger une seule année
-  buf = io.BytesIO()
-  s3.download_fileobj("gold", "panel_admin/panel_2023.parquet", buf)
-  buf.seek(0)
-  panel = pl.read_parquet(buf)
-
-  # Charger toutes les années
-  frames = []
-  for annee in range(2015, 2025):
-      buf = io.BytesIO()
-      s3.download_fileobj("gold", f"panel_admin/panel_{annee}.parquet", buf)
-      buf.seek(0)
-      frames.append(pl.read_parquet(buf))
-  panel = pl.concat(frames, how="diagonal")
-
-  # Moyenne mensuelle du brut par organisme
-  panel.group_by(["annee", "mois", "CODE_ORGANISME"]).agg(
-      pl.col("montant_brut").mean().alias("brut_moyen"),
-      pl.col("matricule").n_unique().alias("nb_agents"),
-  ).sort(["annee", "mois"])
-
-  # Évolution d'un agent
-  panel.filter(pl.col("matricule") == "XXXXX")
-       .select(["mois_annee", "montant_brut", "montant_net", "CODE_GRADE"])
-       .sort("mois_annee")
-""")
+print("Prochaine étape : exécuter 07_calcul_indicateur.py")
 
 # ============================================================
 # FUSION COMPLÈTE : tous les fichiers annuels → panel_complet
 # ============================================================
-# On utilise scan_parquet + sink_parquet : Polars streame les
-# fichiers sans jamais tout charger en RAM simultanément.
-# ============================================================
 
+print()
 print("=" * 70)
 print("FUSION : panel_complet.parquet (toutes années)")
 print("=" * 70)
@@ -342,7 +328,6 @@ print()
 
 KEY_PANEL_COMPLET = f"{PREFIX_PANEL}/panel_complet.parquet"
 
-# Lister les fichiers panel annuels produits
 pages_panel = s3.get_paginator("list_objects_v2").paginate(
     Bucket=BUCKET_GOLD, Prefix=PREFIX_PANEL
 )
@@ -358,9 +343,6 @@ for cle in cles_panel:
     print(f"  · {os.path.basename(cle)}")
 print()
 
-# Télécharger tous les fichiers annuels dans un dossier temporaire
-import tempfile
-
 with tempfile.TemporaryDirectory() as tmpdir:
     chemins_locaux = []
     for cle in cles_panel:
@@ -371,21 +353,14 @@ with tempfile.TemporaryDirectory() as tmpdir:
         print("✓", flush=True)
 
     print(f"\nFusion en streaming...", flush=True)
-
-    # scan_parquet : lit les métadonnées seulement, pas les données
-    # sink_parquet : écrit en streaming sans tout charger en RAM
     chemin_complet = os.path.join(tmpdir, "panel_complet.parquet")
 
     (
         pl.scan_parquet(chemins_locaux)
         .sort(["matricule", "annee", "mois"], nulls_last=True)
-        .sink_parquet(
-            chemin_complet,
-            compression="snappy",
-        )
+        .sink_parquet(chemin_complet, compression="snappy")
     )
 
-    # Upload vers Gold
     print(f"Upload vers s3://{BUCKET_GOLD}/{KEY_PANEL_COMPLET}...", end=" ", flush=True)
     s3.upload_file(chemin_complet, BUCKET_GOLD, KEY_PANEL_COMPLET)
     taille = os.path.getsize(chemin_complet) / 1024**2
