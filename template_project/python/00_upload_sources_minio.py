@@ -25,15 +25,10 @@ load_dotenv("template_project/.env")
 
 # --- CONFIGURATION ---
 
-# LORSQU'ON TRAVAILLE DEPUIS SA MACHINE LOCAL
-MINIO_ENDPOINT   = "http://192.168.1.230:30137"
-MINIO_ACCESS_KEY = "datalab-team"
-MINIO_SECRET_KEY = "minio-datalabteam123"
-
-# LORSQU'ON TRAVAILLE SUR JHUB
-# MINIO_ENDPOINT   = "http://minio.mon-namespace.svc.cluster.local:80"
-# MINIO_ACCESS_KEY = "datalab-team"
-# MINIO_SECRET_KEY = "minio-datalabteam123"
+# Endpoint selon environnement : configurer dans .env (local ou JHub)
+MINIO_ENDPOINT   = os.getenv("MINIO_ENDPOINT")
+MINIO_ACCESS_KEY = os.getenv("MINIO_ACCESS_KEY")
+MINIO_SECRET_KEY = os.getenv("MINIO_SECRET_KEY")
 
 # ============================================================
 # <<< À MODIFIER : chemins locaux vers vos fichiers sources >>>

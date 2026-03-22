@@ -11,15 +11,16 @@
 #   03b Imputation grades Silver (cascade emploi P1/P2/P3)
 #   03c Imputation salaires Silver (LOCF + médiane cascade)
 #   04  Validation Silver (contrôles qualité)
-#   05  Silver → Gold     (agrégations mensuelles)
+#   05  Silver → Gold     (agrégations masse salariale + effectifs)
 #   06  Compilation panel individu × période
 #   07  Calcul des indicateurs salaires
 #   08  Fichier Excel avec sommaire structuré
+#   09  Chargement panel Gold → PostgreSQL (alimente Superset)
 #
 # Modes d'exécution :
 #   python orchestrateur.py                → pipeline complet
 #   python orchestrateur.py --depuis 03    → reprend à partir de l'étape 03
-#   python orchestrateur.py --etapes 06b 07 08  → étapes spécifiques uniquement
+#   python orchestrateur.py --etapes 06 07 08   → étapes spécifiques uniquement
 #   python orchestrateur.py --dry-run      → affiche le plan sans exécuter
 #
 # En cas d'échec d'une étape, le pipeline s'arrête et affiche
@@ -118,6 +119,14 @@ ETAPES = [
         "script":      "08_creation_fichier_excel_avec_sommaire.py",
         "description": "Fichier Excel navigable avec sommaire 4 sections "
                        "(CITP, Grade, Sexe, Multi-postes)",
+        "optionnelle": False,
+    },
+    {
+        "id":          "09",
+        "nom":         "Chargement panel → PostgreSQL",
+        "script":      "09_charger_panel_pg.py",
+        "description": "Charge panel_complet.parquet (Gold) dans la table panel "
+                       "de PostgreSQL via DuckDB. Prérequis pour le dashboard Superset.",
         "optionnelle": False,
     },
 ]

@@ -21,6 +21,7 @@
 # ============================================================
 
 import io
+import os
 from dotenv import load_dotenv
 import boto3
 from botocore.client import Config
@@ -31,17 +32,11 @@ load_dotenv(".env")
 
 # --- CONFIGURATION ---
 
-# LORSQU'ON TRAVAILLE DEPUIS SA MACHINE LOCAL
-MINIO_ENDPOINT   = "http://192.168.1.230:30137"
-MINIO_ACCESS_KEY = "datalab-team"
-MINIO_SECRET_KEY = "minio-datalabteam123"
-NESSIE_URI       = "http://192.168.1.230:30604/api/v1"
-
-# LORSQU'ON TRAVAILLE SUR JHUB
-# MINIO_ENDPOINT   = "http://minio.mon-namespace.svc.cluster.local:80"
-# MINIO_ACCESS_KEY = "datalab-team"
-# MINIO_SECRET_KEY = "minio-datalabteam123"
-# NESSIE_URI       = "http://nessie.trino.svc.cluster.local:19120/api/v1"
+# Endpoint selon environnement : configurer dans .env (local ou JHub)
+MINIO_ENDPOINT   = os.getenv("MINIO_ENDPOINT")
+MINIO_ACCESS_KEY = os.getenv("MINIO_ACCESS_KEY")
+MINIO_SECRET_KEY = os.getenv("MINIO_SECRET_KEY")
+NESSIE_URI       = os.getenv("NESSIE_URI")
 
 TABLE_SILVER = "nessie.silver.panel_admin_solde_mensuel"
 BUCKET       = "staging"

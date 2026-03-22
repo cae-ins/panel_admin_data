@@ -4,9 +4,10 @@
 # Produit les indicateurs statistiques complets sur les salaires
 # à partir des fichiers Gold panel.
 #
-# Prérequis : 06b_imputer_grades.py doit avoir été exécuté.
-# Les colonnes GRADE et GRADE_SOURCE sont lues directement
-# depuis le Gold — aucune imputation n'est recalculée ici.
+# Prérequis : 03b_imputer_grades_silver.py et 06_compiler_panel.py
+# doivent avoir été exécutés. Les colonnes GRADE et GRADE_SOURCE
+# sont lues directement depuis le Gold panel — aucune imputation
+# n'est recalculée ici.
 #
 # Paramètres configurables :
 #   MODE_SALAIRE_BRUT : True  = agrégation par cle_unique (salaire brut)
