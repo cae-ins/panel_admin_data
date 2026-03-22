@@ -2,7 +2,7 @@
 # PANEL ADMIN — ÉTAPE 8 : FICHIER EXCEL AVEC SOMMAIRE STRUCTURÉ
 # ============================================================
 # Lit le fichier d'indicateurs produit par 07_calcul_indicateur.py
-# et produit un fichier Excel navigable avec un sommaire à 4 sections.
+# et produit un fichier Excel navigable avec un sommaire à 5 sections.
 #
 # Structure du fichier produit :
 #   FEUILLE SOMMAIRE (liens cliquables) :
@@ -10,12 +10,19 @@
 #     Section 2 : Classification par grade (A1-D3)
 #     Section 3 : Classification par sexe (Homme / Femme)
 #     Section 4 : Multi-postes par grade
+#     Section 5 : Barème / Grille salariale
+#     Annexe    : Modèle ANSTAT 2024 | Modèle ANSTAT 2025
 #
 #   Feuilles de détail (une par entrée du sommaire) :
-#     CITP_GG1 … CITP_GG9  — données CITP filtrées par grand groupe
-#     GRADE_A1 … GRADE_D3   — indicateurs filtrés par grade
+#     CITP_GG1 … CITP_GG9      — données CITP filtrées par grand groupe
+#     GRADE_A1 … GRADE_D3      — indicateurs filtrés par grade
 #     SEXE_Homme / SEXE_Femme
-#     MULTI_A1 … MULTI_D3   — multi-postes filtrés par grade
+#     MULTI_A1 … MULTI_D3      — multi-postes filtrés par grade
+#     BAREME_*                  — détail par barème
+#     BAREME_G_*                — barème × grade
+#     BAREME_S_*                — barème × sexe
+#     MODELE_ANSTAT_2024        — copie directe depuis le fichier source
+#     MODELE_ANSTAT_2025        — copie directe depuis le fichier source
 #
 # Source  : s3://staging/panel_admin/exports_gold/indicateurs_*.xlsx
 # Sortie  : s3://staging/panel_admin/exports_gold/indicateurs_*_SOMMAIRE.xlsx
@@ -49,9 +56,11 @@ MODE_SALAIRE_BRUT  = True   # True = salaire_brut | False = revenu_salarial
 PERIODE_RECENTE    = True   # True = 2024-2025 | False = 2015 → récent
 INCLURE_ZEROS      = True   # True = avec zéros | False = sans zéros
 
+# Années ANSTAT à inclure (produites par 07_calcul_indicateur.py)
+ANNEES_ANSTAT = [2024, 2025]
+
 # ============================================================
 
-# LORSQU'ON TRAVAILLE DEPUIS SA MACHINE LOCAL
 MINIO_ENDPOINT   = os.getenv("MINIO_ENDPOINT",   "http://192.168.1.230:30137")
 MINIO_ACCESS_KEY = os.getenv("MINIO_ACCESS_KEY", "datalab-team")
 MINIO_SECRET_KEY = os.getenv("MINIO_SECRET_KEY", "minio-datalabteam123")
@@ -96,7 +105,7 @@ s3 = boto3.client(
 )
 
 print("\n" + "=" * 70)
-print("CRÉATION FICHIER AVEC SOMMAIRE STRUCTURÉ (4 SECTIONS)")
+print("CRÉATION FICHIER AVEC SOMMAIRE STRUCTURÉ (5 SECTIONS + ANSTAT)")
 print("=" * 70 + "\n")
 
 # ============================================================
@@ -145,15 +154,21 @@ def lire_feuille(nom: str) -> pl.DataFrame | None:
 
 
 print("📖 Lecture des feuilles...")
-dt_citp          = lire_feuille("REVENU_CITP_Detail")
-dt_grade         = lire_feuille("REVENU_Grade_Detail")
-dt_grade_sexe    = lire_feuille("REVENU_Grade_Sexe")
-dt_multi         = lire_feuille("MULTI_Par_Grade_NbPostes")
-dt_bareme        = lire_feuille("REVENU_Bareme_Detail")
-dt_bareme_grade  = lire_feuille("REVENU_Bareme_Grade")
-dt_bareme_sexe   = lire_feuille("REVENU_Bareme_Sexe")
-dt_modele_anstat = lire_feuille("MODELE_ANSTAT")
+dt_citp         = lire_feuille("REVENU_CITP_Detail")
+dt_grade        = lire_feuille("REVENU_Grade_Detail")
+dt_grade_sexe   = lire_feuille("REVENU_Grade_Sexe")
+dt_multi        = lire_feuille("MULTI_Par_Grade_NbPostes")
+dt_bareme       = lire_feuille("REVENU_Bareme_Detail")
+dt_bareme_grade = lire_feuille("REVENU_Bareme_Grade")
+dt_bareme_sexe  = lire_feuille("REVENU_Bareme_Sexe")
+
+# Feuilles MODELE_ANSTAT par année — produites directement par 07
+dt_anstat: dict[int, pl.DataFrame | None] = {}
+for annee in ANNEES_ANSTAT:
+    dt_anstat[annee] = lire_feuille(f"MODELE_ANSTAT_{annee}")
+
 BAREME_DISPONIBLE = dt_bareme is not None
+ANSTAT_DISPONIBLE = any(df is not None for df in dt_anstat.values())
 print()
 
 # ============================================================
@@ -163,11 +178,13 @@ print()
 FILL_TITLE    = PatternFill("solid", fgColor="1F4E78")
 FILL_SUBTITLE = PatternFill("solid", fgColor="4472C4")
 FILL_HEADER   = PatternFill("solid", fgColor="4F81BD")
+FILL_ANSTAT   = PatternFill("solid", fgColor="1F4E79")
 
 FONT_TITLE    = Font(color="FFFFFF", bold=True, size=16)
 FONT_SUBTITLE = Font(color="FFFFFF", bold=True, size=14)
 FONT_HEADER   = Font(color="FFFFFF", bold=True, size=11)
 FONT_LINK     = Font(color="0563C1", underline="single", size=12)
+FONT_ANSTAT   = Font(color="FFFFFF", bold=True, size=11)
 
 ALIGN_CENTER  = Alignment(horizontal="center", vertical="center", wrap_text=True)
 ALIGN_LEFT    = Alignment(horizontal="left",   vertical="center")
@@ -179,7 +196,7 @@ def style_cell(cell, fill=None, font=None, align=None):
     if align: cell.alignment = align
 
 
-def merge_titre(ws, texte: str, row: int, n_cols: int = 4,
+def merge_titre(ws, texte: str, row: int, n_cols: int = 5,
                 fill=FILL_TITLE, font=FONT_TITLE) -> None:
     ws.merge_cells(
         start_row=row, start_column=1,
@@ -313,6 +330,13 @@ if BAREME_DISPONIBLE and "bareme" in dt_bareme.columns:
 else:
     print("  ℹ️  Feuilles barème absentes — section 5 ignorée")
 
+# --- Annexe ANSTAT ---
+if ANSTAT_DISPONIBLE:
+    annees_ok = [a for a in ANNEES_ANSTAT if dt_anstat.get(a) is not None]
+    print(f"  ✓ MODELE_ANSTAT : années disponibles = {annees_ok}")
+else:
+    print("  ℹ️  Aucune feuille MODELE_ANSTAT trouvée — annexe ignorée")
+
 print()
 
 # ============================================================
@@ -336,10 +360,10 @@ titre_global = (
     f"{'2024-2025' if PERIODE_RECENTE else '2015 à récent'} | "
     f"{'avec zéros' if INCLURE_ZEROS else 'sans zéros'}"
 )
-merge_titre(ws_som, titre_global, row=1, n_cols=4, fill=FILL_TITLE, font=FONT_TITLE)
+merge_titre(ws_som, titre_global, row=1, n_cols=5, fill=FILL_TITLE, font=FONT_TITLE)
 ws_som.cell(row=2, column=1,
             value="Cliquez sur une section pour accéder aux détails").font = Font(italic=True)
-ws_som.merge_cells("A2:D2")
+ws_som.merge_cells("A2:E2")
 
 current_row = 4
 
@@ -348,9 +372,9 @@ current_row = 4
 # ────────────────────────────────────────────────────────────
 if dt_citp is not None:
     merge_titre(ws_som, "📊 SECTION 1 : CLASSIFICATION PAR GRAND GROUPE CITP",
-                row=current_row, fill=FILL_SUBTITLE, font=FONT_SUBTITLE)
+                row=current_row, n_cols=5, fill=FILL_SUBTITLE, font=FONT_SUBTITLE)
     current_row += 1
-    ecrire_entetes(ws_som, ["Code", "Grand Groupe CITP", "Effectif total", "Nb métiers"],
+    ecrire_entetes(ws_som, ["Code", "Grand Groupe CITP", "Effectif total", "Nb métiers", ""],
                    current_row)
     current_row += 1
 
@@ -359,7 +383,6 @@ if dt_citp is not None:
         eff        = stats_citp.get(gg, {}).get("effectif_total", 0)
         nb_m       = stats_citp.get(gg, {}).get("nb_metiers", 0)
         sheet_name = f"CITP_GG{gg}"
-
         ws_som.cell(row=current_row, column=1, value=gg)
         lien_interne(ws_som, current_row, 2, titre_gg, sheet_name)
         ws_som.cell(row=current_row, column=3, value=eff)
@@ -373,9 +396,9 @@ if dt_citp is not None:
 # ────────────────────────────────────────────────────────────
 if dt_grade is not None:
     merge_titre(ws_som, "📊 SECTION 2 : CLASSIFICATION PAR GRADE",
-                row=current_row, fill=FILL_SUBTITLE, font=FONT_SUBTITLE)
+                row=current_row, n_cols=5, fill=FILL_SUBTITLE, font=FONT_SUBTITLE)
     current_row += 1
-    ecrire_entetes(ws_som, ["Grade", "Description", "Effectif total", "Revenu moyen"],
+    ecrire_entetes(ws_som, ["Grade", "Description", "Effectif total", "Revenu moyen", ""],
                    current_row)
     current_row += 1
 
@@ -400,9 +423,9 @@ if dt_grade is not None:
 # ────────────────────────────────────────────────────────────
 if dt_grade_sexe is not None:
     merge_titre(ws_som, "📊 SECTION 3 : CLASSIFICATION PAR SEXE",
-                row=current_row, fill=FILL_SUBTITLE, font=FONT_SUBTITLE)
+                row=current_row, n_cols=5, fill=FILL_SUBTITLE, font=FONT_SUBTITLE)
     current_row += 1
-    ecrire_entetes(ws_som, ["Sexe", "Description", "Effectif total", "Revenu moyen"],
+    ecrire_entetes(ws_som, ["Sexe", "Description", "Effectif total", "Revenu moyen", ""],
                    current_row)
     current_row += 1
 
@@ -426,15 +449,15 @@ if dt_grade_sexe is not None:
 # ────────────────────────────────────────────────────────────
 if dt_multi is not None:
     merge_titre(ws_som, "📊 SECTION 4 : MULTI-POSTES PAR GRADE",
-                row=current_row, fill=FILL_SUBTITLE, font=FONT_SUBTITLE)
+                row=current_row, n_cols=5, fill=FILL_SUBTITLE, font=FONT_SUBTITLE)
     current_row += 1
-    ecrire_entetes(ws_som, ["Grade", "Description", "Mono-postes", "Multi-postes"],
+    ecrire_entetes(ws_som, ["Grade", "Description", "Mono-postes", "Multi-postes", ""],
                    current_row)
     current_row += 1
 
     for grade_val in grades_multi:
         sub   = dt_multi.filter(pl.col("GRADE_PRINCIPAL") == grade_val)
-        mono  = int(sub["1"].sum())  if "1"  in sub.columns else 0
+        mono  = int(sub["1"].sum()) if "1" in sub.columns else 0
         multi = sum(
             int(sub[c].sum()) if c in sub.columns else 0
             for c in ["2", "3", "4", "5+"]
@@ -452,12 +475,14 @@ if dt_multi is not None:
         ws_som.cell(row=current_row, column=4, value=multi)
         current_row += 1
 
+    current_row += 2
+
 # ────────────────────────────────────────────────────────────
 # SECTION 5 : BARÈME / GRILLE SALARIALE
 # ────────────────────────────────────────────────────────────
 if BAREME_DISPONIBLE:
     merge_titre(ws_som, "📊 SECTION 5 : CLASSIFICATION PAR BARÈME / GRILLE SALARIALE",
-                row=current_row, fill=FILL_SUBTITLE, font=FONT_SUBTITLE)
+                row=current_row, n_cols=5, fill=FILL_SUBTITLE, font=FONT_SUBTITLE)
     current_row += 1
     ecrire_entetes(ws_som, ["Barème / Grille salariale", "Effectif total", "Revenu moyen",
                              "Détail grade", "Détail sexe"],
@@ -477,18 +502,32 @@ if BAREME_DISPONIBLE:
         lien_interne(ws_som, current_row, 5, "→ par sexe",  sheet_sexe)
         current_row += 1
 
+    current_row += 2
+
+# ────────────────────────────────────────────────────────────
+# ANNEXE : MODÈLE ANSTAT (une ligne par année)
+# ────────────────────────────────────────────────────────────
+if ANSTAT_DISPONIBLE:
+    merge_titre(ws_som, "📋 ANNEXE : MODÈLE STATISTIQUE ANSTAT — Par année",
+                row=current_row, n_cols=5,
+                fill=FILL_ANSTAT, font=FONT_ANSTAT)
     current_row += 1
-    # Lien MODELE_ANSTAT
-    if dt_modele_anstat is not None:
-        merge_titre(ws_som, "📋 MODÈLE STATISTIQUE ANSTAT — Format hiérarchique",
-                    row=current_row, n_cols=5, fill=PatternFill("solid", fgColor="1F4E79"),
-                    font=Font(color="FFFFFF", bold=True, size=11))
+    ecrire_entetes(ws_som, ["Année", "Lien vers la feuille", "", "", ""], current_row)
+    current_row += 1
+
+    for annee in ANNEES_ANSTAT:
+        if dt_anstat.get(annee) is None:
+            continue
+        sheet_name_anstat = f"MODELE_ANSTAT_{annee}"
+        ws_som.cell(row=current_row, column=1, value=annee)
+        lien_interne(ws_som, current_row, 2,
+                     f"Voir le modèle ANSTAT {annee} →", sheet_name_anstat)
         current_row += 1
-        lien_interne(ws_som, current_row, 1, "Voir le modèle ANSTAT →", "MODELE_ANSTAT")
-        current_row += 2
+
+    current_row += 1
 
 # Formatage colonnes sommaire
-ajuster_largeurs(ws_som, {1: 45, 2: 18, 3: 18, 4: 18, 5: 18})
+ajuster_largeurs(ws_som, {1: 45, 2: 20, 3: 18, 4: 18, 5: 18})
 print("  ✓ SOMMAIRE créé\n")
 
 # ============================================================
@@ -549,7 +588,6 @@ if dt_multi is not None:
 
 # ── Section 5 : Barème ──────────────────────────────────────
 if BAREME_DISPONIBLE:
-    # Détail par barème (revenu)
     for b in baremes_liste:
         sheet_name = f"BAREME_{re.sub(r'[^A-Za-z0-9]', '_', b)[:25]}"
         data = dt_bareme.filter(pl.col("bareme") == b)
@@ -562,7 +600,6 @@ if BAREME_DISPONIBLE:
         ajuster_largeurs(ws, {1: 20, 2: 15, 3: 15, 4: 18, 5: 18, 6: 15, 7: 15, 8: 15})
         print(f"  ✓ {sheet_name}")
 
-    # Détail par barème × grade
     if dt_bareme_grade is not None:
         for b in baremes_liste:
             sheet_name = f"BAREME_G_{re.sub(r'[^A-Za-z0-9]', '_', b)[:20]}"
@@ -576,7 +613,6 @@ if BAREME_DISPONIBLE:
             ajuster_largeurs(ws, {1: 20, 2: 15, 3: 15, 4: 15, 5: 18, 6: 18, 7: 15, 8: 15})
             print(f"  ✓ {sheet_name}")
 
-    # Détail par barème × sexe
     if dt_bareme_sexe is not None:
         for b in baremes_liste:
             sheet_name = f"BAREME_S_{re.sub(r'[^A-Za-z0-9]', '_', b)[:20]}"
@@ -590,17 +626,28 @@ if BAREME_DISPONIBLE:
             ajuster_largeurs(ws, {1: 20, 2: 15, 3: 15, 4: 15, 5: 18, 6: 18, 7: 15, 8: 15})
             print(f"  ✓ {sheet_name}")
 
-    # MODELE_ANSTAT : copie directe depuis la feuille source
-    if dt_modele_anstat is not None and len(dt_modele_anstat) > 0:
-        ws = wb.create_sheet("MODELE_ANSTAT")
-        merge_titre(ws, "MODÈLE DE DONNÉES DE SALAIRE DES FONCTIONNAIRES",
-                    row=1, n_cols=max(len(dt_modele_anstat.columns), 4),
-                    fill=PatternFill("solid", fgColor="1F4E79"),
-                    font=Font(color="FFFFFF", bold=True, size=12))
+# ── Annexe : MODELE_ANSTAT — une feuille par année ──────────
+# Copie directe des feuilles produites par 07_calcul_indicateur.py
+if ANSTAT_DISPONIBLE:
+    for annee in ANNEES_ANSTAT:
+        df_anstat = dt_anstat.get(annee)
+        if df_anstat is None or len(df_anstat) == 0:
+            print(f"  ⚠️  MODELE_ANSTAT_{annee} ignorée (données absentes)")
+            continue
+        sheet_name_anstat = f"MODELE_ANSTAT_{annee}"
+        ws = wb.create_sheet(sheet_name_anstat)
+        merge_titre(
+            ws,
+            f"MODÈLE DE DONNÉES DE SALAIRE DES FONCTIONNAIRES — {annee}",
+            row=1,
+            n_cols=max(len(df_anstat.columns), 4),
+            fill=FILL_ANSTAT,
+            font=Font(color="FFFFFF", bold=True, size=12),
+        )
         ajouter_lien_retour(ws, row=2)
-        ecrire_df_dans_feuille(ws, dt_modele_anstat, start_row=4)
+        ecrire_df_dans_feuille(ws, df_anstat, start_row=4)
         ajuster_largeurs(ws, {1: 55, 2: 22, 3: 22, 4: 22})
-        print(f"  ✓ MODELE_ANSTAT")
+        print(f"  ✓ MODELE_ANSTAT_{annee} ({len(df_anstat)} lignes)")
 
 print()
 
@@ -632,13 +679,15 @@ print("=" * 70)
 print("✅ TERMINÉ")
 print("=" * 70 + "\n")
 print("📊 STRUCTURE DU FICHIER :\n")
-print("FEUILLE SOMMAIRE (4 sections cliquables) :")
+print("FEUILLE SOMMAIRE (5 sections + annexe ANSTAT) :")
 print("  • Section 1 : Classification par grand groupe CITP (9 groupes)")
 print("  • Section 2 : Classification par grade (A1-D3)")
 print("  • Section 3 : Classification par sexe (Homme/Femme)")
-print("  • Section 4 : Multi-postes par grade\n")
+print("  • Section 4 : Multi-postes par grade")
+print("  • Section 5 : Barème / Grille salariale")
+print("  • Annexe    : Modèle ANSTAT 2024 | Modèle ANSTAT 2025\n")
 print("💡 UTILISATION :")
 print("  1. Ouvrez le fichier Excel")
-print("  2. La feuille SOMMAIRE s'affiche avec 4 sections")
+print("  2. La feuille SOMMAIRE s'affiche avec 5 sections + annexe")
 print("  3. Cliquez sur n'importe quel lien bleu pour naviguer")
 print("  4. Utilisez '← Retour au sommaire' pour revenir\n")

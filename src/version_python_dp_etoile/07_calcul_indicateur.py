@@ -25,6 +25,8 @@
 #   SALAIRE_BRUT_Median      : Salaire brut médian par année × mois × grade (pivot)
 #   MULTI_Par_Grade_NbPostes : Effectifs par grade × nombre de postes (pivot)
 #   MULTI_Distribution       : Distribution globale mono/multi-postes
+#   MODELE_ANSTAT_2024       : Modèle statistique ANSTAT — année 2024
+#   MODELE_ANSTAT_2025       : Modèle statistique ANSTAT — année 2025
 #
 # Source  : s3://gold/panel_admin/panel_YYYY.parquet
 # Sortie  : s3://staging/panel_admin/exports_gold/indicateurs_*.xlsx
@@ -285,6 +287,132 @@ def compute_indicators(df: pl.DataFrame, group_cols: list[str],
     )
 
 
+def construire_feuille_anstat(
+    wb: Workbook,
+    sheet_name: str,
+    annee_label: str,
+    global_brut: dict,
+    stats_bareme_detail: pl.DataFrame,
+) -> None:
+    """
+    Crée une feuille MODELE_ANSTAT pour une année donnée.
+    Appelée en boucle pour 2024 et 2025.
+    """
+    ws = wb.create_sheet(sheet_name)
+    ws.sheet_view.showGridLines = False
+
+    fill_titre   = PatternFill("solid", fgColor="1F4E79")
+    fill_entete  = PatternFill("solid", fgColor="2E75B6")
+    fill_global  = PatternFill("solid", fgColor="FFF2CC")
+    fill_secteur = PatternFill("solid", fgColor="D6E4F0")
+    fill_alt     = [PatternFill("solid", fgColor="EBF3FB"),
+                    PatternFill("solid", fgColor="FFFFFF")]
+
+    font_titre   = Font(bold=True, color="FFFFFF", size=12)
+    font_entete  = Font(bold=True, color="FFFFFF", size=10)
+    font_global  = Font(bold=True, color="7F6000", size=11)
+    font_secteur = Font(bold=True, color="1F4E79", size=10)
+    font_sous    = Font(size=10, italic=True)
+    font_montant = Font(size=10)
+
+    al_centre = Alignment(horizontal="center", vertical="center")
+    al_gauche = Alignment(horizontal="left",   vertical="center")
+    al_droite = Alignment(horizontal="right",  vertical="center")
+    al_indent = Alignment(horizontal="left",   vertical="center", indent=2)
+
+    # Titre avec l'année
+    ws.merge_cells("A1:D1")
+    titre_cell = ws.cell(
+        row=1, column=1,
+        value=f"MODÈLE DE DONNÉES DE SALAIRE DES FONCTIONNAIRES — {annee_label}"
+    )
+    titre_cell.font      = font_titre
+    titre_cell.fill      = fill_titre
+    titre_cell.alignment = al_centre
+    ws.row_dimensions[1].height = 28
+
+    # En-têtes colonnes
+    ws.cell(row=2, column=1, value="salaires en FCFA").font = Font(size=10)
+    for col_i, label in enumerate(
+        ["salaire brut minimum", "salaire brut moyen", "salaire brut maximum"],
+        start=2
+    ):
+        c = ws.cell(row=2, column=col_i, value=label)
+        c.font      = font_entete
+        c.fill      = fill_entete
+        c.alignment = al_centre
+    ws.row_dimensions[2].height = 22
+
+    def get_val(key: str, col: str):
+        if key == "_GLOBAL_":
+            return global_brut.get(col)
+        rows = stats_bareme_detail.filter(pl.col("bareme_detail") == key)
+        if len(rows) == 0:
+            return None
+        return rows.row(0, named=True).get(col)
+
+    row_cur  = 3
+    sous_idx = 0
+    for libelle, bareme_key in ORDRE_MODELE_ANSTAT:
+        est_global   = bareme_key == "_GLOBAL_"
+        est_titre    = bareme_key is None
+        est_sous_gpe = not est_global and not est_titre
+
+        if est_global:
+            for col_i, val in enumerate([
+                "TOUS SECTEURS CONFONDUS",
+                get_val("_GLOBAL_", "salaire_brut_min"),
+                get_val("_GLOBAL_", "salaire_brut_moyen"),
+                get_val("_GLOBAL_", "salaire_brut_max"),
+            ], start=1):
+                c = ws.cell(row=row_cur, column=col_i, value=val)
+                c.font      = font_global
+                c.fill      = fill_global
+                c.alignment = al_gauche if col_i == 1 else al_centre
+                if col_i > 1 and isinstance(val, (int, float)):
+                    c.number_format = "#,##0"
+            ws.row_dimensions[row_cur].height = 22
+
+        elif est_titre:
+            ws.merge_cells(
+                start_row=row_cur, start_column=1,
+                end_row=row_cur,   end_column=4
+            )
+            c = ws.cell(row=row_cur, column=1, value=libelle)
+            c.font      = font_secteur
+            c.fill      = fill_secteur
+            c.alignment = al_gauche
+            ws.row_dimensions[row_cur].height = 20
+
+        else:
+            bg = fill_alt[sous_idx % 2]
+            sous_idx += 1
+            c1 = ws.cell(row=row_cur, column=1, value=libelle)
+            c1.font      = font_sous
+            c1.fill      = bg
+            c1.alignment = al_indent
+            for col_i, stat_key in enumerate(
+                ["salaire_brut_min", "salaire_brut_moyen", "salaire_brut_max"],
+                start=2
+            ):
+                val = get_val(bareme_key, stat_key)
+                c = ws.cell(row=row_cur, column=col_i, value=val)
+                c.font          = font_montant
+                c.fill          = bg
+                c.alignment     = al_droite
+                c.number_format = "#,##0"
+            ws.row_dimensions[row_cur].height = 18
+
+        row_cur += 1
+
+    # Largeurs colonnes
+    ws.column_dimensions["A"].width = 55
+    for col_letter in ["B", "C", "D"]:
+        ws.column_dimensions[col_letter].width = 22
+    ws.freeze_panes = "A3"
+    print(f"   ✓ {sheet_name} ({row_cur - 3} lignes)")
+
+
 # ============================================================
 # 1. CHARGEMENT
 # ============================================================
@@ -341,7 +469,7 @@ print("3. Extraction année/mois depuis mois_annee...")
 
 # mois_annee est au format MMYYYY (ex. "012015")
 # mois  = slice(0, 2)  →  "01"
-# annee = slice(2, 4)  →  "2015"
+# annee = slice(2, 4)  →  "2015" (4 chiffres à partir de la position 2)
 base = base.with_columns([
     pl.col("mois_annee").str.slice(2, 4).cast(pl.Int32, strict=False).alias("ANNEE"),
     pl.col("mois_annee").str.slice(0, 2).cast(pl.Int32, strict=False).alias("MOIS_NUM"),
@@ -474,8 +602,6 @@ print(f"   Total retenu : {n_gv:,} ({100*n_gv/len(base):.1f}%)\n")
 # ============================================================
 # 7b. FUZZY JOIN EMPLOI → BARÈME
 # ============================================================
-# Ajoute les colonnes 'bareme' et 'bareme_detail' sur base_gv
-# pour permettre la ventilation des indicateurs par grille salariale.
 
 print("7b. Fuzzy join EMPLOI → BARÈME (via table de correspondance)...")
 
@@ -488,7 +614,6 @@ col_emploi_panel = next(
 
 if TABLE_BAREME is not None and col_emploi_panel is not None:
     base_gv = fuzzy_join_bareme(base_gv, TABLE_BAREME, col_emploi_panel)
-    # Utiliser grade_ref si GRADE absent ou pour affiner la scission Primaire/Secondaire
     col_grade_bareme = "GRADE" if "GRADE" in base_gv.columns else "grade_ref"
     if col_grade_bareme in base_gv.columns:
         base_gv = ajouter_bareme_detail(base_gv, col_grade_bareme)
@@ -538,7 +663,6 @@ base_agrege = (
         pl.col("Metier_CITP").first().alias("Metier_CITP")
           if "Metier_CITP" in base_gv.columns
           else pl.lit(None).cast(pl.Utf8).alias("Metier_CITP"),
-        # Barème : conservé directement depuis base_gv (ajouté en 7b)
         pl.col("bareme").first().alias("bareme")
           if "bareme" in base_gv.columns
           else pl.lit(None).cast(pl.Utf8).alias("bareme"),
@@ -559,8 +683,6 @@ print(f"   {len(base_agrege):,} agents agrégés\n")
 # ============================================================
 # 8b. WINSORISATION DU REVENU TOTAL
 # ============================================================
-# Appliquée uniquement en mémoire pour le calcul des indicateurs.
-# Le Gold n'est pas modifié — REVENU_TOTAL brut est conservé.
 
 value_col_indic = "REVENU_TOTAL"
 
@@ -630,12 +752,10 @@ if "Code_CITP" in base_agrege.columns:
 else:
     indic_citp = pl.DataFrame()
 
-# Ventilations barème (si fuzzy join réussi en 7b)
+# Ventilations barème
 indic_bareme       = pl.DataFrame()
 indic_bareme_grade = pl.DataFrame()
 indic_bareme_sexe  = pl.DataFrame()
-global_brut        = None
-stats_bareme_detail = pl.DataFrame()
 
 if BAREME_DISPONIBLE:
     base_b = base_agrege.filter(pl.col("bareme").is_not_null())
@@ -648,30 +768,6 @@ if BAREME_DISPONIBLE:
     indic_bareme_sexe = compute_indicators(
         base_b, ["ANNEE", "MOIS_NUM", "MOIS", "bareme", "SEXE_STD"], value_col_indic
     )
-    # Stats SALAIRE_BRUT ligne par ligne (pour MODELE_ANSTAT, calculé ici une seule fois)
-    base_gv_b = base_gv.filter(
-        pl.col("bareme_detail").is_not_null()
-        & pl.col("SALAIRE_BRUT").is_not_null()
-        & (pl.col("SALAIRE_BRUT") > 0)
-    )
-    if len(base_gv_b) > 0:
-        global_brut = base_gv_b.select([
-            pl.col("SALAIRE_BRUT").min().round(0).alias("salaire_brut_min"),
-            pl.col("SALAIRE_BRUT").mean().round(0).alias("salaire_brut_moyen"),
-            pl.col("SALAIRE_BRUT").max().round(0).alias("salaire_brut_max"),
-            pl.col("SALAIRE_BRUT").median().round(0).alias("salaire_brut_mediane"),
-        ]).row(0, named=True)
-        stats_bareme_detail = (
-            base_gv_b.group_by("bareme_detail")
-            .agg([
-                pl.col("SALAIRE_BRUT").min().round(0).alias("salaire_brut_min"),
-                pl.col("SALAIRE_BRUT").mean().round(0).alias("salaire_brut_moyen"),
-                pl.col("SALAIRE_BRUT").max().round(0).alias("salaire_brut_max"),
-                pl.col("SALAIRE_BRUT").median().round(0).alias("salaire_brut_mediane"),
-                pl.len().alias("nb_obs"),
-            ])
-            .sort("bareme_detail")
-        )
 
 total_indic = (len(indic_grade) + len(indic_grade_sexe) + len(indic_citp)
                + len(indic_bareme) + len(indic_bareme_grade) + len(indic_bareme_sexe))
@@ -800,10 +896,60 @@ print(f"   Multi-postes détail  : {len(multi_effectif)} lignes")
 print(f"   Distribution globale : {len(distrib_postes)} lignes\n")
 
 # ============================================================
-# 12. EXPORT EXCEL
+# 12. PRÉ-CALCUL DONNÉES MODELE_ANSTAT PAR ANNÉE
+# ============================================================
+# On prépare un dict {annee: (global_brut, stats_bareme_detail)}
+# pour éviter de refiltrer base_gv_b plusieurs fois.
+
+anstat_data_par_annee: dict[int, tuple[dict, pl.DataFrame]] = {}
+
+if BAREME_DISPONIBLE:
+    print("12. Pré-calcul données MODELE_ANSTAT par année...")
+    for annee in [2024, 2025]:
+        if annee not in ANNEES_ANALYSE:
+            print(f"   ⚠️  Année {annee} absente de la période — ignorée")
+            continue
+
+        base_gv_b_annee = base_gv.filter(
+            (pl.col("ANNEE") == annee)
+            & pl.col("bareme_detail").is_not_null()
+            & pl.col("SALAIRE_BRUT").is_not_null()
+            & (pl.col("SALAIRE_BRUT") > 0)
+        )
+
+        if len(base_gv_b_annee) == 0:
+            print(f"   ⚠️  Aucune donnée barème pour {annee} — feuille ignorée")
+            continue
+
+        global_brut_annee = base_gv_b_annee.select([
+            pl.col("SALAIRE_BRUT").min().round(0).alias("salaire_brut_min"),
+            pl.col("SALAIRE_BRUT").mean().round(0).alias("salaire_brut_moyen"),
+            pl.col("SALAIRE_BRUT").max().round(0).alias("salaire_brut_max"),
+            pl.col("SALAIRE_BRUT").median().round(0).alias("salaire_brut_mediane"),
+        ]).row(0, named=True)
+
+        stats_annee = (
+            base_gv_b_annee.group_by("bareme_detail")
+            .agg([
+                pl.col("SALAIRE_BRUT").min().round(0).alias("salaire_brut_min"),
+                pl.col("SALAIRE_BRUT").mean().round(0).alias("salaire_brut_moyen"),
+                pl.col("SALAIRE_BRUT").max().round(0).alias("salaire_brut_max"),
+                pl.col("SALAIRE_BRUT").median().round(0).alias("salaire_brut_mediane"),
+                pl.len().alias("nb_obs"),
+            ])
+            .sort("bareme_detail")
+        )
+
+        anstat_data_par_annee[annee] = (global_brut_annee, stats_annee)
+        print(f"   ✓ {annee} : {len(stats_annee)} barèmes, "
+              f"{len(base_gv_b_annee):,} observations")
+    print()
+
+# ============================================================
+# 13. EXPORT EXCEL
 # ============================================================
 
-print("12. Export Excel...")
+print("13. Export Excel...")
 
 def appliquer_style_entete(ws, n_cols: int) -> None:
     fill  = PatternFill("solid", fgColor="4F81BD")
@@ -848,131 +994,21 @@ if BAREME_DISPONIBLE:
     ecrire_feuille(wb, "REVENU_Bareme_Grade",   indic_bareme_grade)
     ecrire_feuille(wb, "REVENU_Bareme_Sexe",    indic_bareme_sexe)
 
-    # --- Feuille MODELE_ANSTAT ---
-    # Format identique à l'EXEMPLE_STATISTIQUE du fichier ANSTAT :
-    # lignes = secteurs / sous-groupes, colonnes = min / moyen / max salaire brut
-    if global_brut is not None and len(stats_bareme_detail) > 0:
-        ws_anstat = wb.create_sheet("MODELE_ANSTAT")
-        ws_anstat.sheet_view.showGridLines = False
-
-        fill_titre   = PatternFill("solid", fgColor="1F4E79")
-        fill_entete  = PatternFill("solid", fgColor="2E75B6")
-        fill_global  = PatternFill("solid", fgColor="FFF2CC")
-        fill_secteur = PatternFill("solid", fgColor="D6E4F0")
-        fill_alt     = [PatternFill("solid", fgColor="EBF3FB"),
-                        PatternFill("solid", fgColor="FFFFFF")]
-
-        font_titre   = Font(bold=True, color="FFFFFF", size=12)
-        font_entete  = Font(bold=True, color="FFFFFF", size=10)
-        font_global  = Font(bold=True, color="7F6000", size=11)
-        font_secteur = Font(bold=True, color="1F4E79", size=10)
-        font_sous    = Font(size=10, italic=True)
-        font_montant = Font(size=10)
-
-        al_centre  = Alignment(horizontal="center", vertical="center")
-        al_gauche  = Alignment(horizontal="left",   vertical="center")
-        al_droite  = Alignment(horizontal="right",  vertical="center")
-        al_indent  = Alignment(horizontal="left",   vertical="center", indent=2)
-
-        annee_max_label = ""
-        if "ANNEE" in base.columns:
-            annees = base["ANNEE"].drop_nulls().unique().to_list()
-            if annees:
-                annee_max_label = str(sorted(annees)[-1])
-
-        # Titre
-        ws_anstat.merge_cells("A1:D1")
-        titre_cell = ws_anstat.cell(
-            row=1, column=1,
-            value=f"MODÈLE DE DONNÉES DE SALAIRE DES FONCTIONNAIRES"
-                  f"{' POUR ' + annee_max_label if annee_max_label else ''}"
+    # --- Feuilles MODELE_ANSTAT_2024 et MODELE_ANSTAT_2025 ---
+    # Une feuille par année, construite depuis les données filtrées
+    # calculées à l'étape 12.
+    for annee in [2024, 2025]:
+        if annee not in anstat_data_par_annee:
+            print(f"   ⚠️  MODELE_ANSTAT_{annee} ignorée (données absentes)")
+            continue
+        global_brut_annee, stats_annee = anstat_data_par_annee[annee]
+        construire_feuille_anstat(
+            wb=wb,
+            sheet_name=f"MODELE_ANSTAT_{annee}",
+            annee_label=str(annee),
+            global_brut=global_brut_annee,
+            stats_bareme_detail=stats_annee,
         )
-        titre_cell.font      = font_titre
-        titre_cell.fill      = fill_titre
-        titre_cell.alignment = al_centre
-        ws_anstat.row_dimensions[1].height = 28
-
-        # En-têtes colonnes
-        ws_anstat.cell(row=2, column=1, value="salaires en FCFA").font = Font(size=10)
-        for col_i, label in enumerate(
-            ["salaire brut minimum", "salaire brut moyen", "salaire brut maximum"],
-            start=2
-        ):
-            c = ws_anstat.cell(row=2, column=col_i, value=label)
-            c.font      = font_entete
-            c.fill      = fill_entete
-            c.alignment = al_centre
-        ws_anstat.row_dimensions[2].height = 22
-
-        # Lookup dans stats_bareme_detail
-        def get_val_anstat(key: str, col: str):
-            if key == "_GLOBAL_":
-                return global_brut.get(col)
-            rows = stats_bareme_detail.filter(pl.col("bareme_detail") == key)
-            if len(rows) == 0:
-                return None
-            return rows.row(0, named=True).get(col)
-
-        row_anstat = 3
-        sous_idx   = 0
-        for libelle, bareme_key in ORDRE_MODELE_ANSTAT:
-            est_global   = bareme_key == "_GLOBAL_"
-            est_titre    = bareme_key is None
-            est_sous_gpe = not est_global and not est_titre
-
-            if est_global:
-                for col_i, val in enumerate([
-                    "TOUS SECTEURS CONFONDUS",
-                    get_val_anstat("_GLOBAL_", "salaire_brut_min"),
-                    get_val_anstat("_GLOBAL_", "salaire_brut_moyen"),
-                    get_val_anstat("_GLOBAL_", "salaire_brut_max"),
-                ], start=1):
-                    c = ws_anstat.cell(row=row_anstat, column=col_i, value=val)
-                    c.font      = font_global
-                    c.fill      = fill_global
-                    c.alignment = al_gauche if col_i == 1 else al_centre
-                    if col_i > 1 and isinstance(val, (int, float)):
-                        c.number_format = "#,##0"
-                ws_anstat.row_dimensions[row_anstat].height = 22
-
-            elif est_titre:
-                ws_anstat.merge_cells(
-                    start_row=row_anstat, start_column=1,
-                    end_row=row_anstat,   end_column=4
-                )
-                c = ws_anstat.cell(row=row_anstat, column=1, value=libelle)
-                c.font      = font_secteur
-                c.fill      = fill_secteur
-                c.alignment = al_gauche
-                ws_anstat.row_dimensions[row_anstat].height = 20
-
-            else:
-                bg = fill_alt[sous_idx % 2]
-                sous_idx += 1
-                c1 = ws_anstat.cell(row=row_anstat, column=1, value=libelle)
-                c1.font      = font_sous
-                c1.fill      = bg
-                c1.alignment = al_indent
-                for col_i, stat_key in enumerate(
-                    ["salaire_brut_min", "salaire_brut_moyen", "salaire_brut_max"],
-                    start=2
-                ):
-                    val = get_val_anstat(bareme_key, stat_key)
-                    c = ws_anstat.cell(row=row_anstat, column=col_i, value=val)
-                    c.font          = font_montant
-                    c.fill          = bg
-                    c.alignment     = al_droite
-                    c.number_format = "#,##0"
-                ws_anstat.row_dimensions[row_anstat].height = 18
-
-            row_anstat += 1
-
-        # Largeurs colonnes
-        ws_anstat.column_dimensions["A"].width = 55
-        for col_letter in ["B", "C", "D"]:
-            ws_anstat.column_dimensions[col_letter].width = 22
-        ws_anstat.freeze_panes = "A3"
-        print(f"   ✓ MODELE_ANSTAT ({row_anstat - 3} lignes)")
 
 buf_xlsx = io.BytesIO()
 wb.save(buf_xlsx)
