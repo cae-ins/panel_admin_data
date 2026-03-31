@@ -191,14 +191,38 @@ for chemin_objet in fichiers_minio:
             }
             feuille2 = feuille2.rename(rename_f2)
 
+            # Codes numériques F2 après normalisation (ex: "124_F2", "421_F2")
+            cols_num_f2 = [c for c in feuille2.columns
+                          if re.match(r"^\d+_F2$", c)]
+
+            # Filtrer F2 : garder uniquement les individus ayant à la fois
+            # 124_F2 et 421_F2 (indispensables pour le calcul du salaire brut)
+            cols_obligatoires = {"124_F2", "421_F2"}
+            cols_presentes = set(cols_num_f2) & cols_obligatoires
+
+            if cols_obligatoires.issubset(set(cols_num_f2)):
+                feuille2 = feuille2.filter(
+                    pl.col("124_F2").is_not_null()
+                    & (pl.col("124_F2").cast(pl.Utf8) != "")
+                    & pl.col("421_F2").is_not_null()
+                    & (pl.col("421_F2").cast(pl.Utf8) != "")
+                )
+                nb_f2_av = None
+                print(f"      (F2 : filtré sur 124+421, {len(feuille2):,} lignes)")
+            else:
+                print(f"      (F2 : colonnes 124_F2/421_F2 absentes, F2 ignoré)")
+
             cle_f1 = "CLE_UNIQUE" if "CLE_UNIQUE" in feuille1.columns else "MATRICULE"
             if cle_f1 in feuille1.columns:
+                # INNER JOIN : on ne garde que les individus présents dans les
+                # deux feuilles (après filtration F2 sur 124+421)
                 feuille1 = feuille1.join(
                     feuille2,
                     left_on=cle_f1,
                     right_on="CLE_UNIQUE_F2",
-                    how="left",
+                    how="inner",
                 )
+                print(f"      (F1↔F2 : {len(feuille1):,} individus communs)")
 
         # Ajout des métadonnées et cast tout-String (Bronze = brut)
         feuille1 = (

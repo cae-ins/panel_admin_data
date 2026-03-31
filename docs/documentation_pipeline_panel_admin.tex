@@ -156,14 +156,16 @@
 
   {\Large\bfseries Documentation Technique Complète\par}
   \vspace{0.5cm}
-  {\large Version 2.0 — Architecture Python / Polars / MinIO\par}
+  {\large Version 2.1 — Architecture Python / Polars / MinIO\par}
   \vspace{2cm}
 
   \begin{tcolorbox}[colback=lightblue!40, colframe=primaryblue, width=12cm]
     \centering
     \textbf{Périmètre :} Indicateurs de la masse salariale des agents de l'État\\[4pt]
     \textbf{Couverture temporelle :} Janvier 2015 -- Décembre 2025\\[4pt]
-    \textbf{Technologie :} Python · Polars · MinIO (S3) · openpyxl
+    \textbf{Technologie :} Python · Polars · MinIO (S3) · openpyxl\\[4pt]
+    \textbf{Mise à jour v2.1 :} INNER JOIN F1$\leftrightarrow$F2 +
+    filtration 124+421 dans F2 + suppression du fallback \texttt{montant\_brut}
   \end{tcolorbox}
 
   \vfill
@@ -243,9 +245,14 @@ Trois types de fichiers de référence sont déposés dans
 
 \section{Suppressions de lignes dans le pipeline}
 
-Le pipeline supprime des lignes à deux étapes clés :
+Le pipeline supprime des lignes à trois étapes clés :
 
 \begin{itemize}
+  \item \textbf{Étape 02 (Staging $\rightarrow$ Bronze)} : dans la Feuille 2,
+        seuls les individus ayant à la fois \texttt{124\_F2} ET \texttt{421\_F2}
+        non nuls sont conservés. La jointure F1$\leftrightarrow$F2 est une
+        \texttt{INNER JOIN} --- les individus absents de l'une des deux feuilles
+        sont éliminés.
   \item \textbf{Étape 03 (Bronze $\rightarrow$ Silver)} : toute ligne dont
         \colname{situation\_normalisee} vaut \texttt{autre} est supprimée.
         Les situations conservées sont \texttt{en\_activite},
@@ -636,8 +643,12 @@ Pour chaque fichier Excel mensuel :
       \item Renommée en \texttt{CLE\_UNIQUE\_F2}
       \item Toutes les autres colonnes F2 reçoivent le suffixe
             \texttt{\_F2} (ex: \texttt{124\_F2}, \texttt{228\_F2})
-      \item Jointure \texttt{left} sur \texttt{CLE\_UNIQUE} ou
-            \texttt{MATRICULE} selon disponibilité
+      \item \textbf{Filtrage F2} : avant la jointure, on ne conserve dans F2
+            que les individus ayant à la fois \texttt{124\_F2} ET \texttt{421\_F2}
+            non nuls. Ces deux codes sont indispensables au calcul du salaire brut.
+      \item \textbf{INNER JOIN} sur \texttt{CLE\_UNIQUE} ou
+            \texttt{MATRICULE} selon disponibilité --- seuls les individus présents
+            dans les deux feuilles sont conservés.
     \end{itemize}
   \item Ajout de deux colonnes de métadonnées :
     \begin{itemize}[nosep]
@@ -1234,9 +1245,15 @@ COMPOSANTES\_SALAIRE = ["124\_f2", "228\_f2", "271\_f2", "421\_f2", "425\_f2"]
 \end{codebox}
 
 Ces colonnes correspondent aux codes de rémunération de la Feuille 2, avec
-le suffixe \texttt{\_f2} ajouté lors de l'étape 02. Si aucune composante
-n'est trouvée dans le Gold, le script utilise \texttt{montant\_brut} comme
-fallback.
+le suffixe \texttt{\_F2} ajouté lors de l'étape 02. Le salaire brut est
+calculé par somme horizontale de ces composantes.
+
+\begin{warningbox}[Condition préalable — INNER JOIN à l'étape 02]
+  En raison du filtrage F2 (124 et 421 obligatoires) et de l'INNER JOIN
+  appliqués à l'étape 02, chaque individu du Gold est garanti avoir les
+  composantes F2. Si aucune composante n'est trouvée, le script lève une
+  erreur explicite plutôt qu'un fallback silencieux.
+\end{warningbox}
 
 \subsection{Nom du fichier de sortie (dynamique)}
 
@@ -1293,8 +1310,10 @@ Filtre sur \texttt{ANNEES\_ANALYSE}.
 
 \subsubsection{Étape 4 — Calcul SALAIRE\_BRUT}
 
-Somme horizontale des composantes présentes. Fallback :
-\texttt{montant\_brut}. Fallback ultime : 0.
+Somme horizontale des composantes F2 présentes
+(\texttt{124\_f2}, \texttt{228\_f2}, \texttt{271\_f2}, \texttt{421\_f2},
+\texttt{425\_f2}). Si aucune composante n'est trouvée (situation anormale après
+INNER JOIN), le script lève une \texttt{RuntimeError} explicite.
 
 \subsubsection{Étape 5 — Standardisation SEXE\_STD}
 
@@ -1773,6 +1792,10 @@ Télécharger depuis
   \texttt{Aucune donnée pour les années [2024, 2025]} &
     Les données ne couvrent pas les années sélectionnées.
     Passer \texttt{PERIODE\_RECENTE = False}. \\
+  \texttt{RuntimeError : Aucune composante de salaire} &
+    Les colonnes F2 (124\_f2, 228\_f2, etc.) sont absentes du Gold.
+    Vérifier que l'étape 02 a bien été exécutée après la modification
+    (INNER JOIN + filtration 124+421). Relancer le pipeline depuis 02. \\
   \texttt{Taux matching barème $<$ 20\%} &
     Peu d'emplois reconnus dans \texttt{CORRESPONDANCE\_GRILLE\_EMPLOI.xlsx}.
     Vérifier les libellés d'emploi dans ce fichier. \\

@@ -1,0 +1,717 @@
+\documentclass[12pt,a4paper,french]{article}
+
+\usepackage[utf8]{inputenc}
+\usepackage[T1]{fontenc}
+\usepackage{babel}
+\usepackage{geometry}
+\usepackage{xcolor}
+\usepackage{hyperref}
+\usepackage{graphicx}
+\usepackage{listings}
+\usepackage{titlesec}
+\usepackage{tcolorbox}
+\usepackage{enumitem}
+\usepackage{booktabs}
+\usepackage{longtable}
+\usepackage{tabularx}
+\usepackage{amsmath}
+\usepackage{setspace}
+\usepackage{parskip}
+
+\geometry{
+    top=2.5cm, bottom=2.5cm,
+    left=2.5cm, right=2.5cm
+}
+
+\definecolor{primaryblue}{RGB}{31,78,121}
+\definecolor{lightblue}{RGB}{214,228,240}
+\definecolor{accentblue}{RGB}{70,130,180}
+\definecolor{darkgray}{RGB}{64,64,64}
+\definecolor{lightgray}{RGB}{245,245,245}
+\definecolor{successgreen}{RGB}{0,128,0}
+\definecolor{warningorange}{RGB}{204,102,0}
+\definecolor{errored}{RGB}{180,30,30}
+\definecolor{codebg}{RGB}{248,248,248}
+
+\hypersetup{
+    colorlinks=true,
+    linkcolor=primaryblue,
+    urlcolor=accentblue,
+    pdftitle={Note Méthodologique — Calcul des Salaires},
+    pdfauthor={Data Engineering Team},
+}
+
+\titleformat{\section}[block]
+    {\normalfont\Large\bfseries\color{primaryblue}}
+    {\thesection}{1em}{}
+
+\titleformat{\subsection}[block]
+    {\normalfont\large\bfseries\color{accentblue}}
+    {\thesubsection}{1em}{}
+
+\titleformat{\subsubsection}[block]
+    {\normalfont\normalsize\bfseries\color{darkgray}}
+    {\thesubsubsection}{1em}{}
+
+\tcbset{
+    common/.style={
+        enhanced, breakable,
+        fonttitle=\bfseries\color{primaryblue},
+        left=6pt, right=6pt, top=4pt, bottom=4pt
+    }
+}
+
+\newtcolorbox{infobox}[1][]{
+    common,
+    colback=lightblue!30, colframe=primaryblue,
+    title={#1}
+}
+
+\newtcolorbox{warningbox}[1][]{
+    common,
+    colback=orange!10, colframe=warningorange,
+    title={#1}
+}
+
+\newtcolorbox{infoboxsimple}{
+    enhanced, breakable,
+    colback=lightblue!30, colframe=primaryblue,
+    left=6pt, right=6pt, top=4pt, bottom=4pt
+}
+
+\lstset{
+    backgroundcolor=\color{codebg},
+    basicstyle=\small\ttfamily,
+    breaklines=true,
+    captionpos=b,
+    commentstyle=\color{successgreen},
+    keywordstyle=\color{primaryblue}\bfseries,
+    stringstyle=\color{errored},
+    numberstyle=\tiny\color{darkgray},
+    numbers=left,
+    numbersep=8pt,
+    frame=single,
+    framesep=4pt,
+    rulecolor=\color{darkgray!40},
+    showstringspaces=false,
+    tabsize=4,
+    language=Python,
+}
+
+\newcommand{\colname}[1]{\texttt{#1}}
+\newcommand{\code}[1]{\texttt{#1}}
+
+\setlength{\parskip}{6pt}
+\setlength{\parindent}{0pt}
+\onehalfspacing
+
+\begin{document}
+
+% ─── Page de titre ───────────────────────────────────────────
+\begin{titlepage}
+    \centering
+    \vspace*{2cm}
+    {\huge\bfseries\color{primaryblue}
+        Note Méthodologique\par
+        \vspace{0.5cm}
+        Calcul des Salaires\par
+        \vspace{0.3cm}
+        Panel Administratif 2015--2025\par
+    \par}
+    \vspace{1.5cm}
+    \textcolor{accentblue}{\rule{10cm}{2pt}}
+    \vspace{1cm}
+
+    {\large\bfseries Version 1.0\par}
+    \vspace{0.5cm}
+    {\large Guide méthodologique complet sur le calcul du salaire brut,\par
+           les arbitrages de population et les imputations.\par}
+    \vspace{2cm}
+
+    \begin{tcolorbox}[colback=lightblue!40, colframe=primaryblue, width=12cm]
+        \centering
+        \textbf{Prérequis :} Comprendre la structure F1/F2 des fichiers source\par
+        \textbf{Public :} Data engineers, statisticiens, responsables métier\par
+    \end{tcolorbox}
+
+    \vfill
+    {\small\color{darkgray} Document généré le \today\par}
+\end{titlepage}
+
+\newpage
+
+% ─── Table des matières ──────────────────────────────────────
+\tableofcontents
+\newpage
+
+% ═════════════════════════════════════════════════════════════
+\section{Contexte et objectifs}
+% ═════════════════════════════════════════════════════════════
+
+\subsection{Problématique}
+
+Les fichiers de solde mensuels de la fonction publique contiennent deux feuilles :
+
+\begin{itemize}
+    \item \textbf{Feuille 1 (F1)} : données administratives de l'agent
+          (matricule, nom, organisme, grade, montant brut agrégé, etc.)
+    \item \textbf{Feuille 2 (F2)} : décomposition détaillée par code de
+          rémunération (rubriques 124, 228, 271, 421, 425, etc.)
+\end{itemize}
+
+Cette structure soulève plusieurs questions méthodologiques :
+
+\begin{enumerate}
+    \item Quelle feuille utiliser comme source du salaire ?
+    \item Comment gérer les individus présents dans une feuille mais pas l'autre ?
+    \item Comment traiter les individus sans composante de salaire dans F2 ?
+    \item Comment imputer les grades manquants ?
+\end{enumerate}
+
+\subsection{Objectifs de cette note}
+
+Ce document décrit :
+
+\begin{itemize}
+    \item Les choix méthodologiques retenus pour le calcul du salaire
+    \item Les arbitrages faits sur la population d'étude
+    \item Les règles d'imputation des grades
+    \item Les règles d'imputation des salaires
+    \item Les contrôles qualité appliqués
+\end{itemize}
+
+% ═════════════════════════════════════════════════════════════
+\section{Structure des fichiers source}
+% ═════════════════════════════════════════════════════════════
+
+\subsection{Description des feuilles}
+
+\begin{tabularx}{\textwidth}{lX}
+    \toprule
+    \textbf{Feuille} & \textbf{Contenu} \\
+    \midrule
+    \textbf{Feuille 1 (F1)} &
+        Données agent : matricule, nom, date naissance, sexe,
+        situation administrative, organisme, lieu d'affectation,
+        emploi, grade, \textbf{montant\_brut} (agrégé),
+        \textbf{montant\_net} (agrégé), etc. \\
+    \textbf{Feuille 2 (F2)} &
+        Décomposition par code numérique : chaque ligne représente un
+        individu $\times$ code poste avec un montant.
+        La clé de jointure est \texttt{MATRICULE||CODE\_ORGANISME}. \\
+    \bottomrule
+\end{tabularx}
+
+\subsection{Codes rubriques F2}
+
+Les codes numériques de la Feuille 2 correspondent à des types de rémunération :
+
+\begin{tabularx}{\textwidth}{lX}
+    \toprule
+    \textbf{Code} & \textbf{Libellé (ANSTAT)} \\
+    \midrule
+    \code{124\_F2} & Solde de Base \\
+    \code{228\_F2} & Indemnité de transport / complément \\
+    \code{271\_F2} & Prime de rendement ou équivalent \\
+    \code{421\_F2} & Majoration ou indemnité spécifique \\
+    \code{425\_F2} & Autre élément de rémunération \\
+    \bottomrule
+\end{tabularx}
+
+\begin{warningbox}[Codes obligatoires]
+    Les codes \code{124\_F2} et \code{421\_F2} sont considérés comme
+    indispensables. Un individu sans ces deux codes ne peut pas être inclus
+    dans l'analyse salariale.
+\end{warningbox}
+
+% ═════════════════════════════════════════════════════════════
+\section{Arbitrages méthodologiques}
+% ═════════════════════════════════════════════════════════════
+
+\subsection{Choix 1 : INNER JOIN plutôt que LEFT JOIN}
+
+\subsubsection{Problème}
+
+原始ement, le pipeline utilisait un \texttt{LEFT JOIN} :
+F1 conservait tous les individus, avec des valeurs nulles pour F2
+lorsque la jointure échouait.
+
+Cela posait deux problèmes :
+
+\begin{enumerate}
+    \item \textbf{Population incohérente} : des individus présents uniquement
+          en F1 (sans données F2) étaient inclus avec un salaire calculable
+          uniquement via le champ \texttt{montant\_brut} de F1.
+    \item \textbf{Deux sources de vérité} : \texttt{montant\_brut} (F1)
+          pouvait différer de la somme des composantes F2.
+\end{enumerate}
+
+\subsubsection{Décision}
+
+Depuis la version 2.1 du pipeline :
+
+\begin{itemize}
+    \item \textbf{INNER JOIN} : seuls les individus présents dans les deux
+          feuilles sont conservés
+    \item \textbf{Filtrage F2} : dans F2, on ne garde que les individus
+          ayant \code{124\_F2} ET \code{421\_F2} non nuls
+\end{itemize}
+
+\begin{infoboxsimple}
+    \textbf{Raison} : Le salaire brut doit être calculé à partir des
+    composantes F2, pas du champ agrégé F1. Un individu sans ces composantes
+    ne peut pas avoir un salaire fiable.
+\end{infoboxsimple}
+
+\subsection{Choix 2 : Suppression du fallback}
+
+\subsubsection{Problème}
+
+Le code précédent contenait un \texttt{fallback} :
+
+\begin{lstlisting}[language=Python]
+if composantes_presentes:
+    # somme normale
+else:
+    # fallback vers montant_brut de F1
+    base = base.with_columns(
+        pl.col("montant_brut").cast(pl.Float64).alias("SALAIRE_BRUT")
+    )
+\end{lstlisting}
+
+Ce fallback masquait les problèmes de données et introduisait une
+\textbf{incohérence méthodologique} : certains salaires venaient de F2,
+d'autres de F1.
+
+\subsubsection{Décision}
+
+Depuis la version 2.1 :
+
+\begin{lstlisting}[language=Python]
+if composantes_presentes:
+    # somme des composantes F2
+else:
+    raise RuntimeError(
+        "Aucune composante de salaire trouvee. "
+        "Verifiez que l'etape 02 a bien ete executee."
+    )
+\end{lstlisting}
+
+\begin{warningbox}[Conséquence]
+    Ce changement nécessite de \textbf{ré-exécuter le pipeline complet}
+    (étapes 02 à 08) pour recalculer les données avec la nouvelle logique.
+\end{warningbox}
+
+% ═════════════════════════════════════════════════════════════
+\section{Calcul du salaire brut}
+% ═════════════════════════════════════════════════════════════
+
+\subsection{Rationnel méthodologique}
+
+La méthodologie de calcul des salaires vise à établir des moyennes comparables
+entre secteurs en s'affranchissant des spécificités de chaque grille salariale.
+
+\begin{infobox}[Principe de comparabilité]
+    Pour réduire l'effet des particularités de chaque grille salariale sur la
+    moyenne, le calcul du salaire moyen des fonctionnaires se fait en tenant
+    compte uniquement des codes postes de salaires que \textbf{tous les
+    fonctionnaires ont en commun}. Les indemnités spécifiques à l'emploi et/ou
+    à la fonction du fonctionnaire sont retirées.
+\end{infobox}
+
+\begin{warningbox}[Exclusion du code poste 135]
+    Le code poste \texttt{135} ne doit pas être intégré dans la détermination
+    des moyennes spécifiques par secteur. Ce code représente des indemnités
+    spécifiques qui ne sont pas communes à l'ensemble des fonctionnaires.
+\end{warningbox}
+
+\subsection{Codes postes communs retenus}
+
+Les codes postes communs à tous les fonctionnaires et retenus pour le calcul
+du salaire brut sont :
+
+\begin{center}
+\begin{tabular}{cll}
+    \toprule
+    \textbf{Code} & \textbf{Libellé (ANSTAT)} & \textbf{Rôle} \\
+    \midrule
+    \code{124\_F2} & Solde de Base & Composante principale du traitement \\
+    \code{228\_F2} & Indemnité de transport / complément & Composante commune \\
+    \code{271\_F2} & Prime de rendement ou équivalent & Composante commune \\
+    \code{421\_F2} & Majoration ou indemnité spécifique & Composante commune \\
+    \code{425\_F2} & Autre élément de rémunération & Composante commune \\
+    \bottomrule
+\end{tabular}
+\end{center}
+
+\subsection{Formule de calcul}
+
+\[
+\text{SALAIRE\_BRUT} = 124\_F2 + 228\_F2 + 271\_F2 + 421\_F2 + 425\_F2
+\]
+
+\begin{infobox}[Justification de la formule]
+    C'est la somme de ces codes postes qui est considérée comme salaire brut
+    en vue de déterminer la moyenne générale par grade des fonctionnaires.
+    Cette approche garantit que les comparaisons entre secteurs et entre grades
+    ne sont pas biaisées par des indemnités spécifiques à certaines fonctions.
+\end{infobox}
+
+\subsection{Logigramme de calcul}
+
+\begin{enumerate}
+    \item \textbf{Étape 02 — Jointure et filtrage}
+          \begin{itemize}
+              \item Lecture de F1 et F2 depuis le fichier Excel mensuel
+              \item Filtrage F2 : garder uniquement les individus avec
+                    \code{124\_F2} ET \code{421\_F2} non nuls
+              \item INNER JOIN sur \texttt{MATRICULE||CODE\_ORGANISME}
+          \end{itemize}
+
+    \item \textbf{Étape 07 — Calcul}
+          \begin{itemize}
+              \item Cast des composantes en \texttt{Float64}
+              \item Somme horizontale des composantes disponibles
+              \item Si aucune composante : erreur explicite (plus de fallback)
+          \end{itemize}
+\end{enumerate}
+
+\subsection{Indicateurs produits}
+
+À partir de \colname{SALAIRE\_BRUT}, le pipeline produit :
+
+\begin{tabularx}{\textwidth}{lX}
+    \toprule
+    \textbf{Indicateur} & \textbf{Définition} \\
+    \midrule
+    \colname{REVENU\_TOTAL} & Somme des \colname{SALAIRE\_BRUT} par agent $\times$ période \\
+    \colname{SALAIRE\_BRUT\_MOYEN} & Moyenne par grade $\times$ mois \\
+    \colname{SALAIRE\_BRUT\_MEDIAN} & Médiane par grade $\times$ mois \\
+    \bottomrule
+\end{tabularx}
+
+% ═════════════════════════════════════════════════════════════
+\section{Imputation des grades}
+% ═════════════════════════════════════════════════════════════
+
+\subsection{Problématique}
+
+Le champ \colname{statut\_fonctionnaire} (F1) contient des libellés textuels
+de la forme \texttt{"Catégorie A3"} ou \texttt{"Classe B2"}. Certains
+enregistrements ont un grade manquant (\texttt{NF}) ou invalide (grade
+incomplet comme \texttt{A} ou grade inexistant comme \texttt{B7}).
+
+\textbf{Contexte historique :} Avant 2021, les grades étaient mal renseignés
+dans les fichiers de solde. Par exemple, un individu pouvait avoir \texttt{B7}
+en 2018 alors que son grade réel était \texttt{B3}. Depuis 2021, le
+renseignment s'est amélioré.
+
+\subsection{Extraction du grade}
+
+Le grade est extrait par expression régulière :
+
+\begin{lstlisting}[language=Python]
+def extraire_grade(statut):
+    if not statut:
+        return "NF"
+    match = re.search(r"Cat[eé]gorie\s+([ABCD][0-9]*)", str(statut), re.I)
+    if match:
+        return match.group(1).upper().strip()  # ex: "A3"
+    return "NF"
+\end{lstlisting}
+
+\subsection{Classification des grades}
+
+\begin{center}
+\begin{tabular}{lll}
+    \toprule
+    \textbf{Type} & \textbf{Grades} & \textbf{Traitement} \\
+    \midrule
+    Valides & A1--A7, B1--B6, C1--C5, D1--D3 & Conservés tels quels \\
+    Invalides & B7, C7, D7, A, B, C, D, NF & Imputation forward-fill \\
+    Non imputables & NF sans historique & Exclus des indicateurs \\
+    \bottomrule
+\end{tabular}
+\end{center}
+
+\subsection{Méthode : Forward-Fill par individu (étape 03b)}
+
+L'imputation utilise une approche \textbf{forward-fill individuel} :
+
+\begin{enumerate}
+    \item \textbf{Principe}
+          \begin{itemize}
+              \item Pour un grade invalide en année $t$, on regarde si le même
+                    individu a un grade valide dans une année future $t' > t$
+              \item L'individu est identifié par \colname{cle\_unique} +
+                    \colname{emploi}
+              \item Si l'emploi n'a pas changé, on reporte le grade futur
+                    vers le passé
+          \end{itemize}
+
+    \item \textbf{Exemple}
+          \begin{itemize}
+              \item Individu \texttt{XYZ} en 2018 : grade = \texttt{B7} (invalide)
+              \item Individu \texttt{XYZ} en 2022 : grade = \texttt{B3} (valide),
+                    même emploi
+              \item $\Rightarrow$ Le grade \texttt{B3} est reporté sur 2018
+          \end{itemize}
+
+    \item \textbf{Construction du lookup}
+          \begin{itemize}
+              \item On parcourt toute la période (2015--2025)
+              \item Pour chaque individu (\colname{cle\_unique} +
+                    \colname{emploi}), on garde le grade valide de l'année
+                    la plus récente
+              \item Ce grade futur est utilisé pour imputer les années antérieures
+          \end{itemize}
+
+    \item \textbf{NF\_NON\_IMPUTABLE}
+          \begin{itemize}
+              \item Si l'individu n'a aucun grade valide dans les années futures,
+                    le grade reste invalide
+              \item Ces individus sont exclus des calculs d'indicateurs
+          \end{itemize}
+\end{enumerate}
+
+\begin{infobox}[Pourquoi le forward-fill individuel ?]
+    Plutôt que d'utiliser le grade modal d'un emploi (qui peut concerner
+    plusieurs personnes), le forward-fill garde la trace de chaque individu.
+    Si une personne est \texttt{B3} en 2022, c'est son propre grade qui est
+    reporté en arrière, pas celui d'un autre fonctionnaire occupant le même
+    emploi.
+\end{infobox}
+
+\subsection{Source du grade}
+
+\begin{tabularx}{\textwidth}{lX}
+    \toprule
+    \textbf{Valeur} & \textbf{Signification} \\
+    \midrule
+    \texttt{OBSERVE} & Grade extrait directement de \colname{statut\_fonctionnaire},
+                       valide \\
+    \texttt{IMPUTE} & Grade reporté depuis une année future du même individu \\
+    \texttt{NF\_NON\_IMPUTABLE} & Aucun grade valide trouvé dans l'historique
+                       de l'individu \\
+    \bottomrule
+\end{tabularx}
+
+% ═════════════════════════════════════════════════════════════
+\section{Imputation des salaires}
+% ═════════════════════════════════════════════════════════════
+
+\subsection{Situation}
+
+Certains individus ont un \colname{SALAIRE\_BRUT} nul ou manquant.
+Cela peut survenir si :
+
+\begin{itemize}
+    \item Les composantes F2 sont à zéro pour certains mois
+    \item L'individu est en \texttt{demi\_solde} (mi-temps administratif)
+\end{itemize}
+
+\subsection{Traitement}
+
+Le paramètre \colname{INCLURE\_ZEROS} contrôle le comportement :
+
+\begin{tabularx}{\textwidth}{lX}
+    \toprule
+    \textbf{Valeur} & \textbf{Comportement} \\
+    \midrule
+    \texttt{True} & Les salaires à zéro ou NA sont inclus dans les calculs \\
+    \texttt{False} & Seuls les salaires strictement > 0 sont inclus \\
+    \bottomrule
+\end{tabularx}
+
+\begin{warningbox}[Impact sur les indicateurs]
+    Inclure les zéros réduit la moyenne et la médiane. Cette option est
+    pertinente pour analyser la \textbf{masse salariale totale}.
+    L'exclusion des zéros est plus adaptée pour analyser les
+    \textbf{salaires effectivement versés}.
+\end{warningbox}
+
+% ═════════════════════════════════════════════════════════════
+\section{Winsorisation}
+% ═════════════════════════════════════════════════════════════
+
+\subsection{Problématique}
+
+Les fichiers de solde peuvent contenir des valeurs extrêmes (erreurs de saisie,
+indemnités exceptionnelles, etc.) qui faussent les indicateurs de tendance
+centrale.
+
+\subsection{Méthode}
+
+La winsorisation replace les valeurs en dehors d'un intervalle par les
+bornes de cet intervalle :
+
+\[
+x_{wins} = \begin{cases}
+    P_1 & \text{si } x < P_1 \\
+    x & \text{si } P_1 \leq x \leq P_{99} \\
+    P_{99} & \text{si } x > P_{99}
+\end{cases}
+\]
+
+où $P_1$ et $P_{99}$ sont les percentiles 1 et 99.
+
+\subsection{Paramètres}
+
+\begin{itemize}
+    \item \colname{SEUIL\_WINS} = 0.01 (par défaut) $\rightarrow$ écrêtage à P1/P99
+    \item \colname{MIN\_OBS\_WINS} = 100 (par défaut) : effectif minimum requis
+          pour calculer les percentiles par groupe CITP
+\end{itemize}
+
+\subsection{Niveaux de winsorisation}
+
+\begin{enumerate}
+    \item \textbf{Par \texttt{mois × grade × CITP}} : si effectif $\geq$ 100
+    \item \textbf{Par \texttt{mois × grade}} (repli) : si effectif $<$ 100
+\end{enumerate}
+
+\begin{infobox}[Winsorisation en mémoire]
+    La winsorisation est appliquée uniquement en mémoire pour le calcul
+    des indicateurs. Les données Gold ne sont pas modifiées.
+\end{infobox}
+
+% ═════════════════════════════════════════════════════════════
+\section{Filtrage par situation administrative}
+% ═════════════════════════════════════════════════════════════
+
+\subsection{Situations normalisées}
+
+\begin{tabularx}{\textwidth}{lX}
+    \toprule
+    \textbf{Code} & \textbf{Libellés reconnus} \\
+    \midrule
+    \texttt{en\_activite} & EN ACTIVITE, ACTIVITE, EN ACTIVITÉ, ACTIVITÉ \\
+    \texttt{regul\_indemnites} & REGUL. INDEMNITES, REGUL INDEMNITES,
+                                  REGULARISATION INDEMNITES \\
+    \texttt{demi\_solde} & DEMI-SOLDE, DEMI SOLDE, DEMISOLDE, 1/2 SOLDE \\
+    \texttt{autre} & Toute autre valeur (incluant null et vide) \\
+    \bottomrule
+\end{tabularx}
+
+\subsection{Traitement}
+
+Les situations \texttt{autre} sont \textbf{supprimées} à l'étape 03.
+Elles ne participent pas au calcul des indicateurs.
+
+% ═════════════════════════════════════════════════════════════
+\section{Contrôles qualité}
+% ═════════════════════════════════════════════════════════════
+
+\subsection{Contrôles sur les grades}
+
+\begin{itemize}
+    \item Distribution OBSERVE / IMPUTE / NF\_NON\_IMPUTABLE affichée
+    \item Alerte si taux de NF\_NON\_IMPUTABLE > 5\%
+\end{itemize}
+
+\subsection{Contrôles sur les montants}
+
+\begin{itemize}
+    \item Comptage des lignes où \texttt{montant\_net > montant\_brut}
+          (incohérence : le net ne peut pas dépasser le brut)
+    \item Distribution des salaires > 0
+\end{itemize}
+
+\subsection{Contrôles de matching ANSTAT}
+
+\begin{itemize}
+    \item Taux de matching par code (ORGANISME, GRADE, EMPLOI, etc.)
+    \item Logs en temps réel pour les codes surveillés
+\end{itemize}
+
+% ═════════════════════════════════════════════════════════════
+\section{Récapitulatif des étapes de calcul}
+% ═════════════════════════════════════════════════════════════
+
+\subsection{Flux complet}
+
+\begin{enumerate}
+    \item \textbf{02 — Staging vers Bronze}
+          \begin{itemize}
+              \item Lecture F1 et F2
+              \item Filtrage F2 : 124\_F2 ET 421\_F2 non nuls
+              \item INNER JOIN F1 $\leftrightarrow$ F2
+          \end{itemize}
+
+    \item \textbf{03 — Bronze vers Silver}
+          \begin{itemize}
+              \item Mapping colonnes vers noms standardisés
+              \item Normalisation situations administratives
+              \item Filtrage : suppression des \texttt{autre}
+              \item Enrichissement codes ANSTAT
+              \item Cast types numériques
+          \end{itemize}
+
+    \item \textbf{05 — Silver vers Gold}
+          \begin{itemize}
+              \item Agrégation masse\_salariale.parquet
+              \item Agrégation effectifs.parquet
+          \end{itemize}
+
+    \item \textbf{06 — Compilation panel}
+          \begin{itemize}
+              \item Construction panel individu $\times$ période
+              \item Déduplication matricule $\times$ mois
+          \end{itemize}
+
+    \item \textbf{06b — Imputation grades}
+          \begin{itemize}
+              \item Extraction grade depuis statut\_fonctionnaire
+              \item Cascade P1 $\rightarrow$ P2 $\rightarrow$ P3
+              \item Marquage source (OBSERVE/IMPUTE/NF)
+          \end{itemize}
+
+    \item \textbf{07 — Calcul indicateurs}
+          \begin{itemize}
+              \item Calcul SALAIRE\_BRUT = somme composantes F2
+              \item Winsorisation P1/P99
+              \item Agrégation REVENU\_TOTAL par agent
+              \item Calcul indicateurs (moy, méd, min, max, P25, P75)
+          \end{itemize}
+
+    \item \textbf{08 — Export Excel}
+          \begin{itemize}
+              \item Génération fichier multi-feuilles
+              \item Création sommaire navigable
+          \end{itemize}
+\end{enumerate}
+
+% ═════════════════════════════════════════════════════════════
+\section{Glossaire}
+% ═════════════════════════════════════════════════════════════
+
+\begin{tabularx}{\textwidth}{lX}
+    \toprule
+    \textbf{Terme} & \textbf{Définition} \\
+    \midrule
+    \textbf{Bronze} & Données brutes, tout en String, telles qu'ingérées \\
+    \textbf{Silver} & Données enrichies, typées, avec codes ANSTAT \\
+    \textbf{Gold} & Données agrégées ou panelisées, prêtes pour l'analyse \\
+    \textbf{CITP} & Classification Internationale Type des Professions \\
+    \textbf{INNER JOIN} & Jointure conservant uniquement les lignes communes \\
+    \textbf{Winsorisation} & Remplacement des valeurs extrêmes par les percentiles \\
+    \bottomrule
+\end{tabularx}
+
+\vfill
+
+\begin{center}
+    \textcolor{accentblue}{\rule{10cm}{1pt}}
+
+    \smallskip
+    \textbf{Document :} Note Méthodologique — Calcul des Salaires
+
+    \textbf{Version :} 1.0
+
+    \textbf{Date :} \today
+
+    \smallskip
+    \textit{Pour toute question, contacter l'équipe Data Engineering.}
+\end{center}
+
+\end{document}

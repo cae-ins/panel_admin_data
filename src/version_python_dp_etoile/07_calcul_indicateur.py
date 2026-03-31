@@ -502,6 +502,9 @@ print("4. Calcul du salaire brut depuis les composantes...")
 composantes_presentes = [c for c in COMPOSANTES_SALAIRE if c in base.columns]
 print(f"   Composantes trouvées : {composantes_presentes}")
 
+# Après INNER JOIN en step 2, toutes les composantes F2 sont garanties
+# être présentes pour chaque individu. On somme uniquement les colonnes
+# disponibles (124_f2, 228_f2, 271_f2, 421_f2, 425_f2).
 if composantes_presentes:
     base = base.with_columns([
         pl.col(c).cast(pl.Float64, strict=False) for c in composantes_presentes
@@ -511,10 +514,10 @@ if composantes_presentes:
         .alias("SALAIRE_BRUT")
     )
 else:
-    base = base.with_columns(
-        pl.col("montant_brut").cast(pl.Float64, strict=False).alias("SALAIRE_BRUT")
-        if "montant_brut" in base.columns
-        else pl.lit(0.0).alias("SALAIRE_BRUT")
+    raise RuntimeError(
+        "Aucune composante de salaire (124_f2, 228_f2, 271_f2, 421_f2, "
+        "425_f2) trouvée dans le Gold. Vérifiez que l'étape 02 a bien "
+        "été exécutée avec INNER JOIN."
     )
 
 n_pos = int((base["SALAIRE_BRUT"] > 0).sum())

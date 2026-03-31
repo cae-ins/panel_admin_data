@@ -40,13 +40,13 @@ SELECT
         WHEN UPPER(sexe) LIKE 'FEM%'  THEN 'Femme'
         ELSE 'Autre'
     END AS sexe,
-    "GRADE_1" AS grade_principal,
+    "GRADE" AS grade_principal,
     CASE
-        WHEN "GRADE_1" IN ('A3','A4','A5','A6','A7') THEN 'Catégorie A'
-        WHEN "GRADE_1" IN ('B1','B3')                THEN 'Catégorie B'
-        WHEN "GRADE_1" IN ('C1','C2','C3')           THEN 'Catégorie C'
-        WHEN "GRADE_1" IN ('D1','D2')                THEN 'Catégorie D'
-        WHEN "GRADE_1" = 'NF'                        THEN 'Non Fonctionnaire'
+        WHEN "GRADE" IN ('A3','A4','A5','A6','A7') THEN 'Catégorie A'
+        WHEN "GRADE" IN ('B1','B3')                THEN 'Catégorie B'
+        WHEN "GRADE" IN ('C1','C2','C3')           THEN 'Catégorie C'
+        WHEN "GRADE" IN ('D1','D2')                THEN 'Catégorie D'
+        WHEN "GRADE" = 'NF'                        THEN 'Non Fonctionnaire'
         ELSE 'Autre'
     END AS categorie_grade,
     CASE
@@ -88,7 +88,7 @@ SELECT
              OR UPPER(emploi)  LIKE '%PHARMACIEN%'
              OR UPPER(emploi)  LIKE '%CHIRURGIEN%'
              OR UPPER(emploi)  LIKE '%DENTISTE%')
-             AND "GRADE_1" IN ('A4','A5','A6','A7')                THEN 'Cadre-Sup-Santé'
+             AND "GRADE" IN ('A4','A5','A6','A7')                THEN 'Cadre-Sup-Santé'
         WHEN UPPER(organisme) LIKE '%SANTE%'
              OR UPPER(emploi)    LIKE '%INFIRMI%'
              OR UPPER(emploi)    LIKE '%SAGE-FEMME%'
@@ -96,14 +96,14 @@ SELECT
         WHEN UPPER(organisme) LIKE '%POLICE%'
              OR UPPER(emploi)    LIKE '%POLICIER%'
              OR UPPER(emploi)    LIKE '%COMMISSAIRE%'              THEN 'police'
-        WHEN "GRADE_1" = 'NF'                                      THEN 'Non Fonctionnaire'
+        WHEN "GRADE" = 'NF'                                      THEN 'Non Fonctionnaire'
         ELSE 'Barême Général'
     END AS bareme
 FROM panel
 WHERE montant_brut > 0
   AND annee BETWEEN 2015 AND 2099
-  AND "GRADE_1" IS NOT NULL
-  AND "GRADE_1" <> '';
+  AND "GRADE" IS NOT NULL
+  AND "GRADE" <> '';
 
 -- ------------------------------------------------------------
 -- 0b. VUE MATÉRIALISÉE (performances Superset)
