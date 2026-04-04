@@ -6,10 +6,12 @@
 #   - Normalisation et filtrage des situations administratives
 #   - Enrichissement avec les codes ANSTAT
 #   - Cast des montants en numérique
+#   - Calcul de salaire_brut_f2 = somme des composantes F2
+#     (124_f2 + 228_f2 + 271_f2 + 421_f2 + 425_f2)
 #
 # Ajout vs version initiale :
-#   - Suivi du taux de matching ANSTAT PAR PÉRIODE (CODE_ORGANISME,
-#     CODE_GRADE, CODE_EMPLOI) → rapport CSV dans staging/validation/
+#   - Suivi du taux de matching ANSTAT PAR PÉRIODE
+#   - Calcul de salaire_brut_f2 depuis les composantes F2
 #
 # Source  : s3://bronze/panel_admin/*.parquet
 # Sortie  : s3://silver/panel_admin/YYYY.parquet (un par année)
@@ -33,19 +35,13 @@ load_dotenv(".env")
 
 # --- CONFIGURATION ---
 
-# LORSQU'ON TRAVAILLE DEPUIS SA MACHINE LOCAL
-MINIO_ENDPOINT   = "http://192.168.1.230:30137"
-MINIO_ACCESS_KEY = "datalab-team"
-MINIO_SECRET_KEY = "minio-datalabteam123"
+MINIO_ENDPOINT   = os.getenv("MINIO_ENDPOINT",   "http://192.168.1.230:30137")
+MINIO_ACCESS_KEY = os.getenv("MINIO_ACCESS_KEY", "datalab-team")
+MINIO_SECRET_KEY = os.getenv("MINIO_SECRET_KEY", "minio-datalabteam123")
 
-# LORSQU'ON TRAVAILLE SUR JHUB
-# MINIO_ENDPOINT   = "http://minio.mon-namespace.svc.cluster.local:80"
-# MINIO_ACCESS_KEY = "datalab-team"
-# MINIO_SECRET_KEY = "minio-datalabteam123"
-
-BUCKET_STAGING = "staging"
-BUCKET_BRONZE  = "bronze"
-BUCKET_SILVER  = "silver"
+BUCKET_STAGING = os.getenv("BUCKET_STAGING", "staging")
+BUCKET_BRONZE  = os.getenv("BUCKET_BRONZE",  "bronze")
+BUCKET_SILVER  = os.getenv("BUCKET_SILVER",  "silver")
 PREFIX_BRONZE  = "panel_admin"
 PREFIX_SILVER  = "panel_admin"
 PREFIX_REFS    = "panel_admin/references"
@@ -53,6 +49,10 @@ PREFIX_VALID   = "panel_admin/validation"
 
 # Codes dont on suit le taux de matching par période
 CODES_A_SURVEILLER = ["CODE_ORGANISME", "CODE_GRADE", "CODE_EMPLOI"]
+
+# Composantes du salaire brut F2
+# Noms en lowercase après normalisation par le script 02
+COMPOSANTES_F2 = ["124_f2", "228_f2", "271_f2", "421_f2", "425_f2"]
 
 # --- CLIENT S3 (MinIO) ---
 s3 = boto3.client(
@@ -108,7 +108,7 @@ def normaliser_pour_matching(texte) -> str | None:
         return None
     texte = re.sub(r"[-]", " ", texte)
     texte = re.sub(r"[.,;:()\[\]/]", " ", texte)
-    texte = re.sub(r"[''\\u2019]", " ", texte)
+    texte = re.sub("[''\u2019]", " ", texte)
     texte = texte.upper()
     texte = unicodedata.normalize("NFKD", texte)
     texte = "".join(c for c in texte if not unicodedata.combining(c))
@@ -337,9 +337,6 @@ print(f"Fichiers Parquet Bronze trouvés : {len(cles_bronze)}\n")
 # ============================================================
 # TRAITEMENT MOIS PAR MOIS + REGROUPEMENT PAR ANNÉE
 # ============================================================
-# On traite chaque fichier Bronze mensuel individuellement pour
-# pouvoir calculer le taux de matching ANSTAT par période,
-# puis on regroupe par année pour l'écriture Silver.
 
 frames_par_annee: dict[str, list[pl.DataFrame]] = {}
 stats_matching_par_periode: list[dict] = []
@@ -349,7 +346,6 @@ nb_err = 0
 
 for cle in cles_bronze:
     periode = os.path.splitext(os.path.basename(cle))[0]
-    # Extraire l'année depuis le nom de fichier (format MMYYYY ou YYYY-MM)
     m = re.search(r"20\d{2}", periode)
     annee = m.group() if m else periode[:4]
 
@@ -361,7 +357,6 @@ for cle in cles_bronze:
 
         # --- Mapping colonnes ---
         correspondance = mapper_colonnes(list(df.columns))
-        # Déduplication des noms standards
         noms_std_vals = list(correspondance.values())
         seen: dict = {}
         new_corr: dict = {}
@@ -373,9 +368,7 @@ for cle in cles_bronze:
             new_corr[src] = std
         df = df.rename(new_corr)
 
-        # --- Forcer mois_annee depuis le nom de fichier (source fiable) ---
-        # Ne pas faire confiance à la valeur interne : certains fichiers bronze
-        # sont des doublons d'autres périodes et contiennent un mois_annee erroné.
+        # --- Forcer mois_annee depuis le nom de fichier ---
         df = df.with_columns(pl.lit(periode).alias("mois_annee"))
 
         # --- Normalisation situations ---
@@ -421,7 +414,6 @@ for cle in cles_bronze:
                 .unique(subset=["libelle_norm"])
                 .rename({col_code: nom_code})
             )
-            # Ajouter les colonnes extras si présentes
             cols_extra_src = [c for c in table_codes.columns
                               if c not in (col_code, "libelle", "libelle_norm")]
             if cols_extra_src:
@@ -440,11 +432,9 @@ for cle in cles_bronze:
                 .drop("_col_norm_tmp")
             )
 
-            # Calcul du taux de matching pour cette période
             taux = 100 * df[nom_code].is_not_null().sum() / len(df)
             row_stats[f"{nom_code}_taux"] = round(taux, 1)
 
-            # Log des codes principaux
             if nom_code in CODES_A_SURVEILLER:
                 print(f"      {nom_code} : {taux:.1f}%", flush=True)
 
@@ -460,6 +450,22 @@ for cle in cles_bronze:
         )
         if exprs_num:
             df = df.with_columns(exprs_num)
+
+        # --- Calcul salaire_brut_f2 ---
+        # Somme des composantes F2 disponibles dans ce fichier.
+        # Les noms sont en lowercase après le mapping du script 02
+        # (ex. "124_f2", "228_f2"...).
+        # On calcule ici dans le Silver — couche métier — pour que
+        # l'étape 06 n'ait plus qu'à lire la colonne depuis le Silver.
+        comps_presentes = [c for c in COMPOSANTES_F2 if c in df.columns]
+        if comps_presentes:
+            df = df.with_columns(
+                pl.sum_horizontal([pl.col(c) for c in comps_presentes])
+                .alias("salaire_brut_f2")
+            )
+        else:
+            df = df.with_columns(pl.lit(None).cast(pl.Float64).alias("salaire_brut_f2"))
+            print(f"    ⚠️  Composantes F2 absentes pour {periode} — salaire_brut_f2 = null")
 
         # Accumulation par année
         if annee not in frames_par_annee:
@@ -503,7 +509,6 @@ print()
 if stats_matching_par_periode:
     df_stats = pl.DataFrame(stats_matching_par_periode)
 
-    # Afficher les colonnes surveillées
     for code in CODES_A_SURVEILLER:
         col = f"{code}_taux"
         if col in df_stats.columns:

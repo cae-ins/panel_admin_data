@@ -22,7 +22,6 @@ import os
 import re
 import tempfile
 import unicodedata
-from math import ceil
 from dotenv import load_dotenv
 import boto3
 from botocore.client import Config
@@ -35,7 +34,6 @@ load_dotenv(".env")
 
 # --- CONFIGURATION ---
 
-# LORSQU'ON TRAVAILLE DEPUIS SA MACHINE LOCAL
 MINIO_ENDPOINT   = os.getenv("MINIO_ENDPOINT",   "http://192.168.1.230:30137")
 MINIO_ACCESS_KEY = os.getenv("MINIO_ACCESS_KEY", "datalab-team")
 MINIO_SECRET_KEY = os.getenv("MINIO_SECRET_KEY", "minio-datalabteam123")
@@ -165,7 +163,17 @@ for chemin_objet in fichiers_minio:
             read_options={"header_row": skip_f1},
         )
 
-        # Normalisation + déduplication des noms de colonnes
+        # Détecter la clé composite MATRICULE||CODE_ORGANISME dans F1
+        # AVANT normalisation (la normalisation supprimerait les "||")
+        nom_cle_f1 = next(
+            (c for c in feuille1.columns
+             if re.search(r"MATRICULE.*\|\|", str(c), re.IGNORECASE)),
+            None,
+        )
+        if nom_cle_f1:
+            feuille1 = feuille1.rename({nom_cle_f1: "CLE_UNIQUE"})
+
+        # Normalisation + déduplication (CLE_UNIQUE est déjà protégé)
         noms_norm = [normaliser_nom_colonne(c) for c in feuille1.columns]
         feuille1  = feuille1.rename(dict(zip(feuille1.columns, deduplication_noms(noms_norm))))
 
@@ -183,6 +191,7 @@ for chemin_objet in fichiers_minio:
              if re.search(r"MATRICULE.*\|\|", str(c), re.IGNORECASE)),
             None,
         )
+
         if nom_cle_f2:
             feuille2 = feuille2.rename({nom_cle_f2: "CLE_UNIQUE_F2"})
             rename_f2 = {
@@ -191,38 +200,40 @@ for chemin_objet in fichiers_minio:
             }
             feuille2 = feuille2.rename(rename_f2)
 
-            # Codes numériques F2 après normalisation (ex: "124_F2", "421_F2")
-            cols_num_f2 = [c for c in feuille2.columns
-                          if re.match(r"^\d+_F2$", c)]
-
-            # Filtrer F2 : garder uniquement les individus ayant à la fois
-            # 124_F2 et 421_F2 (indispensables pour le calcul du salaire brut)
+            cols_num_f2      = [c for c in feuille2.columns if re.match(r"^\d+_F2$", c)]
             cols_obligatoires = {"124_F2", "421_F2"}
-            cols_presentes = set(cols_num_f2) & cols_obligatoires
 
             if cols_obligatoires.issubset(set(cols_num_f2)):
+                # Étape 1 : ne garder dans F2 que les lignes
+                # avec 124 ET 421 renseignés
                 feuille2 = feuille2.filter(
                     pl.col("124_F2").is_not_null()
-                    & (pl.col("124_F2").cast(pl.Utf8) != "")
+                    & (pl.col("124_F2").cast(pl.Utf8).str.strip_chars() != "")
                     & pl.col("421_F2").is_not_null()
-                    & (pl.col("421_F2").cast(pl.Utf8) != "")
+                    & (pl.col("421_F2").cast(pl.Utf8).str.strip_chars() != "")
                 )
-                nb_f2_av = None
-                print(f"      (F2 : filtré sur 124+421, {len(feuille2):,} lignes)")
+                print(f"\n      (F2 : {len(feuille2):,} lignes avec 124+421 renseignés)")
             else:
-                print(f"      (F2 : colonnes 124_F2/421_F2 absentes, F2 ignoré)")
+                print(f"\n      (F2 : colonnes 124_F2/421_F2 absentes, F2 ignoré)")
+                feuille2 = None
 
-            cle_f1 = "CLE_UNIQUE" if "CLE_UNIQUE" in feuille1.columns else "MATRICULE"
-            if cle_f1 in feuille1.columns:
-                # INNER JOIN : on ne garde que les individus présents dans les
-                # deux feuilles (après filtration F2 sur 124+421)
-                feuille1 = feuille1.join(
-                    feuille2,
-                    left_on=cle_f1,
-                    right_on="CLE_UNIQUE_F2",
-                    how="inner",
-                )
-                print(f"      (F1↔F2 : {len(feuille1):,} individus communs)")
+            if feuille2 is not None:
+                cle_f1 = "CLE_UNIQUE" if "CLE_UNIQUE" in feuille1.columns else None
+
+                if cle_f1:
+                    # Étape 2 : INNER JOIN — ne garder que les lignes
+                    # présentes dans F1 ET dans F2 filtré
+                    feuille1 = feuille1.join(
+                        feuille2,
+                        left_on=cle_f1,
+                        right_on="CLE_UNIQUE_F2",
+                        how="inner",
+                    )
+                    print(f"      (F1↔F2 : {len(feuille1):,} individus communs)")
+                else:
+                    print(f"      (CLE_UNIQUE absente de F1, jointure ignorée)")
+        else:
+            print(f"\n      (F2 : clé MATRICULE||CODE_ORGANISME introuvable, F2 ignoré)")
 
         # Ajout des métadonnées et cast tout-String (Bronze = brut)
         feuille1 = (

@@ -16,7 +16,7 @@
 #       CODE_FONCTION,  fonction,
 #       CODE_SERVICE,   service,
 #       CODE_AFFECTATION, lieu_affectation,
-#       CODE_POSTE,     poste,
+#       CODE_POSTE,
 #       prise_service, date_retraite, age_retraite
 #   — Grade normalisé (03b)
 #       GRADE, GRADE_SOURCE
@@ -25,6 +25,8 @@
 #   — Salaires mensuels
 #       montant_brut, montant_net,
 #       retenue_pension, impot, charge_patronale
+#   — Salaire brut F2 (somme composantes 124+228+271+421+425)
+#       salaire_brut_f2
 #   — Traçabilité imputation salaires (03c)
 #       montant_brut_SOURCE, montant_net_SOURCE
 #   — Traçabilité fichier
@@ -88,7 +90,7 @@ s3 = boto3.client(
 
 COLONNES_PANEL = [
     # --- Identité individuelle ---
-    "cle_unique",            # matricule || CODE_ORGANISME (03b)
+    "cle_unique",
     "matricule",
     "nom",
     "sexe",
@@ -111,24 +113,28 @@ COLONNES_PANEL = [
     "age_retraite",
 
     # --- Grade normalisé (03b_imputer_grades_silver) ---
-    "GRADE",             # grade normalisé utilisé pour l'imputation
-    "GRADE_SOURCE",      # OBSERVE | IMPUTE_Ln | NON_IMPUTABLE
+    "GRADE",
+    "GRADE_SOURCE",
 
     # --- Dimensions temporelles ---
-    "mois_annee",        # String brut du Silver (MMYYYY)
-    "annee",             # Int32 extrait
-    "mois",              # Int32 extrait
+    "mois_annee",
+    "annee",
+    "mois",
 
-    # --- Salaires mensuels ---
+    # --- Salaires mensuels (F1) ---
     "montant_brut",
     "montant_net",
     "retenue_pension",
     "impot",
     "charge_patronale",
 
+    # --- Salaire brut F2 (somme composantes 124+228+271+421+425) ---
+    # Calculé juste avant la sélection dans construire_panel_annee()
+    "salaire_brut_f2",
+
     # --- Traçabilité imputation salaires (03c_imputer_salaires_silver) ---
-    "montant_brut_SOURCE",   # OBSERVE | LOCF_FWD | LOCF_BWD | IMPUTE_L1..L4 | NON_IMPUTABLE
-    "montant_net_SOURCE",    # idem
+    "montant_brut_SOURCE",
+    "montant_net_SOURCE",
 
     # --- Traçabilité fichier ---
     "fichier_source",
@@ -161,9 +167,12 @@ def construire_panel_annee(df: pl.DataFrame) -> pl.DataFrame:
       - sélection et réordonnancement des colonnes
       - déduplication matricule × mois_annee
       - tri matricule → annee → mois
+    salaire_brut_f2 est calculée dans le 03 et lue directement depuis le Silver.
     """
 
-    # Extraction annee et mois depuis mois_annee (format MMYYYY)
+    # --------------------------------------------------------
+    # EXTRACTION annee / mois depuis mois_annee (format MMYYYY)
+    # --------------------------------------------------------
     if "mois_annee" in df.columns:
         df = df.with_columns([
             pl.col("mois_annee")
@@ -187,7 +196,9 @@ def construire_panel_annee(df: pl.DataFrame) -> pl.DataFrame:
             pl.lit(None).cast(pl.Int32).alias("mois"),
         ])
 
-    # Sélection défensive : colonnes de COLONNES_PANEL présentes dans df
+    # --------------------------------------------------------
+    # SÉLECTION DÉFENSIVE
+    # --------------------------------------------------------
     cols_presentes = [c for c in COLONNES_PANEL if c in df.columns]
     cols_absentes  = [c for c in COLONNES_PANEL if c not in df.columns]
     df = df.select(cols_presentes)
@@ -195,7 +206,9 @@ def construire_panel_annee(df: pl.DataFrame) -> pl.DataFrame:
     if cols_absentes:
         print(f"    ⚠️  Colonnes absentes du Silver (ignorées) : {cols_absentes}", flush=True)
 
-    # Déduplication matricule × mois_annee (garde la première occurrence)
+    # --------------------------------------------------------
+    # DÉDUPLICATION matricule × mois_annee
+    # --------------------------------------------------------
     cles_dedup = [c for c in ["matricule", "mois_annee"] if c in df.columns]
     if cles_dedup:
         avant = len(df)
@@ -256,10 +269,17 @@ for cle in cles_silver:
     nb_lignes = len(df_panel)
     print(f"    Panel : {nb_lignes:,} lignes × {len(df_panel.columns)} cols", flush=True)
 
-    # Vérification explicite des colonnes critiques
-    for col_critique in ["GRADE", "GRADE_SOURCE", "montant_brut_SOURCE", "montant_net_SOURCE"]:
+    # Vérification colonnes critiques
+    for col_critique in ["GRADE", "GRADE_SOURCE", "salaire_brut_f2",
+                         "montant_brut_SOURCE", "montant_net_SOURCE"]:
         statut = "✓" if col_critique in df_panel.columns else "✗ ABSENT"
         print(f"    {col_critique:<25} : {statut}", flush=True)
+
+    # Diagnostic salaire_brut_f2
+    if "salaire_brut_f2" in df_panel.columns:
+        n_non_null = df_panel["salaire_brut_f2"].is_not_null().sum()
+        n_positif  = (df_panel["salaire_brut_f2"] > 0).sum()
+        print(f"    salaire_brut_f2 non-null : {n_non_null:,}  positif : {n_positif:,}", flush=True)
 
     # Écriture Gold annuelle
     key_panel = f"{PREFIX_PANEL}/panel_{annee_str}.parquet"
@@ -279,6 +299,9 @@ for cle in cles_silver:
         brut = df_panel["montant_brut"].drop_nulls()
         row_stat["brut_moyen"]   = round(brut.mean(),   0) if len(brut) > 0 else None
         row_stat["brut_mediane"] = round(brut.median(), 0) if len(brut) > 0 else None
+    if "salaire_brut_f2" in df_panel.columns:
+        f2 = df_panel["salaire_brut_f2"].drop_nulls()
+        row_stat["f2_moyen"] = round(f2.mean(), 0) if len(f2) > 0 else None
     stats_par_annee.append(row_stat)
 
     del df_panel
@@ -306,6 +329,8 @@ for row in stats_par_annee:
         ligne += f"  |  {row['nb_individus']:>6,} individus"
     if "brut_moyen" in row and row["brut_moyen"]:
         ligne += f"  |  brut moy = {row['brut_moyen']:,.0f}"
+    if "f2_moyen" in row and row["f2_moyen"]:
+        ligne += f"  |  f2 moy = {row['f2_moyen']:,.0f}"
     print(ligne)
 
 print()

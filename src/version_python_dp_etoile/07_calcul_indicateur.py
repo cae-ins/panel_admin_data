@@ -5,9 +5,8 @@
 # à partir des fichiers Gold panel.
 #
 # Prérequis : 03b_imputer_grades_silver.py et 06_compiler_panel.py
-# doivent avoir été exécutés. Les colonnes GRADE et GRADE_SOURCE
-# sont lues directement depuis le Gold panel — aucune imputation
-# n'est recalculée ici.
+# doivent avoir été exécutés. Les colonnes GRADE, GRADE_SOURCE et
+# salaire_brut_f2 sont lues directement depuis le Gold panel.
 #
 # Paramètres configurables :
 #   MODE_SALAIRE_BRUT : True  = agrégation par cle_unique (salaire brut)
@@ -16,17 +15,6 @@
 #                       False = période complète (2015 → dernière année)
 #   INCLURE_ZEROS     : True  = inclure salaires = 0 ou NA
 #                       False = salaire strictement > 0
-#
-# Tables produites (Excel multi-feuilles) :
-#   REVENU_Grade_Detail      : Effectif, moy, méd, min, max, P25, P75 par grade
-#   REVENU_Grade_Sexe        : Idem, par grade × sexe
-#   REVENU_CITP_Detail       : Idem, par CITP
-#   SALAIRE_BRUT_Moyen       : Salaire brut moyen par année × mois × grade (pivot)
-#   SALAIRE_BRUT_Median      : Salaire brut médian par année × mois × grade (pivot)
-#   MULTI_Par_Grade_NbPostes : Effectifs par grade × nombre de postes (pivot)
-#   MULTI_Distribution       : Distribution globale mono/multi-postes
-#   MODELE_ANSTAT_2024       : Modèle statistique ANSTAT — année 2024
-#   MODELE_ANSTAT_2025       : Modèle statistique ANSTAT — année 2025
 #
 # Source  : s3://gold/panel_admin/panel_YYYY.parquet
 # Sortie  : s3://staging/panel_admin/exports_gold/indicateurs_*.xlsx
@@ -55,26 +43,14 @@ load_dotenv(".env")
 # PARAMÈTRES DE CONFIGURATION
 # ============================================================
 
-# True = Salaire brut (cle_unique) | False = Revenu salarial (matricule)
 MODE_SALAIRE_BRUT = True
-
-# True = 2024-2025 | False = 2015 → dernière année disponible
 PERIODE_RECENTE   = True
-
-# True = inclure zéros | False = salaire strictement > 0
 INCLURE_ZEROS     = True
-
-# Seuil de winsorisation (ex: 0.01 = écrêtage à P1/P99)
-# Mettre à None pour désactiver
 SEUIL_WINS        = 0.01
-
-# Effectif minimum par cellule mois × grade × CITP pour appliquer la
-# winsorisation CITP. En dessous, repli sur mois × grade uniquement.
 MIN_OBS_WINS      = 100
 
 # ============================================================
 
-# LORSQU'ON TRAVAILLE DEPUIS SA MACHINE LOCAL
 MINIO_ENDPOINT   = os.getenv("MINIO_ENDPOINT",   "http://192.168.1.230:30137")
 MINIO_ACCESS_KEY = os.getenv("MINIO_ACCESS_KEY", "datalab-team")
 MINIO_SECRET_KEY = os.getenv("MINIO_SECRET_KEY", "minio-datalabteam123")
@@ -91,7 +67,6 @@ _zeros_label   = "avec_zeros"    if INCLURE_ZEROS     else "sans_zeros"
 OUTPUT_KEY     = (f"{PREFIX_EXPORTS}/indicateurs_{_mode_label}"
                   f"_{_periode_label}_{_zeros_label}.xlsx")
 
-# Libellés mois français
 MOIS_FR = {
     1: "Janvier",  2: "Février",   3: "Mars",      4: "Avril",
     5: "Mai",      6: "Juin",      7: "Juillet",   8: "Août",
@@ -105,10 +80,6 @@ GRADES_VALIDES = (
     [f"D{i}" for i in range(1, 4)]
 )
 
-# Composantes du salaire brut (codes F2, suffixe _f2 dans le Gold)
-COMPOSANTES_SALAIRE = ["124_f2", "228_f2", "271_f2", "421_f2", "425_f2"]
-
-# --- CLIENT S3 ---
 s3 = boto3.client(
     "s3",
     endpoint_url          = MINIO_ENDPOINT,
@@ -142,14 +113,8 @@ def lire_parquet_s3(bucket: str, key: str) -> pl.DataFrame:
     return pl.read_parquet(buf)
 
 
-# ============================================================
-# CONSTANTES BARÈME
-# ============================================================
-
-# Pour ENS SEC & PRIM : grades B/C/D = Primaire, grades A = Secondaire
 GRADES_PRIMAIRE = {"B3", "C3", "D1", "D2"}
 
-# Ordre d'affichage dans la feuille MODELE_ANSTAT
 ORDRE_MODELE_ANSTAT = [
     ("TOUS SECTEURS CONFONDUS",                       "_GLOBAL_"),
     ("SECTEUR EDUCATION",                             None),
@@ -171,7 +136,6 @@ ORDRE_MODELE_ANSTAT = [
 
 
 def normaliser_pour_matching(texte) -> str | None:
-    """Normalisation textuelle pour fuzzy join — identique à l'étape 03."""
     if texte is None:
         return None
     texte = str(texte).strip()
@@ -188,11 +152,6 @@ def normaliser_pour_matching(texte) -> str | None:
 
 
 def charger_table_bareme() -> pl.DataFrame | None:
-    """
-    Charge la table CORRESPONDANCE_GRILLE_EMPLOI depuis staging et
-    renvoie une table de jointure (emploi_norm → bareme, grade_ref).
-    Renvoie None si le fichier est absent (étape non bloquante).
-    """
     with tempfile.NamedTemporaryFile(suffix=".xlsx", delete=False) as tmp:
         tmp_path = tmp.name
     try:
@@ -224,10 +183,6 @@ def charger_table_bareme() -> pl.DataFrame | None:
 
 def fuzzy_join_bareme(df: pl.DataFrame, table_join: pl.DataFrame,
                       col_emploi: str) -> pl.DataFrame:
-    """
-    Ajoute les colonnes 'bareme' et 'grade_ref' au DataFrame
-    via fuzzy join sur le libellé emploi normalisé.
-    """
     df = df.with_columns(
         pl.col(col_emploi)
         .map_elements(normaliser_pour_matching, return_dtype=pl.Utf8)
@@ -244,7 +199,6 @@ def fuzzy_join_bareme(df: pl.DataFrame, table_join: pl.DataFrame,
 
 
 def ajouter_bareme_detail(df: pl.DataFrame, col_grade: str) -> pl.DataFrame:
-    """Scinde ENS SEC & PRIM en Primaire (B/C/D) et Secondaire (A)."""
     return df.with_columns(
         pl.when(
             (pl.col("bareme") == "ENS SEC & PRIM")
@@ -260,7 +214,6 @@ def ajouter_bareme_detail(df: pl.DataFrame, col_grade: str) -> pl.DataFrame:
 
 
 def grade_order_value(grade: str) -> int:
-    """Valeur ordinale d'un grade pour sélectionner le grade principal."""
     if re.match(r"^[ABCD][0-9]$", grade):
         base = {"A": 80, "B": 70, "C": 60, "D": 50}[grade[0]]
         return base + int(grade[1])
@@ -269,7 +222,6 @@ def grade_order_value(grade: str) -> int:
 
 def compute_indicators(df: pl.DataFrame, group_cols: list[str],
                        value_col: str = "REVENU_TOTAL") -> pl.DataFrame:
-    """Calcule les indicateurs statistiques complets par groupe."""
     return (
         df.group_by(group_cols)
         .agg([
@@ -287,17 +239,8 @@ def compute_indicators(df: pl.DataFrame, group_cols: list[str],
     )
 
 
-def construire_feuille_anstat(
-    wb: Workbook,
-    sheet_name: str,
-    annee_label: str,
-    global_brut: dict,
-    stats_bareme_detail: pl.DataFrame,
-) -> None:
-    """
-    Crée une feuille MODELE_ANSTAT pour une année donnée.
-    Appelée en boucle pour 2024 et 2025.
-    """
+def construire_feuille_anstat(wb, sheet_name, annee_label,
+                               global_brut, stats_bareme_detail):
     ws = wb.create_sheet(sheet_name)
     ws.sheet_view.showGridLines = False
 
@@ -320,7 +263,6 @@ def construire_feuille_anstat(
     al_droite = Alignment(horizontal="right",  vertical="center")
     al_indent = Alignment(horizontal="left",   vertical="center", indent=2)
 
-    # Titre avec l'année
     ws.merge_cells("A1:D1")
     titre_cell = ws.cell(
         row=1, column=1,
@@ -331,19 +273,15 @@ def construire_feuille_anstat(
     titre_cell.alignment = al_centre
     ws.row_dimensions[1].height = 28
 
-    # En-têtes colonnes
     ws.cell(row=2, column=1, value="salaires en FCFA").font = Font(size=10)
     for col_i, label in enumerate(
-        ["salaire brut minimum", "salaire brut moyen", "salaire brut maximum"],
-        start=2
+        ["salaire brut minimum", "salaire brut moyen", "salaire brut maximum"], start=2
     ):
         c = ws.cell(row=2, column=col_i, value=label)
-        c.font      = font_entete
-        c.fill      = fill_entete
-        c.alignment = al_centre
+        c.font = font_entete; c.fill = fill_entete; c.alignment = al_centre
     ws.row_dimensions[2].height = 22
 
-    def get_val(key: str, col: str):
+    def get_val(key, col):
         if key == "_GLOBAL_":
             return global_brut.get(col)
         rows = stats_bareme_detail.filter(pl.col("bareme_detail") == key)
@@ -351,12 +289,11 @@ def construire_feuille_anstat(
             return None
         return rows.row(0, named=True).get(col)
 
-    row_cur  = 3
+    row_cur = 3
     sous_idx = 0
     for libelle, bareme_key in ORDRE_MODELE_ANSTAT:
-        est_global   = bareme_key == "_GLOBAL_"
-        est_titre    = bareme_key is None
-        est_sous_gpe = not est_global and not est_titre
+        est_global = bareme_key == "_GLOBAL_"
+        est_titre  = bareme_key is None
 
         if est_global:
             for col_i, val in enumerate([
@@ -366,46 +303,31 @@ def construire_feuille_anstat(
                 get_val("_GLOBAL_", "salaire_brut_max"),
             ], start=1):
                 c = ws.cell(row=row_cur, column=col_i, value=val)
-                c.font      = font_global
-                c.fill      = fill_global
+                c.font = font_global; c.fill = fill_global
                 c.alignment = al_gauche if col_i == 1 else al_centre
                 if col_i > 1 and isinstance(val, (int, float)):
                     c.number_format = "#,##0"
             ws.row_dimensions[row_cur].height = 22
-
         elif est_titre:
-            ws.merge_cells(
-                start_row=row_cur, start_column=1,
-                end_row=row_cur,   end_column=4
-            )
+            ws.merge_cells(start_row=row_cur, start_column=1,
+                           end_row=row_cur, end_column=4)
             c = ws.cell(row=row_cur, column=1, value=libelle)
-            c.font      = font_secteur
-            c.fill      = fill_secteur
-            c.alignment = al_gauche
+            c.font = font_secteur; c.fill = fill_secteur; c.alignment = al_gauche
             ws.row_dimensions[row_cur].height = 20
-
         else:
-            bg = fill_alt[sous_idx % 2]
-            sous_idx += 1
+            bg = fill_alt[sous_idx % 2]; sous_idx += 1
             c1 = ws.cell(row=row_cur, column=1, value=libelle)
-            c1.font      = font_sous
-            c1.fill      = bg
-            c1.alignment = al_indent
+            c1.font = font_sous; c1.fill = bg; c1.alignment = al_indent
             for col_i, stat_key in enumerate(
-                ["salaire_brut_min", "salaire_brut_moyen", "salaire_brut_max"],
-                start=2
+                ["salaire_brut_min", "salaire_brut_moyen", "salaire_brut_max"], start=2
             ):
                 val = get_val(bareme_key, stat_key)
                 c = ws.cell(row=row_cur, column=col_i, value=val)
-                c.font          = font_montant
-                c.fill          = bg
-                c.alignment     = al_droite
-                c.number_format = "#,##0"
+                c.font = font_montant; c.fill = bg
+                c.alignment = al_droite; c.number_format = "#,##0"
             ws.row_dimensions[row_cur].height = 18
-
         row_cur += 1
 
-    # Largeurs colonnes
     ws.column_dimensions["A"].width = 55
     for col_letter in ["B", "C", "D"]:
         ws.column_dimensions[col_letter].width = 22
@@ -452,7 +374,7 @@ print("2. Vérification des colonnes GRADE et GRADE_SOURCE...")
 if "GRADE" not in base.columns or "GRADE_SOURCE" not in base.columns:
     raise RuntimeError(
         "Colonnes GRADE et/ou GRADE_SOURCE absentes du Gold.\n"
-        "Exécutez d'abord 06b_imputer_grades.py avant ce script."
+        "Exécutez d'abord 03b et 06_compiler_panel.py."
     )
 
 n_total = len(base)
@@ -467,9 +389,6 @@ print()
 
 print("3. Extraction année/mois depuis mois_annee...")
 
-# mois_annee est au format MMYYYY (ex. "012015")
-# mois  = slice(0, 2)  →  "01"
-# annee = slice(2, 4)  →  "2015" (4 chiffres à partir de la position 2)
 base = base.with_columns([
     pl.col("mois_annee").str.slice(2, 4).cast(pl.Int32, strict=False).alias("ANNEE"),
     pl.col("mois_annee").str.slice(0, 2).cast(pl.Int32, strict=False).alias("MOIS_NUM"),
@@ -494,34 +413,30 @@ base = base.with_columns(
 )
 
 # ============================================================
-# 4. CALCUL DU SALAIRE BRUT (composantes élémentaires)
+# 4. SALAIRE BRUT F2
 # ============================================================
+# La colonne salaire_brut_f2 a été calculée dans l'étape 06
+# comme somme des composantes F2 (124_F2 + 228_F2 + 271_F2 +
+# 421_F2 + 425_F2) AVANT la sélection COLONNES_PANEL.
+# C'est le salaire de référence pour tous les calculs.
 
-print("4. Calcul du salaire brut depuis les composantes...")
+print("4. Vérification salaire_brut_f2...")
 
-composantes_presentes = [c for c in COMPOSANTES_SALAIRE if c in base.columns]
-print(f"   Composantes trouvées : {composantes_presentes}")
-
-# Après INNER JOIN en step 2, toutes les composantes F2 sont garanties
-# être présentes pour chaque individu. On somme uniquement les colonnes
-# disponibles (124_f2, 228_f2, 271_f2, 421_f2, 425_f2).
-if composantes_presentes:
-    base = base.with_columns([
-        pl.col(c).cast(pl.Float64, strict=False) for c in composantes_presentes
-    ])
-    base = base.with_columns(
-        pl.sum_horizontal([pl.col(c) for c in composantes_presentes])
-        .alias("SALAIRE_BRUT")
-    )
-else:
+if "salaire_brut_f2" not in base.columns:
     raise RuntimeError(
-        "Aucune composante de salaire (124_f2, 228_f2, 271_f2, 421_f2, "
-        "425_f2) trouvée dans le Gold. Vérifiez que l'étape 02 a bien "
-        "été exécutée avec INNER JOIN."
+        "Colonne salaire_brut_f2 absente du Gold panel.\n"
+        "Vérifiez que l'étape 06_compiler_panel.py a bien été exécutée "
+        "avec la version qui calcule salaire_brut_f2 avant la sélection."
     )
 
-n_pos = int((base["SALAIRE_BRUT"] > 0).sum())
-print(f"   Salaires > 0 : {n_pos:,} ({100*n_pos/len(base):.1f}%)\n")
+base = base.with_columns(
+    pl.col("salaire_brut_f2").cast(pl.Float64, strict=False).alias("SALAIRE_BRUT")
+)
+
+n_pos  = int((base["SALAIRE_BRUT"] > 0).sum())
+n_null = int(base["SALAIRE_BRUT"].is_null().sum())
+print(f"   Salaires > 0  : {n_pos:,} ({100*n_pos/len(base):.1f}%)")
+print(f"   Salaires null : {n_null:,} ({100*n_null/len(base):.1f}%)\n")
 
 # ============================================================
 # 5. STANDARDISATION DU SEXE
@@ -584,8 +499,6 @@ else:
 # ============================================================
 # 7. FILTRAGE SUR GRADES VALIDES
 # ============================================================
-# On filtre sur GRADE valide (issu de 06b, OBSERVE ou IMPUTE).
-# Les NF_NON_IMPUTABLE sont exclus des calculs d'indicateurs.
 
 print("7. Filtrage grades valides avant agrégation...")
 
@@ -628,7 +541,6 @@ else:
         print("  ⚠️  Table barème absente — feuilles barème non produites")
     else:
         print(f"  ⚠️  Colonne emploi absente dans le panel — feuilles barème non produites")
-        print(f"       Colonnes disponibles : {base_gv.columns}")
     BAREME_DISPONIBLE = False
 
 print()
@@ -637,9 +549,8 @@ print()
 # 8. AGRÉGATION → REVENU TOTAL
 # ============================================================
 
-agg_col   = "cle_unique" if MODE_SALAIRE_BRUT else "matricule"
-agg_label = agg_col
-print(f"8. Agrégation par {agg_label} → REVENU_TOTAL...")
+agg_col = "cle_unique" if MODE_SALAIRE_BRUT else "matricule"
+print(f"8. Agrégation par {agg_col} → REVENU_TOTAL...")
 
 if agg_col not in base_gv.columns:
     agg_col = "matricule"
@@ -700,17 +611,13 @@ if SEUIL_WINS is not None:
 
     base_agrege = base_agrege.with_columns([
         pl.len().over(wins_full).alias("_n_citp"),
-        pl.col("REVENU_TOTAL")
-          .quantile(SEUIL_WINS, interpolation="nearest")
+        pl.col("REVENU_TOTAL").quantile(SEUIL_WINS, interpolation="nearest")
           .over(wins_full).alias("_pb_citp"),
-        pl.col("REVENU_TOTAL")
-          .quantile(1 - SEUIL_WINS, interpolation="nearest")
+        pl.col("REVENU_TOTAL").quantile(1-SEUIL_WINS, interpolation="nearest")
           .over(wins_full).alias("_ph_citp"),
-        pl.col("REVENU_TOTAL")
-          .quantile(SEUIL_WINS, interpolation="nearest")
+        pl.col("REVENU_TOTAL").quantile(SEUIL_WINS, interpolation="nearest")
           .over(wins_fallback).alias("_pb_grade"),
-        pl.col("REVENU_TOTAL")
-          .quantile(1 - SEUIL_WINS, interpolation="nearest")
+        pl.col("REVENU_TOTAL").quantile(1-SEUIL_WINS, interpolation="nearest")
           .over(wins_fallback).alias("_ph_grade"),
     ])
 
@@ -727,8 +634,7 @@ if SEUIL_WINS is not None:
     n_modif = int((base_agrege["REVENU_TOTAL_W"] != base_agrege["REVENU_TOTAL"]).sum())
     print(f"   Groupe mois × grade × CITP (≥{MIN_OBS_WINS} obs) : {n_obs_citp:,} obs")
     print(f"   Repli  mois × grade         (<{MIN_OBS_WINS} obs) : {n_obs_grade:,} obs")
-    print(f"   Observations écrêtées : {n_modif:,}  ({100*n_modif/len(base_agrege):.2f}%)")
-    print(f"   Gold inchangé — winsorisation en mémoire uniquement\n")
+    print(f"   Observations écrêtées : {n_modif:,}  ({100*n_modif/len(base_agrege):.2f}%)\n")
     value_col_indic = "REVENU_TOTAL_W"
 
 # ============================================================
@@ -755,22 +661,13 @@ if "Code_CITP" in base_agrege.columns:
 else:
     indic_citp = pl.DataFrame()
 
-# Ventilations barème
-indic_bareme       = pl.DataFrame()
-indic_bareme_grade = pl.DataFrame()
-indic_bareme_sexe  = pl.DataFrame()
+indic_bareme = indic_bareme_grade = indic_bareme_sexe = pl.DataFrame()
 
 if BAREME_DISPONIBLE:
     base_b = base_agrege.filter(pl.col("bareme").is_not_null())
-    indic_bareme = compute_indicators(
-        base_b, ["ANNEE", "MOIS_NUM", "MOIS", "bareme"], value_col_indic
-    )
-    indic_bareme_grade = compute_indicators(
-        base_b, ["ANNEE", "MOIS_NUM", "MOIS", "bareme", "GRADE_PRINCIPAL"], value_col_indic
-    )
-    indic_bareme_sexe = compute_indicators(
-        base_b, ["ANNEE", "MOIS_NUM", "MOIS", "bareme", "SEXE_STD"], value_col_indic
-    )
+    indic_bareme       = compute_indicators(base_b, ["ANNEE","MOIS_NUM","MOIS","bareme"], value_col_indic)
+    indic_bareme_grade = compute_indicators(base_b, ["ANNEE","MOIS_NUM","MOIS","bareme","GRADE_PRINCIPAL"], value_col_indic)
+    indic_bareme_sexe  = compute_indicators(base_b, ["ANNEE","MOIS_NUM","MOIS","bareme","SEXE_STD"], value_col_indic)
 
 total_indic = (len(indic_grade) + len(indic_grade_sexe) + len(indic_citp)
                + len(indic_bareme) + len(indic_bareme_grade) + len(indic_bareme_sexe))
@@ -791,61 +688,39 @@ print("10. Calcul indicateurs SALAIRE BRUT (pivot grade)...")
 
 base_gv_brut = base_gv
 if SEUIL_WINS is not None:
-    wins_full_brut     = [c for c in ["ANNEE", "MOIS_NUM", "GRADE", "Code_CITP"]
-                          if c in base_gv.columns]
-    wins_fallback_brut = [c for c in ["ANNEE", "MOIS_NUM", "GRADE"]
-                          if c in base_gv.columns]
+    wins_full_brut     = [c for c in ["ANNEE","MOIS_NUM","GRADE","Code_CITP"] if c in base_gv.columns]
+    wins_fallback_brut = [c for c in ["ANNEE","MOIS_NUM","GRADE"] if c in base_gv.columns]
 
     base_gv_brut = base_gv.with_columns([
         pl.len().over(wins_full_brut).alias("_n_citp"),
-        pl.col("SALAIRE_BRUT")
-          .quantile(SEUIL_WINS, interpolation="nearest")
-          .over(wins_full_brut).alias("_pb_citp"),
-        pl.col("SALAIRE_BRUT")
-          .quantile(1 - SEUIL_WINS, interpolation="nearest")
-          .over(wins_full_brut).alias("_ph_citp"),
-        pl.col("SALAIRE_BRUT")
-          .quantile(SEUIL_WINS, interpolation="nearest")
-          .over(wins_fallback_brut).alias("_pb_grade"),
-        pl.col("SALAIRE_BRUT")
-          .quantile(1 - SEUIL_WINS, interpolation="nearest")
-          .over(wins_fallback_brut).alias("_ph_grade"),
+        pl.col("SALAIRE_BRUT").quantile(SEUIL_WINS, interpolation="nearest").over(wins_full_brut).alias("_pb_citp"),
+        pl.col("SALAIRE_BRUT").quantile(1-SEUIL_WINS, interpolation="nearest").over(wins_full_brut).alias("_ph_citp"),
+        pl.col("SALAIRE_BRUT").quantile(SEUIL_WINS, interpolation="nearest").over(wins_fallback_brut).alias("_pb_grade"),
+        pl.col("SALAIRE_BRUT").quantile(1-SEUIL_WINS, interpolation="nearest").over(wins_fallback_brut).alias("_ph_grade"),
     ])
     base_gv_brut = base_gv_brut.with_columns(
         pl.when(pl.col("_n_citp") >= MIN_OBS_WINS)
         .then(pl.col("SALAIRE_BRUT").clip(pl.col("_pb_citp"), pl.col("_ph_citp")))
         .otherwise(pl.col("SALAIRE_BRUT").clip(pl.col("_pb_grade"), pl.col("_ph_grade")))
         .alias("SALAIRE_BRUT")
-    ).drop(["_n_citp", "_pb_citp", "_ph_citp", "_pb_grade", "_ph_grade"])
+    ).drop(["_n_citp","_pb_citp","_ph_citp","_pb_grade","_ph_grade"])
 
     n_modif_brut = int((base_gv_brut["SALAIRE_BRUT"] != base_gv["SALAIRE_BRUT"]).sum())
-    print(f"   Winsorisation SALAIRE_BRUT (mois × grade × CITP / repli grade) : "
-          f"{n_modif_brut:,} obs écrêtées")
+    print(f"   Winsorisation SALAIRE_BRUT : {n_modif_brut:,} obs écrêtées")
 
 brut_moyen = (
-    base_gv_brut
-    .group_by(["ANNEE", "MOIS_NUM", "MOIS", "GRADE"])
+    base_gv_brut.group_by(["ANNEE","MOIS_NUM","MOIS","GRADE"])
     .agg(pl.col("SALAIRE_BRUT").mean().round(0).alias("Salaire_brut_moyen"))
-    .sort(["ANNEE", "MOIS_NUM"])
+    .sort(["ANNEE","MOIS_NUM"])
 )
 brut_median = (
-    base_gv_brut
-    .group_by(["ANNEE", "MOIS_NUM", "MOIS", "GRADE"])
+    base_gv_brut.group_by(["ANNEE","MOIS_NUM","MOIS","GRADE"])
     .agg(pl.col("SALAIRE_BRUT").median().round(0).alias("Salaire_brut_median"))
-    .sort(["ANNEE", "MOIS_NUM"])
+    .sort(["ANNEE","MOIS_NUM"])
 )
 
-brut_moyen_wide = brut_moyen.pivot(
-    values="Salaire_brut_moyen",
-    index=["ANNEE", "MOIS_NUM", "MOIS"],
-    on="GRADE"
-).sort(["ANNEE", "MOIS_NUM"])
-
-brut_median_wide = brut_median.pivot(
-    values="Salaire_brut_median",
-    index=["ANNEE", "MOIS_NUM", "MOIS"],
-    on="GRADE"
-).sort(["ANNEE", "MOIS_NUM"])
+brut_moyen_wide  = brut_moyen.pivot(values="Salaire_brut_moyen",  index=["ANNEE","MOIS_NUM","MOIS"], on="GRADE").sort(["ANNEE","MOIS_NUM"])
+brut_median_wide = brut_median.pivot(values="Salaire_brut_median", index=["ANNEE","MOIS_NUM","MOIS"], on="GRADE").sort(["ANNEE","MOIS_NUM"])
 
 print(f"   Brut moyen  : {len(brut_moyen_wide)} lignes × {len(brut_moyen_wide.columns)} cols")
 print(f"   Brut médian : {len(brut_median_wide)} lignes × {len(brut_median_wide.columns)} cols\n")
@@ -858,53 +733,37 @@ print("11. Création feuilles multi-postes...")
 
 multi_detail = (
     base_agrege
-    .group_by(["ANNEE", "MOIS_NUM", "MOIS", "GRADE_PRINCIPAL", "NB_POSTES"])
-    .agg([
-        pl.len().alias("Effectif"),
-        pl.col("REVENU_TOTAL").mean().round(0).alias("Revenu_moyen"),
-    ])
-    .sort(["ANNEE", "MOIS_NUM", "GRADE_PRINCIPAL", "NB_POSTES"])
+    .group_by(["ANNEE","MOIS_NUM","MOIS","GRADE_PRINCIPAL","NB_POSTES"])
+    .agg([pl.len().alias("Effectif"), pl.col("REVENU_TOTAL").mean().round(0).alias("Revenu_moyen")])
+    .sort(["ANNEE","MOIS_NUM","GRADE_PRINCIPAL","NB_POSTES"])
 )
-
 multi_detail = multi_detail.with_columns(
-    pl.when(pl.col("NB_POSTES") >= 5)
-    .then(pl.lit("5+"))
-    .otherwise(pl.col("NB_POSTES").cast(pl.Utf8))
-    .alias("NB_POSTES_LABEL")
+    pl.when(pl.col("NB_POSTES") >= 5).then(pl.lit("5+"))
+    .otherwise(pl.col("NB_POSTES").cast(pl.Utf8)).alias("NB_POSTES_LABEL")
 )
-
 multi_effectif = multi_detail.pivot(
-    values="Effectif",
-    index=["ANNEE", "MOIS_NUM", "MOIS", "GRADE_PRINCIPAL"],
-    on="NB_POSTES_LABEL",
-    aggregate_function="sum",
-).sort(["ANNEE", "MOIS_NUM", "GRADE_PRINCIPAL"])
-
-for c in ["1", "2", "3", "4", "5+"]:
+    values="Effectif", index=["ANNEE","MOIS_NUM","MOIS","GRADE_PRINCIPAL"],
+    on="NB_POSTES_LABEL", aggregate_function="sum"
+).sort(["ANNEE","MOIS_NUM","GRADE_PRINCIPAL"])
+for c in ["1","2","3","4","5+"]:
     if c in multi_effectif.columns:
         multi_effectif = multi_effectif.with_columns(pl.col(c).fill_null(0))
 
 distrib_postes = (
-    base_agrege
-    .group_by("NB_POSTES")
-    .agg([
-        pl.len().alias("Effectif"),
-        (pl.len() * 100 / len(base_agrege)).round(2).alias("Pct"),
-        pl.col("REVENU_TOTAL").mean().round(0).alias("Revenu_moyen"),
-    ])
+    base_agrege.group_by("NB_POSTES")
+    .agg([pl.len().alias("Effectif"),
+          (pl.len()*100/len(base_agrege)).round(2).alias("Pct"),
+          pl.col("REVENU_TOTAL").mean().round(0).alias("Revenu_moyen")])
     .sort("NB_POSTES")
 )
-
 print(f"   Multi-postes détail  : {len(multi_effectif)} lignes")
 print(f"   Distribution globale : {len(distrib_postes)} lignes\n")
 
 # ============================================================
 # 12. PRÉ-CALCUL DONNÉES MODELE_ANSTAT PAR ANNÉE
 # ============================================================
-# On prépare un dict {annee: (global_brut, stats_bareme_detail)}
-# pour éviter de refiltrer base_gv_b plusieurs fois.
 
-anstat_data_par_annee: dict[int, tuple[dict, pl.DataFrame]] = {}
+anstat_data_par_annee: dict = {}
 
 if BAREME_DISPONIBLE:
     print("12. Pré-calcul données MODELE_ANSTAT par année...")
@@ -912,25 +771,21 @@ if BAREME_DISPONIBLE:
         if annee not in ANNEES_ANALYSE:
             print(f"   ⚠️  Année {annee} absente de la période — ignorée")
             continue
-
         base_gv_b_annee = base_gv.filter(
             (pl.col("ANNEE") == annee)
             & pl.col("bareme_detail").is_not_null()
             & pl.col("SALAIRE_BRUT").is_not_null()
             & (pl.col("SALAIRE_BRUT") > 0)
         )
-
         if len(base_gv_b_annee) == 0:
             print(f"   ⚠️  Aucune donnée barème pour {annee} — feuille ignorée")
             continue
-
         global_brut_annee = base_gv_b_annee.select([
             pl.col("SALAIRE_BRUT").min().round(0).alias("salaire_brut_min"),
             pl.col("SALAIRE_BRUT").mean().round(0).alias("salaire_brut_moyen"),
             pl.col("SALAIRE_BRUT").max().round(0).alias("salaire_brut_max"),
             pl.col("SALAIRE_BRUT").median().round(0).alias("salaire_brut_mediane"),
         ]).row(0, named=True)
-
         stats_annee = (
             base_gv_b_annee.group_by("bareme_detail")
             .agg([
@@ -939,13 +794,10 @@ if BAREME_DISPONIBLE:
                 pl.col("SALAIRE_BRUT").max().round(0).alias("salaire_brut_max"),
                 pl.col("SALAIRE_BRUT").median().round(0).alias("salaire_brut_mediane"),
                 pl.len().alias("nb_obs"),
-            ])
-            .sort("bareme_detail")
+            ]).sort("bareme_detail")
         )
-
         anstat_data_par_annee[annee] = (global_brut_annee, stats_annee)
-        print(f"   ✓ {annee} : {len(stats_annee)} barèmes, "
-              f"{len(base_gv_b_annee):,} observations")
+        print(f"   ✓ {annee} : {len(stats_annee)} barèmes, {len(base_gv_b_annee):,} observations")
     print()
 
 # ============================================================
@@ -954,18 +806,15 @@ if BAREME_DISPONIBLE:
 
 print("13. Export Excel...")
 
-def appliquer_style_entete(ws, n_cols: int) -> None:
+def appliquer_style_entete(ws, n_cols):
     fill  = PatternFill("solid", fgColor="4F81BD")
     font  = Font(color="FFFFFF", bold=True, size=11)
     align = Alignment(horizontal="center", vertical="center")
     for col in range(1, n_cols + 1):
         cell = ws.cell(row=1, column=col)
-        cell.fill      = fill
-        cell.font      = font
-        cell.alignment = align
+        cell.fill = fill; cell.font = font; cell.alignment = align
 
-
-def ecrire_feuille(wb: Workbook, nom: str, df: pl.DataFrame) -> None:
+def ecrire_feuille(wb, nom, df):
     if len(df) == 0:
         return
     ws = wb.create_sheet(title=nom)
@@ -978,40 +827,29 @@ def ecrire_feuille(wb: Workbook, nom: str, df: pl.DataFrame) -> None:
     ws.freeze_panes = "A2"
     print(f"   ✓ {nom} ({len(df):,} lignes)")
 
-
 wb = Workbook()
 wb.remove(wb.active)
 
-ecrire_feuille(wb, "REVENU_Grade_Detail",      indic_grade)
-ecrire_feuille(wb, "REVENU_Grade_Sexe",         indic_grade_sexe)
+ecrire_feuille(wb, "REVENU_Grade_Detail",     indic_grade)
+ecrire_feuille(wb, "REVENU_Grade_Sexe",        indic_grade_sexe)
 if len(indic_citp) > 0:
-    ecrire_feuille(wb, "REVENU_CITP_Detail",    indic_citp)
-ecrire_feuille(wb, "SALAIRE_BRUT_Moyen",        brut_moyen_wide)
-ecrire_feuille(wb, "SALAIRE_BRUT_Median",       brut_median_wide)
-ecrire_feuille(wb, "MULTI_Par_Grade_NbPostes",  multi_effectif)
-ecrire_feuille(wb, "MULTI_Distribution",        distrib_postes)
+    ecrire_feuille(wb, "REVENU_CITP_Detail",   indic_citp)
+ecrire_feuille(wb, "SALAIRE_BRUT_Moyen",       brut_moyen_wide)
+ecrire_feuille(wb, "SALAIRE_BRUT_Median",      brut_median_wide)
+ecrire_feuille(wb, "MULTI_Par_Grade_NbPostes", multi_effectif)
+ecrire_feuille(wb, "MULTI_Distribution",       distrib_postes)
 
-# --- Feuilles barème (si disponibles) ---
 if BAREME_DISPONIBLE:
     ecrire_feuille(wb, "REVENU_Bareme_Detail",  indic_bareme)
     ecrire_feuille(wb, "REVENU_Bareme_Grade",   indic_bareme_grade)
     ecrire_feuille(wb, "REVENU_Bareme_Sexe",    indic_bareme_sexe)
-
-    # --- Feuilles MODELE_ANSTAT_2024 et MODELE_ANSTAT_2025 ---
-    # Une feuille par année, construite depuis les données filtrées
-    # calculées à l'étape 12.
     for annee in [2024, 2025]:
         if annee not in anstat_data_par_annee:
             print(f"   ⚠️  MODELE_ANSTAT_{annee} ignorée (données absentes)")
             continue
         global_brut_annee, stats_annee = anstat_data_par_annee[annee]
-        construire_feuille_anstat(
-            wb=wb,
-            sheet_name=f"MODELE_ANSTAT_{annee}",
-            annee_label=str(annee),
-            global_brut=global_brut_annee,
-            stats_bareme_detail=stats_annee,
-        )
+        construire_feuille_anstat(wb, f"MODELE_ANSTAT_{annee}", str(annee),
+                                  global_brut_annee, stats_annee)
 
 buf_xlsx = io.BytesIO()
 wb.save(buf_xlsx)
