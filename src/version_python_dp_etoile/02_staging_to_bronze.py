@@ -203,17 +203,7 @@ for chemin_objet in fichiers_minio:
             cols_num_f2      = [c for c in feuille2.columns if re.match(r"^\d+_F2$", c)]
             cols_obligatoires = {"124_F2", "421_F2"}
 
-            if cols_obligatoires.issubset(set(cols_num_f2)):
-                # Étape 1 : ne garder dans F2 que les lignes
-                # avec 124 ET 421 renseignés
-                feuille2 = feuille2.filter(
-                    pl.col("124_F2").is_not_null()
-                    & (pl.col("124_F2").cast(pl.Utf8).str.strip_chars() != "")
-                    & pl.col("421_F2").is_not_null()
-                    & (pl.col("421_F2").cast(pl.Utf8).str.strip_chars() != "")
-                )
-                print(f"\n      (F2 : {len(feuille2):,} lignes avec 124+421 renseignés)")
-            else:
+            if not cols_obligatoires.issubset(set(cols_num_f2)):
                 print(f"\n      (F2 : colonnes 124_F2/421_F2 absentes, F2 ignoré)")
                 feuille2 = None
 
