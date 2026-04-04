@@ -460,12 +460,12 @@ for cle in cles_bronze:
         comps_presentes = [c for c in COMPOSANTES_F2 if c in df.columns]
         if comps_presentes:
             df = df.with_columns(
-                pl.sum_horizontal([pl.col(c) for c in comps_presentes])
+                pl.sum_horizontal([pl.col(c).fill_null(0) for c in comps_presentes])
                 .alias("salaire_brut_f2")
             )
         else:
-            df = df.with_columns(pl.lit(None).cast(pl.Float64).alias("salaire_brut_f2"))
-            print(f"    ⚠️  Composantes F2 absentes pour {periode} — salaire_brut_f2 = null")
+            df = df.with_columns(pl.lit(0.0).alias("salaire_brut_f2"))
+            print(f"    ⚠️  Composantes F2 absentes pour {periode} — salaire_brut_f2 = 0")
 
         # Accumulation par année
         if annee not in frames_par_annee:
