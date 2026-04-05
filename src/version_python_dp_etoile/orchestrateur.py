@@ -17,10 +17,18 @@
 #   08  Fichier Excel avec sommaire structuré
 #   09  Chargement panel Gold → PostgreSQL (alimente Superset)
 #
+# Mode incrémental (alternative aux étapes 02-06 pour un ajout mensuel) :
+#   upd Mise à jour incrémentale  (nouvelles périodes uniquement)
+#       → détecte staging non encore en Bronze, traite le delta,
+#         reconstruit Silver+Gold uniquement pour les années affectées.
+#       NOTA : ne relance pas 03b/03c (imputations). Après upd,
+#       relancez manuellement 03b et 03c si nécessaire.
+#
 # Modes d'exécution :
 #   python orchestrateur.py                → pipeline complet
 #   python orchestrateur.py --depuis 03    → reprend à partir de l'étape 03
 #   python orchestrateur.py --etapes 06 07 08   → étapes spécifiques uniquement
+#   python orchestrateur.py --etapes upd 07 08  → mise à jour incrémentale + indicateurs
 #   python orchestrateur.py --dry-run      → affiche le plan sans exécuter
 #
 # En cas d'échec d'une étape, le pipeline s'arrête et affiche
@@ -81,6 +89,16 @@ ETAPES = [
                        "(CODE_EMPLOI × GRADE × CODE_ORGANISME × mois_annee). "
                        "Ajoute montant_brut_SOURCE et montant_net_SOURCE dans le Silver.",
         "optionnelle": False,
+    },
+    {
+        "id":          "upd",
+        "nom":         "Mise à jour incrémentale",
+        "script":      "04_mise_a_jour_incrementale.py",
+        "description": "Détecte les nouvelles périodes (staging non encore en Bronze) "
+                       "et traite uniquement le delta : Bronze → Silver → Gold Panel. "
+                       "Alternative aux étapes 02-06 pour un ajout mensuel. "
+                       "Ne relance PAS les imputations 03b/03c.",
+        "optionnelle": True,
     },
     {
         "id":          "04",

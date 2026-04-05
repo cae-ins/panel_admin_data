@@ -1,8 +1,19 @@
 """
-Panel Admin DAG — Airflow
-=========================
-Déclenché 3x/semaine (lun, mer, ven) à partir du 15 du mois.
-Vérifie la présence d'un fichier .xlsx NOUVEAU dans MinIO avant de lancer le pipeline.
+Panel Admin DAGs — Airflow
+==========================
+
+panel_admin_pipeline        (DAG complet)
+    Déclenché 3x/semaine (lun, mer, ven) à partir du 15 du mois.
+    Traite tous les fichiers de staging, reprocesse l'intégralité
+    des couches Bronze → Silver → Gold.
+    À utiliser pour la consolidation initiale ou une reconstruction.
+
+panel_admin_incremental     (DAG incrémental)
+    Déclenché 3x/semaine (lun, mer, ven) à partir du 15 du mois.
+    Traite UNIQUEMENT les nouvelles périodes (fichiers staging
+    non encore présents en Bronze).
+    Pipeline : upd → 03b → 03c → 07 → 08 → 09
+    Usage normal pour les ajouts mensuels.
 
 Architecture des buckets :
     staging → bronze → silver → gold
@@ -36,6 +47,7 @@ BUCKET_GOLD     = Variable.get("BUCKET_GOLD",     default_var="gold")
 PREFIX_MENSUELS = "panel_admin/fichiers_mensuels"
 PREFIX_REFS     = "panel_admin/references"
 
+# Pipeline complet (reconstruction totale)
 SCRIPTS = [
     "01_pre_analyse.py",
     "02_staging_to_bronze.py",
@@ -45,6 +57,19 @@ SCRIPTS = [
     "04_validation_silver.py",
     "05_silver_to_gold.py",
     "06_compiler_panel.py",
+    "07_calcul_indicateur.py",
+    "08_creation_fichier_excel_avec_sommaire.py",
+    "09_charger_panel_pg.py",
+]
+
+# Pipeline incrémental (delta uniquement)
+# upd     : détecte les nouvelles périodes et traite Bronze → Silver → Gold Panel
+# 03b/03c : re-imputation grades et salaires sur tout le Silver (nécessaire après ajout)
+# 07-09   : indicateurs, Excel, PostgreSQL
+SCRIPTS_INCREMENTAUX = [
+    "04_mise_a_jour_incrementale.py",
+    "03b_imputer_grades_silver.py",
+    "03c_imputer_salaires_silver.py",
     "07_calcul_indicateur.py",
     "08_creation_fichier_excel_avec_sommaire.py",
     "09_charger_panel_pg.py",
@@ -272,3 +297,92 @@ with DAG(
     # ── Chaîne principale ─────────────────────────────────────────────────────
     verifier_date >> verifier_fichier >> verifier_buckets_task
     prev >> refresh_superset >> marquer_traite
+
+
+# ---------------------------------------------------------------------------
+# DAG 2 : pipeline incrémental
+# ---------------------------------------------------------------------------
+# Remplace les étapes 02 → 03 → 05 → 06 par un seul script delta.
+# Les imputations (03b, 03c) continuent de tourner sur tout le Silver.
+# Durée estimée : 30-45 min vs 3-4h pour le pipeline complet.
+# ---------------------------------------------------------------------------
+
+with DAG(
+    dag_id="panel_admin_incremental",
+    schedule="0 7 * * 1,3,5",      # même cadence que le pipeline complet
+    start_date=datetime(2025, 1, 1),
+    catchup=False,
+    default_args=DEFAULT_ARGS,
+    tags=["panel_admin", "incremental"],
+    doc_md="""
+### DAG incrémental — Panel Admin
+
+Traite uniquement les **nouvelles périodes** (fichiers staging non encore en Bronze).
+
+**Chaîne** :
+```
+verifier_date
+  → verifier_fichier (idempotence)
+  → verifier_buckets
+  → 04_mise_a_jour_incrementale  (Bronze + Silver + Panel — delta uniquement)
+  → 03b_imputer_grades_silver    (re-imputation sur tout le Silver)
+  → 03c_imputer_salaires_silver  (re-imputation sur tout le Silver)
+  → 07_calcul_indicateur
+  → 08_creation_fichier_excel
+  → 09_charger_panel_pg
+  → refresh_superset
+  → marquer_fichier_traite
+```
+
+Si aucune nouvelle période n'est détectée, `04_mise_a_jour_incrementale`
+se termine proprement (exit 0) sans modifier les données.
+    """,
+) as dag_incremental:
+
+    # ── 1. Court-circuit date ─────────────────────────────────────────────────
+    verifier_date_inc = ShortCircuitOperator(
+        task_id="verifier_date",
+        python_callable=est_apres_le_15,
+    )
+
+    # ── 2. Vérification fichiers + idempotence ────────────────────────────────
+    verifier_fichier_inc = PythonOperator(
+        task_id="verifier_fichier",
+        python_callable=verifier_fichiers_staging,
+    )
+
+    # ── 3. Vérification buckets ───────────────────────────────────────────────
+    verifier_buckets_inc = PythonOperator(
+        task_id="verifier_buckets",
+        python_callable=verifier_buckets,
+    )
+
+    # ── 4. Pipeline incrémental ───────────────────────────────────────────────
+    prev_inc = verifier_buckets_inc
+    for script in SCRIPTS_INCREMENTAUX:
+        step_inc = BashOperator(
+            task_id=f"run_{script.removesuffix('.py')}",
+            bash_command=f"cd {CODE_DIR} && python {script}",
+            env={
+                **ENV_MINIO,
+                "LATEST_FILE": "{{ ti.xcom_pull(task_ids='verifier_fichier', key='latest_file') }}",
+            },
+        )
+        prev_inc >> step_inc
+        prev_inc = step_inc
+
+    # ── 5. Refresh Superset ───────────────────────────────────────────────────
+    refresh_superset_inc = BashOperator(
+        task_id="refresh_superset",
+        bash_command=f"cd {CODE_DIR} && bash 10_refresh_superset.sh",
+    )
+
+    # ── 6. Marquage fichier traité ────────────────────────────────────────────
+    marquer_traite_inc = PythonOperator(
+        task_id="marquer_fichier_traite",
+        python_callable=marquer_fichier_traite,
+    )
+
+    # ── Chaîne principale ─────────────────────────────────────────────────────
+    verifier_date_inc >> verifier_fichier_inc >> verifier_buckets_inc
+    prev_inc >> refresh_superset_inc >> marquer_traite_inc
