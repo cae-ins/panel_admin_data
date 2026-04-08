@@ -509,22 +509,35 @@ def charger_silver_filtres_poste() -> pl.DataFrame | None:
           f"{n_individus:,}")
     print(f"   Lignes retenues (tous postes) : {len(silver_filtre):,}")
 
-    # Calcul REVENU = sum(montant_brut) par individu × période
-    cols_aggr_rev = cle_ind + [
+    # Calcul REVENU = sum(montant_brut) UNIQUEMENT sur les lignes
+    # avec CODE_POSTE éligible (124, 228, 271, 421, 425)
+    silver_eligibles = silver_filtre.filter(
+        pl.col("CODE_POSTE").is_in(CODES_POSTE_ELIGIBLES)
+    )
+    print(f"   Lignes éligibles pour le calcul REVENU : {len(silver_eligibles):,}")
+
+    revenu_calcule = (
+        silver_eligibles
+        .group_by(cle_ind)
+        .agg(
+            pl.col("montant_brut").cast(pl.Float64, strict=False).sum().alias("REVENU")
+        )
+    )
+
+    # Métadonnées récupérées depuis silver_filtre (toutes les lignes)
+    cols_meta = [
         c for c in ["CODE_ORGANISME", "CODE_GRADE", "GRADE", "bareme",
                     "organisme", "sexe", "Code_CITP", "Metier_CITP",
                     "emploi", "situation_normalisee"]
         if c in silver_filtre.columns
     ]
-    revenu = (
+    meta = (
         silver_filtre
         .group_by(cle_ind)
-        .agg(
-            [pl.col("montant_brut").cast(pl.Float64, strict=False).sum().alias("REVENU")]
-            + [pl.col(c).first().alias(c)
-               for c in cols_aggr_rev if c not in cle_ind]
-        )
+        .agg([pl.col(c).first().alias(c) for c in cols_meta])
     )
+
+    revenu = revenu_calcule.join(meta, on=cle_ind, how="left")
     print(f"   REVENU calculé pour {len(revenu):,} observations individu × période\n")
     return revenu
 
