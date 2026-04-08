@@ -910,6 +910,113 @@ else:
 print()
 
 # ============================================================
+# 7c. STATUT BARÈME — calcul anticipé pour filtrer sur "Conformes"
+# ============================================================
+# Le Statut est calculé ici (avant les indicateurs) pour que
+# les feuilles produites par le programme 08 ne portent que
+# sur les agents "Conformes au barème".
+
+print("7c. Calcul Statut barème (filtrage sur conformes avant indicateurs)...")
+print()
+
+# --- Chargement Silver + calcul REVENU par codes poste éligibles ---
+print("  7c-1. Chargement Silver et filtrage codes poste...")
+base_revenus = charger_silver_filtres_poste()
+
+# --- Chargement référentiel anstat_2025 ---
+print("  7c-2. Chargement référentiel anstat_2025.txt.xlsx...")
+df_anstat_ref   = charger_anstat_2025()
+indic_cluster   = None
+col_secteur_ref = None
+col_grade_ref   = None
+
+if df_anstat_ref is not None and "montant_brut_sans_indemnites" in df_anstat_ref.columns:
+    print("  7c-3. Calcul indicateurs par cluster (secteur, grade)...")
+    result_cluster = calculer_indicateurs_cluster(df_anstat_ref)
+    if result_cluster is not None:
+        indic_cluster, col_secteur_ref, col_grade_ref = result_cluster
+
+# --- Création variable Statut ---
+base_avec_statut = pl.DataFrame()
+
+if base_revenus is not None and indic_cluster is not None:
+    print("  7c-4. Création variable Statut...")
+
+    col_secteur_main = next(
+        (c for c in ["bareme", "organisme", "CODE_ORGANISME"] if c in base_revenus.columns),
+        None,
+    )
+    col_grade_main = next(
+        (c for c in ["GRADE", "CODE_GRADE", "grade"] if c in base_revenus.columns),
+        None,
+    )
+
+    cle_join_cluster = []
+    if "secteur_ref" in indic_cluster.columns and col_secteur_main:
+        cle_join_cluster.append(("secteur_ref", col_secteur_main))
+    if "grade_ref" in indic_cluster.columns and col_grade_main:
+        cle_join_cluster.append(("grade_ref", col_grade_main))
+
+    if cle_join_cluster:
+        left_on  = [pair[1] for pair in cle_join_cluster]
+        right_on = [pair[0] for pair in cle_join_cluster]
+
+        base_avec_statut = base_revenus.with_columns(
+            [pl.col(c).cast(pl.Utf8) for c in left_on]
+        )
+        indic_join = indic_cluster.with_columns(
+            [pl.col(c).cast(pl.Utf8) for c in right_on]
+        )
+        base_avec_statut = base_avec_statut.join(
+            indic_join.select(right_on + ["min_bareme", "max_bareme"]),
+            left_on=left_on, right_on=right_on, how="left",
+        )
+        base_avec_statut = base_avec_statut.with_columns(
+            pl.when(pl.col("min_bareme").is_null() | pl.col("max_bareme").is_null())
+            .then(pl.lit("Cluster non déterminé"))
+            .when(pl.col("REVENU") < pl.col("min_bareme"))
+            .then(pl.lit("Inférieur au minimum du barème"))
+            .when(pl.col("REVENU") > pl.col("max_bareme"))
+            .then(pl.lit("Supérieur au maximum du barème"))
+            .otherwise(pl.lit("Conforme au barème"))
+            .alias("Statut")
+        )
+    else:
+        print("   ⚠️  Jointure cluster impossible — Statut non calculé")
+        base_avec_statut = base_revenus.with_columns(
+            pl.lit("Cluster non déterminé").alias("Statut")
+        )
+
+    n_statut = base_avec_statut["Statut"].value_counts().sort("Statut")
+    print(f"   Distribution Statut :")
+    for row in n_statut.iter_rows(named=True):
+        print(f"     {row['Statut']:<40} : {row['count']:,}")
+
+elif base_revenus is not None:
+    base_avec_statut = base_revenus.with_columns(
+        pl.lit("Cluster non déterminé").alias("Statut")
+    )
+
+# --- Jointure Statut → base_gv puis filtrage "Conforme au barème" ---
+if len(base_avec_statut) > 0 and "Statut" in base_avec_statut.columns:
+    cle_statut = [c for c in ["matricule", "mois_annee"]
+                  if c in base_avec_statut.columns and c in base_gv.columns]
+    if cle_statut:
+        statut_join = base_avec_statut.select(cle_statut + ["Statut"])
+        base_gv = base_gv.join(statut_join, on=cle_statut, how="left")
+        n_avant = len(base_gv)
+        base_gv = base_gv.filter(pl.col("Statut") == "Conforme au barème")
+        n_apres = len(base_gv)
+        print(f"\n   Filtrage Conformes : {n_apres:,} / {n_avant:,} "
+              f"({100*n_apres/n_avant:.1f}% retenus pour les indicateurs)")
+    else:
+        print("   ⚠️  Clé matricule/mois_annee absente — filtrage Conforme ignoré")
+else:
+    print("   ⚠️  Statut non disponible — indicateurs calculés sur tous les individus")
+
+print()
+
+# ============================================================
 # 8. AGRÉGATION → REVENU TOTAL
 # ============================================================
 
@@ -1225,120 +1332,13 @@ if BAREME_DISPONIBLE:
     print()
 
 # ============================================================
-# 13b. ANALYSE PAR CODES POSTE + RÉFÉRENTIEL ANSTAT 2025
+# 13b. RAPPEL — variables Statut déjà calculées en section 7c
 # ============================================================
-# Lecture du Silver (non dédupliqué), exclusion organisme 59,
-# filtrage individus éligibles par CODE_POSTE, calcul REVENU,
-# chargement anstat_2025.txt.xlsx, indicateurs par cluster,
-# création variable Statut.
+# base_revenus, df_anstat_ref, indic_cluster, base_avec_statut
+# sont déjà disponibles depuis la section 7c.
+# Aucun recalcul nécessaire ici.
 
-print("13b. Analyse codes poste + référentiel anstat_2025...")
-print()
-
-# --- 13b-1 : Filtrage Silver par codes poste ---
-print("  13b-1. Chargement Silver et filtrage codes poste...")
-base_revenus    = charger_silver_filtres_poste()
-
-# --- 13b-2 : Référentiel ANSTAT 2025 ---
-print("  13b-2. Chargement référentiel anstat_2025.txt.xlsx...")
-df_anstat_ref   = charger_anstat_2025()
-indic_cluster   = None
-col_secteur_ref = None
-col_grade_ref   = None
-
-if df_anstat_ref is not None and "montant_brut_sans_indemnites" in df_anstat_ref.columns:
-    # --- 13b-3 : Indicateurs par cluster (secteur, grade) ---
-    print("  13b-3. Calcul indicateurs par cluster (secteur, grade)...")
-    result_cluster = calculer_indicateurs_cluster(df_anstat_ref)
-    if result_cluster is not None:
-        indic_cluster, col_secteur_ref, col_grade_ref = result_cluster
-
-# --- 13b-4 : Création variable Statut dans la base principale ---
-base_avec_statut = pl.DataFrame()
-
-if base_revenus is not None and indic_cluster is not None:
-    print("  13b-4. Création variable Statut dans la base principale...")
-
-    # Trouver les colonnes de jointure (secteur, grade) dans base_revenus
-    col_secteur_main = next(
-        (c for c in ["bareme", "organisme", "CODE_ORGANISME"] if c in base_revenus.columns),
-        None,
-    )
-    col_grade_main = next(
-        (c for c in ["GRADE", "CODE_GRADE", "grade"] if c in base_revenus.columns),
-        None,
-    )
-
-    # Noms des colonnes cluster dans indic_cluster
-    cle_join_cluster = []
-    if "secteur_ref" in indic_cluster.columns and col_secteur_main:
-        cle_join_cluster.append(("secteur_ref", col_secteur_main))
-    if "grade_ref" in indic_cluster.columns and col_grade_main:
-        cle_join_cluster.append(("grade_ref", col_grade_main))
-
-    if cle_join_cluster:
-        left_on  = [pair[1] for pair in cle_join_cluster]
-        right_on = [pair[0] for pair in cle_join_cluster]
-
-        # Cast en Utf8 pour la jointure
-        base_avec_statut = base_revenus.with_columns([
-            pl.col(c).cast(pl.Utf8) for c in left_on
-        ])
-        indic_join = indic_cluster.with_columns([
-            pl.col(c).cast(pl.Utf8) for c in right_on
-        ])
-
-        base_avec_statut = base_avec_statut.join(
-            indic_join.select(right_on + ["min_bareme", "max_bareme"]),
-            left_on=left_on,
-            right_on=right_on,
-            how="left",
-        )
-
-        base_avec_statut = base_avec_statut.with_columns(
-            pl.when(
-                pl.col("min_bareme").is_null() | pl.col("max_bareme").is_null()
-            ).then(pl.lit("Cluster non déterminé"))
-            .when(pl.col("REVENU") < pl.col("min_bareme"))
-            .then(pl.lit("Inférieur au minimum du barème"))
-            .when(pl.col("REVENU") > pl.col("max_bareme"))
-            .then(pl.lit("Supérieur au maximum du barème"))
-            .otherwise(pl.lit("Conforme au barème"))
-            .alias("Statut")
-        )
-
-        n_statut = base_avec_statut["Statut"].value_counts().sort("Statut")
-        print(f"   Distribution Statut :")
-        for row in n_statut.iter_rows(named=True):
-            print(f"     {row['Statut']:<40} : {row['count']:,}")
-    else:
-        # Jointure impossible — statut basé uniquement sur le global
-        print("   ⚠️  Jointure cluster impossible — Statut calculé sans cluster")
-        if indic_cluster is not None:
-            min_global = float(indic_cluster["min_bareme"].min() or 0)
-            max_global = float(indic_cluster["max_bareme"].max() or 0)
-            base_avec_statut = base_revenus.with_columns(
-                pl.when(pl.col("REVENU") < min_global)
-                .then(pl.lit("Inférieur au minimum du barème"))
-                .when(pl.col("REVENU") > max_global)
-                .then(pl.lit("Supérieur au maximum du barème"))
-                .otherwise(pl.lit("Conforme au barème"))
-                .alias("Statut")
-            )
-        else:
-            base_avec_statut = base_revenus.with_columns(
-                pl.lit("Cluster non déterminé").alias("Statut")
-            )
-
-    print(f"   Base avec Statut : {len(base_avec_statut):,} lignes\n")
-
-elif base_revenus is not None:
-    print("   ⚠️  Indicateurs cluster non disponibles — Statut non calculé")
-    base_avec_statut = base_revenus.with_columns(
-        pl.lit("Cluster non déterminé").alias("Statut")
-    )
-
-print()
+print("13b. Variables Statut/barème déjà calculées en section 7c — OK\n")
 
 # ============================================================
 # 13. EXPORT EXCEL
