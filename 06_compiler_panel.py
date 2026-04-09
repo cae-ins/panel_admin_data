@@ -62,6 +62,9 @@ BUCKET_GOLD    = os.getenv("BUCKET_GOLD",   "gold")
 PREFIX_SILVER  = "panel_admin"
 PREFIX_PANEL   = "panel_admin"
 
+# Codes poste éligibles pour montant_brut_bareme
+CODES_POSTE_ELIGIBLES = {"124", "228", "271", "421", "425"}
+
 # --- CLIENT S3 (MinIO) ---
 s3 = boto3.client(
     "s3",
@@ -119,12 +122,18 @@ COLONNES_PANEL = [
     "annee",             # Int32 extrait
     "mois",              # Int32 extrait
 
-    # --- Salaires mensuels ---
+    # --- Salaires mensuels (ligne individuelle) ---
     "montant_brut",
     "montant_net",
     "retenue_pension",
     "impot",
     "charge_patronale",
+
+    # --- Salaires agrégés multi-postes (calculés dans construire_panel_annee) ---
+    "NB_POSTES",             # Nombre de postes de l'individu × mois
+    "montant_brut_total",    # Somme montant_brut sur TOUS les postes
+    "montant_brut_bareme",   # Somme montant_brut postes {124,228,271,421,425} uniquement
+    "montant_net_total",     # Somme montant_net sur TOUS les postes
 
     # --- Traçabilité imputation salaires (03c_imputer_salaires_silver) ---
     "montant_brut_SOURCE",   # OBSERVE | LOCF_FWD | LOCF_BWD | IMPUTE_L1..L4 | NON_IMPUTABLE
@@ -158,12 +167,15 @@ def construire_panel_annee(df: pl.DataFrame) -> pl.DataFrame:
     """
     Applique sur un DataFrame Silver annuel :
       - extraction annee/mois depuis mois_annee
+      - pré-agrégation multi-postes (NB_POSTES, montant_brut_total,
+        montant_brut_bareme, montant_net_total) avant déduplication
       - sélection et réordonnancement des colonnes
       - déduplication matricule × mois_annee
+      - jointure des colonnes agrégées
       - tri matricule → annee → mois
     """
 
-    # Extraction annee et mois depuis mois_annee (format MMYYYY)
+    # ── Extraction annee et mois depuis mois_annee (format MMYYYY) ────────
     if "mois_annee" in df.columns:
         df = df.with_columns([
             pl.col("mois_annee")
@@ -187,24 +199,104 @@ def construire_panel_annee(df: pl.DataFrame) -> pl.DataFrame:
             pl.lit(None).cast(pl.Int32).alias("mois"),
         ])
 
-    # Sélection défensive : colonnes de COLONNES_PANEL présentes dans df
-    cols_presentes = [c for c in COLONNES_PANEL if c in df.columns]
-    cols_absentes  = [c for c in COLONNES_PANEL if c not in df.columns]
-    df = df.select(cols_presentes)
+    # ── Pré-agrégation multi-postes (avant déduplication) ─────────────────
+    cles_agg = [c for c in ["matricule", "mois_annee"] if c in df.columns]
+
+    agg_nb         = None
+    agg_brut_total = None
+    agg_brut_bareme = None
+    agg_net_total  = None
+
+    if cles_agg:
+        # Nombre de postes par individu × mois
+        agg_nb = (
+            df.group_by(cles_agg)
+            .agg(pl.len().alias("NB_POSTES"))
+        )
+
+        # Somme montant_brut sur tous les postes
+        if "montant_brut" in df.columns:
+            df_brut = df.with_columns(
+                pl.col("montant_brut").cast(pl.Float64, strict=False).alias("montant_brut")
+            )
+            agg_brut_total = (
+                df_brut.group_by(cles_agg)
+                .agg(pl.col("montant_brut").sum().alias("montant_brut_total"))
+            )
+
+            # Somme montant_brut sur postes éligibles uniquement
+            if "CODE_POSTE" in df.columns:
+                agg_brut_bareme = (
+                    df_brut
+                    .with_columns(
+                        pl.col("CODE_POSTE").cast(pl.Utf8).str.strip_chars().alias("CODE_POSTE")
+                    )
+                    .filter(pl.col("CODE_POSTE").is_in(CODES_POSTE_ELIGIBLES))
+                    .group_by(cles_agg)
+                    .agg(pl.col("montant_brut").sum().alias("montant_brut_bareme"))
+                )
+            del df_brut
+
+        # Somme montant_net sur tous les postes
+        if "montant_net" in df.columns:
+            agg_net_total = (
+                df.with_columns(
+                    pl.col("montant_net").cast(pl.Float64, strict=False).alias("montant_net")
+                )
+                .group_by(cles_agg)
+                .agg(pl.col("montant_net").sum().alias("montant_net_total"))
+            )
+
+        n_postes = agg_nb["NB_POSTES"]
+        n_multi  = int((n_postes > 1).sum())
+        print(f"    Multi-postes : {n_multi:,} / {len(agg_nb):,} individus×mois", flush=True)
+
+    # ── Sélection défensive : colonnes COLONNES_PANEL présentes dans df ───
+    # Les nouvelles colonnes agrégées (NB_POSTES, montant_brut_total, etc.)
+    # ne sont pas encore dans df — elles seront jointes après déduplication.
+    cols_silver    = [c for c in COLONNES_PANEL
+                      if c in df.columns
+                      and c not in ("NB_POSTES", "montant_brut_total",
+                                    "montant_brut_bareme", "montant_net_total")]
+    cols_absentes  = [c for c in COLONNES_PANEL
+                      if c not in df.columns
+                      and c not in ("NB_POSTES", "montant_brut_total",
+                                    "montant_brut_bareme", "montant_net_total")]
+    df = df.select(cols_silver)
 
     if cols_absentes:
         print(f"    ⚠️  Colonnes absentes du Silver (ignorées) : {cols_absentes}", flush=True)
 
-    # Déduplication matricule × mois_annee (garde la première occurrence)
+    # ── Déduplication matricule × mois_annee (garde la première occurrence) ──
     cles_dedup = [c for c in ["matricule", "mois_annee"] if c in df.columns]
     if cles_dedup:
         avant = len(df)
         df    = df.unique(subset=cles_dedup, keep="first", maintain_order=True)
         apres = len(df)
         if avant != apres:
-            print(f"    ⚠️  {avant - apres:,} doublons supprimés", flush=True)
+            print(f"    Déduplication : {avant - apres:,} lignes supprimées "
+                  f"→ {apres:,} individus×mois", flush=True)
 
-    # Tri individu → chronologique
+    # ── Jointure des colonnes agrégées ────────────────────────────────────
+    if cles_agg:
+        if agg_nb is not None:
+            df = df.join(agg_nb, on=cles_agg, how="left")
+        if agg_brut_total is not None:
+            df = df.join(agg_brut_total, on=cles_agg, how="left")
+        if agg_brut_bareme is not None:
+            df = df.join(agg_brut_bareme, on=cles_agg, how="left")
+        else:
+            # CODE_POSTE absent : montant_brut_bareme = montant_brut_total
+            if agg_brut_total is not None:
+                df = df.with_columns(
+                    pl.col("montant_brut_total").alias("montant_brut_bareme")
+                )
+                print("    ⚠️  CODE_POSTE absent — montant_brut_bareme = montant_brut_total",
+                      flush=True)
+        if agg_net_total is not None:
+            df = df.join(agg_net_total, on=cles_agg, how="left")
+
+    # ── Tri individu → chronologique ──────────────────────────────────────
     tri_cols = [c for c in ["matricule", "annee", "mois"] if c in df.columns]
     df = df.sort(tri_cols, nulls_last=True)
 
@@ -257,7 +349,8 @@ for cle in cles_silver:
     print(f"    Panel : {nb_lignes:,} lignes × {len(df_panel.columns)} cols", flush=True)
 
     # Vérification explicite des colonnes critiques
-    for col_critique in ["GRADE", "GRADE_SOURCE", "montant_brut_SOURCE", "montant_net_SOURCE"]:
+    for col_critique in ["GRADE", "GRADE_SOURCE", "montant_brut_SOURCE", "montant_net_SOURCE",
+                         "NB_POSTES", "montant_brut_total", "montant_brut_bareme"]:
         statut = "✓" if col_critique in df_panel.columns else "✗ ABSENT"
         print(f"    {col_critique:<25} : {statut}", flush=True)
 
@@ -275,8 +368,9 @@ for cle in cles_silver:
     row_stat = {"annee": annee_str, "nb_obs": nb_lignes}
     if "matricule" in df_panel.columns:
         row_stat["nb_individus"] = df_panel["matricule"].n_unique()
-    if "montant_brut" in df_panel.columns:
-        brut = df_panel["montant_brut"].drop_nulls()
+    col_brut = "montant_brut_total" if "montant_brut_total" in df_panel.columns else "montant_brut"
+    if col_brut in df_panel.columns:
+        brut = df_panel[col_brut].drop_nulls()
         row_stat["brut_moyen"]   = round(brut.mean(),   0) if len(brut) > 0 else None
         row_stat["brut_mediane"] = round(brut.median(), 0) if len(brut) > 0 else None
     stats_par_annee.append(row_stat)

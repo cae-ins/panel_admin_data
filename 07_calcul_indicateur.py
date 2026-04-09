@@ -773,28 +773,34 @@ base = base.with_columns(
 )
 
 # ============================================================
-# 4. CALCUL DU SALAIRE BRUT (composantes élémentaires)
+# 4. CALCUL DU SALAIRE BRUT (montant_brut_bareme prioritaire)
 # ============================================================
 
-print("4. Calcul du salaire brut depuis les composantes...")
+print("4. Calcul du salaire brut (montant_brut_bareme prioritaire)...")
 
-composantes_presentes = [c for c in COMPOSANTES_SALAIRE if c in base.columns]
-print(f"   Composantes trouvées : {composantes_presentes}")
-
-if composantes_presentes:
-    base = base.with_columns([
-        pl.col(c).cast(pl.Float64, strict=False) for c in composantes_presentes
-    ])
+if "montant_brut_bareme" in base.columns:
     base = base.with_columns(
-        pl.sum_horizontal([pl.col(c) for c in composantes_presentes])
-        .alias("SALAIRE_BRUT")
+        pl.col("montant_brut_bareme").cast(pl.Float64, strict=False).alias("SALAIRE_BRUT")
     )
+    print("   Source : montant_brut_bareme (postes 124/228/271/421/425, pré-agrégé en 06)")
 else:
-    base = base.with_columns(
-        pl.col("montant_brut").cast(pl.Float64, strict=False).alias("SALAIRE_BRUT")
-        if "montant_brut" in base.columns
-        else pl.lit(0.0).alias("SALAIRE_BRUT")
-    )
+    # Repli sur composantes élémentaires ou montant_brut
+    composantes_presentes = [c for c in COMPOSANTES_SALAIRE if c in base.columns]
+    print(f"   ⚠️  montant_brut_bareme absent — repli composantes : {composantes_presentes}")
+    if composantes_presentes:
+        base = base.with_columns([
+            pl.col(c).cast(pl.Float64, strict=False) for c in composantes_presentes
+        ])
+        base = base.with_columns(
+            pl.sum_horizontal([pl.col(c) for c in composantes_presentes])
+            .alias("SALAIRE_BRUT")
+        )
+    else:
+        base = base.with_columns(
+            pl.col("montant_brut").cast(pl.Float64, strict=False).alias("SALAIRE_BRUT")
+            if "montant_brut" in base.columns
+            else pl.lit(0.0).alias("SALAIRE_BRUT")
+        )
 
 n_pos = int((base["SALAIRE_BRUT"] > 0).sum())
 print(f"   Salaires > 0 : {n_pos:,} ({100*n_pos/len(base):.1f}%)\n")
@@ -838,7 +844,16 @@ print()
 
 print("6. Détection multi-postes (par matricule)...")
 
-if "matricule" in base.columns:
+if "NB_POSTES" in base.columns:
+    # NB_POSTES déjà pré-calculé dans le Gold par le programme 06
+    total_multi  = int((base["NB_POSTES"] > 1).sum())
+    total_agents = len(base)
+    print(f"   NB_POSTES issu du Gold (pré-calculé en étape 06)")
+    print(f"   Multi-postes : {total_multi:,} / {total_agents:,} "
+          f"({100*total_multi/total_agents:.1f}%)\n")
+elif "matricule" in base.columns:
+    # Repli : recalcul depuis les lignes (Gold non régénéré avec programme 06 modifié)
+    print("   ⚠️  NB_POSTES absent du Gold — recalcul depuis les lignes (Gold à régénérer)")
     nb_postes = (
         base.group_by(["mois_annee", "matricule"])
         .agg(pl.len().alias("NB_POSTES"))
@@ -913,41 +928,38 @@ print()
 # 7c. STATUT BARÈME — calcul anticipé pour filtrer sur "Conformes"
 # ============================================================
 # Le Statut est calculé ici (avant les indicateurs) pour que
-# les feuilles produites par le programme 08 ne portent que
-# sur les agents "Conformes au barème".
+# les indicateurs ne portent que sur les agents "Conformes au barème".
+# Source : montant_brut_bareme du Gold (pré-agrégé en étape 06).
+# Plus besoin de remonter au Silver.
 
 print("7c. Calcul Statut barème (filtrage sur conformes avant indicateurs)...")
 print()
 
-# --- Chargement Silver + calcul REVENU par codes poste éligibles ---
-print("  7c-1. Chargement Silver et filtrage codes poste...")
-base_revenus = charger_silver_filtres_poste()
-
 # --- Chargement référentiel anstat_2025 ---
-print("  7c-2. Chargement référentiel anstat_2025.txt.xlsx...")
+print("  7c-1. Chargement référentiel anstat_2025.txt.xlsx...")
 df_anstat_ref   = charger_anstat_2025()
 indic_cluster   = None
 col_secteur_ref = None
 col_grade_ref   = None
 
 if df_anstat_ref is not None and "montant_brut_sans_indemnites" in df_anstat_ref.columns:
-    print("  7c-3. Calcul indicateurs par cluster (secteur, grade)...")
+    print("  7c-2. Calcul indicateurs par cluster (secteur, grade)...")
     result_cluster = calculer_indicateurs_cluster(df_anstat_ref)
     if result_cluster is not None:
         indic_cluster, col_secteur_ref, col_grade_ref = result_cluster
 
-# --- Création variable Statut ---
+# --- Création variable Statut directement sur base_gv ---
 base_avec_statut = pl.DataFrame()
 
-if base_revenus is not None and indic_cluster is not None:
-    print("  7c-4. Création variable Statut...")
+if indic_cluster is not None and "montant_brut_bareme" in base_gv.columns:
+    print("  7c-3. Création variable Statut sur base_gv (montant_brut_bareme)...")
 
     col_secteur_main = next(
-        (c for c in ["bareme", "organisme", "CODE_ORGANISME"] if c in base_revenus.columns),
+        (c for c in ["bareme", "organisme", "CODE_ORGANISME"] if c in base_gv.columns),
         None,
     )
     col_grade_main = next(
-        (c for c in ["GRADE", "CODE_GRADE", "grade"] if c in base_revenus.columns),
+        (c for c in ["GRADE", "CODE_GRADE", "grade"] if c in base_gv.columns),
         None,
     )
 
@@ -961,56 +973,52 @@ if base_revenus is not None and indic_cluster is not None:
         left_on  = [pair[1] for pair in cle_join_cluster]
         right_on = [pair[0] for pair in cle_join_cluster]
 
-        base_avec_statut = base_revenus.with_columns(
-            [pl.col(c).cast(pl.Utf8) for c in left_on]
-        )
         indic_join = indic_cluster.with_columns(
             [pl.col(c).cast(pl.Utf8) for c in right_on]
         )
-        base_avec_statut = base_avec_statut.join(
+        base_gv = base_gv.with_columns(
+            [pl.col(c).cast(pl.Utf8) for c in left_on]
+        ).join(
             indic_join.select(right_on + ["min_bareme", "max_bareme"]),
             left_on=left_on, right_on=right_on, how="left",
         )
-        base_avec_statut = base_avec_statut.with_columns(
+        base_gv = base_gv.with_columns(
             pl.when(pl.col("min_bareme").is_null() | pl.col("max_bareme").is_null())
             .then(pl.lit("Cluster non déterminé"))
-            .when(pl.col("REVENU") < pl.col("min_bareme"))
+            .when(pl.col("montant_brut_bareme") < pl.col("min_bareme"))
             .then(pl.lit("Inférieur au minimum du barème"))
-            .when(pl.col("REVENU") > pl.col("max_bareme"))
+            .when(pl.col("montant_brut_bareme") > pl.col("max_bareme"))
             .then(pl.lit("Supérieur au maximum du barème"))
             .otherwise(pl.lit("Conforme au barème"))
             .alias("Statut")
         )
+        base_avec_statut = base_gv.clone()
     else:
         print("   ⚠️  Jointure cluster impossible — Statut non calculé")
-        base_avec_statut = base_revenus.with_columns(
-            pl.lit("Cluster non déterminé").alias("Statut")
-        )
+        base_gv = base_gv.with_columns(pl.lit("Cluster non déterminé").alias("Statut"))
+        base_avec_statut = base_gv.clone()
 
-    n_statut = base_avec_statut["Statut"].value_counts().sort("Statut")
+    n_statut = base_gv["Statut"].value_counts().sort("Statut")
     print(f"   Distribution Statut :")
     for row in n_statut.iter_rows(named=True):
         print(f"     {row['Statut']:<40} : {row['count']:,}")
 
-elif base_revenus is not None:
-    base_avec_statut = base_revenus.with_columns(
-        pl.lit("Cluster non déterminé").alias("Statut")
-    )
+elif "montant_brut_bareme" not in base_gv.columns:
+    print("   ⚠️  montant_brut_bareme absent du Gold — régénérer le Gold avec programme 06 modifié")
+    base_gv = base_gv.with_columns(pl.lit("Cluster non déterminé").alias("Statut"))
+    base_avec_statut = base_gv.clone()
+else:
+    base_gv = base_gv.with_columns(pl.lit("Cluster non déterminé").alias("Statut"))
+    base_avec_statut = base_gv.clone()
 
-# --- Jointure Statut → base_gv puis filtrage "Conforme au barème" ---
-if len(base_avec_statut) > 0 and "Statut" in base_avec_statut.columns:
-    cle_statut = [c for c in ["matricule", "mois_annee"]
-                  if c in base_avec_statut.columns and c in base_gv.columns]
-    if cle_statut:
-        statut_join = base_avec_statut.select(cle_statut + ["Statut"])
-        base_gv = base_gv.join(statut_join, on=cle_statut, how="left")
-        n_avant = len(base_gv)
-        base_gv = base_gv.filter(pl.col("Statut") == "Conforme au barème")
-        n_apres = len(base_gv)
+# --- Filtrage "Conforme au barème" ---
+if "Statut" in base_gv.columns:
+    n_avant = len(base_gv)
+    base_gv = base_gv.filter(pl.col("Statut") == "Conforme au barème")
+    n_apres = len(base_gv)
+    if n_avant > 0:
         print(f"\n   Filtrage Conformes : {n_apres:,} / {n_avant:,} "
               f"({100*n_apres/n_avant:.1f}% retenus pour les indicateurs)")
-    else:
-        print("   ⚠️  Clé matricule/mois_annee absente — filtrage Conforme ignoré")
 else:
     print("   ⚠️  Statut non disponible — indicateurs calculés sur tous les individus")
 
@@ -1038,7 +1046,11 @@ base_agrege = (
     base_gv
     .group_by(cols_agg)
     .agg([
-        pl.col("SALAIRE_BRUT").sum().alias("REVENU_TOTAL"),
+        # REVENU_TOTAL = montant_brut_bareme (Gold dédupliqué = 1 ligne/individu×mois)
+        pl.col("SALAIRE_BRUT").first().alias("REVENU_TOTAL"),
+        pl.col("montant_brut_total").first().alias("montant_brut_total")
+          if "montant_brut_total" in base_gv.columns
+          else pl.lit(None).cast(pl.Float64).alias("montant_brut_total"),
         pl.col("NB_POSTES").first().alias("NB_POSTES"),
         pl.col("GRADE").sort_by("GRADE_ORDER", descending=True).first().alias("GRADE_PRINCIPAL"),
         pl.col("GRADE_SOURCE").sort_by("GRADE_ORDER", descending=True).first().alias("GRADE_SOURCE_PRINCIPAL"),
@@ -1067,32 +1079,33 @@ base_agrege = base_agrege.filter(pl.col("REVENU_TOTAL").is_not_null())
 print(f"   {len(base_agrege):,} agents agrégés\n")
 
 # ============================================================
-# 8b. WINSORISATION DU REVENU TOTAL
+# 8b. WINSORISATION SUR MONTANT_BRUT_TOTAL (sauvegardé pour autres usages)
+#     Les indicateurs seront calculés sur REVENU_TOTAL (= montant_brut_bareme)
 # ============================================================
 
 value_col_indic = "REVENU_TOTAL"
 
-if SEUIL_WINS is not None:
+if SEUIL_WINS is not None and "montant_brut_total" in base_agrege.columns:
     wins_full     = [c for c in ["ANNEE", "MOIS_NUM", "GRADE_PRINCIPAL", "Code_CITP"]
                      if c in base_agrege.columns]
     wins_fallback = [c for c in ["ANNEE", "MOIS_NUM", "GRADE_PRINCIPAL"]
                      if c in base_agrege.columns]
-    print(f"8b. Winsorisation REVENU_TOTAL "
+    print(f"8b. Winsorisation MONTANT_BRUT_TOTAL "
           f"(P{int(SEUIL_WINS*100)}/P{int((1-SEUIL_WINS)*100)}) "
           f"— seuil groupe : {MIN_OBS_WINS} obs...")
 
     base_agrege = base_agrege.with_columns([
         pl.len().over(wins_full).alias("_n_citp"),
-        pl.col("REVENU_TOTAL")
+        pl.col("montant_brut_total")
           .quantile(SEUIL_WINS, interpolation="nearest")
           .over(wins_full).alias("_pb_citp"),
-        pl.col("REVENU_TOTAL")
+        pl.col("montant_brut_total")
           .quantile(1 - SEUIL_WINS, interpolation="nearest")
           .over(wins_full).alias("_ph_citp"),
-        pl.col("REVENU_TOTAL")
+        pl.col("montant_brut_total")
           .quantile(SEUIL_WINS, interpolation="nearest")
           .over(wins_fallback).alias("_pb_grade"),
-        pl.col("REVENU_TOTAL")
+        pl.col("montant_brut_total")
           .quantile(1 - SEUIL_WINS, interpolation="nearest")
           .over(wins_fallback).alias("_ph_grade"),
     ])
@@ -1102,17 +1115,19 @@ if SEUIL_WINS is not None:
 
     base_agrege = base_agrege.with_columns(
         pl.when(pl.col("_n_citp") >= MIN_OBS_WINS)
-        .then(pl.col("REVENU_TOTAL").clip(pl.col("_pb_citp"), pl.col("_ph_citp")))
-        .otherwise(pl.col("REVENU_TOTAL").clip(pl.col("_pb_grade"), pl.col("_ph_grade")))
-        .alias("REVENU_TOTAL_W")
+        .then(pl.col("montant_brut_total").clip(pl.col("_pb_citp"), pl.col("_ph_citp")))
+        .otherwise(pl.col("montant_brut_total").clip(pl.col("_pb_grade"), pl.col("_ph_grade")))
+        .alias("montant_brut_total_W")
     ).drop(["_n_citp", "_pb_citp", "_ph_citp", "_pb_grade", "_ph_grade"])
 
-    n_modif = int((base_agrege["REVENU_TOTAL_W"] != base_agrege["REVENU_TOTAL"]).sum())
+    n_modif = int((base_agrege["montant_brut_total_W"] != base_agrege["montant_brut_total"]).sum())
     print(f"   Groupe mois × grade × CITP (≥{MIN_OBS_WINS} obs) : {n_obs_citp:,} obs")
     print(f"   Repli  mois × grade         (<{MIN_OBS_WINS} obs) : {n_obs_grade:,} obs")
     print(f"   Observations écrêtées : {n_modif:,}  ({100*n_modif/len(base_agrege):.2f}%)")
-    print(f"   Gold inchangé — winsorisation en mémoire uniquement\n")
-    value_col_indic = "REVENU_TOTAL_W"
+    print(f"   → montant_brut_total_W sauvegardé pour autres usages")
+    print(f"   → Indicateurs calculés sur REVENU_TOTAL (montant_brut_bareme)\n")
+elif SEUIL_WINS is not None:
+    print(f"8b. ⚠️  montant_brut_total absent — winsorisation ignorée\n")
 
 # ============================================================
 # 9. INDICATEURS SUR LE REVENU TOTAL
