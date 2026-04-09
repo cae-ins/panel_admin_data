@@ -1448,19 +1448,19 @@ if indic_cluster is not None or len(base_avec_statut) > 0:
     if len(base_avec_statut) > 0:
         ecrire_feuille(wb2, "BASE_AVEC_STATUT", base_avec_statut)
 
-        # Feuille 4 : Synthèse Statut par cluster
+        # Feuille 4 : Résumé statistique de la variable Statut
         if "Statut" in base_avec_statut.columns:
-            cols_synthese = [c for c in ["secteur_ref", "grade_ref", "GRADE",
-                                          "CODE_GRADE", "bareme", "Statut"]
-                             if c in base_avec_statut.columns]
-            if cols_synthese:
-                synthese_statut = (
-                    base_avec_statut
-                    .group_by(cols_synthese)
-                    .agg(pl.len().alias("Effectif"))
-                    .sort(cols_synthese)
+            total = len(base_avec_statut)
+            resume_statut = (
+                base_avec_statut
+                .group_by("Statut")
+                .agg(pl.len().alias("Effectif"))
+                .with_columns(
+                    (pl.col("Effectif") * 100 / total).round(2).alias("Pourcentage (%)")
                 )
-                ecrire_feuille(wb2, "SYNTHESE_STATUT", synthese_statut)
+                .sort("Statut")
+            )
+            ecrire_feuille(wb2, "RESUME_STATUT", resume_statut)
 
     buf2 = io.BytesIO()
     wb2.save(buf2)
