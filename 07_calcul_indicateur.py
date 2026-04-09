@@ -199,10 +199,32 @@ def normaliser_pour_matching(texte) -> str | None:
     return texte if texte else None
 
 
+def corriger_bareme_emploi(emploi_norm: str | None, bareme_actuel: str | None) -> str | None:
+    """
+    Corrige le BAREME d'un emploi uniquement si celui-ci vaut 'Barême Général'.
+    Recherche insensible à la casse, aux espaces et aux accents (déjà normalisés).
+    - 'informaticien' ou 'informatique' → 'Informaticien'
+    - 'secretaire'                      → 'SECRETAIRE DIRECTION'
+    Si le barème n'est pas 'Barême Général', on ne touche pas.
+    """
+    if bareme_actuel != "Barême Général":
+        return bareme_actuel
+    if emploi_norm is None:
+        return bareme_actuel
+    # emploi_norm est déjà normalisé (majuscules, sans accents, sans ponctuation)
+    if "INFORMATICIEN" in emploi_norm or "INFORMATIQUE" in emploi_norm:
+        return "Informaticien"
+    if "SECRETAIRE" in emploi_norm:
+        return "SECRETAIRE DIRECTION"
+    return bareme_actuel
+
+
 def charger_table_bareme() -> pl.DataFrame | None:
     """
     Charge la table CORRESPONDANCE_GRILLE_EMPLOI depuis staging et
     renvoie une table de jointure (emploi_norm → bareme, grade_ref).
+    Corrige le BAREME des informaticiens et secrétaires de direction
+    lorsque leur BAREME actuel est 'Barême Général'.
     Renvoie None si le fichier est absent (étape non bloquante).
     """
     with tempfile.NamedTemporaryFile(suffix=".xlsx", delete=False) as tmp:
@@ -220,6 +242,30 @@ def charger_table_bareme() -> pl.DataFrame | None:
             .map_elements(normaliser_pour_matching, return_dtype=pl.Utf8)
             .alias("emploi_ref_norm")
         )
+
+        # Correction BAREME pour Informaticien et SECRETAIRE DIRECTION
+        # Uniquement si le bareme actuel est 'Barême Général'
+        # Insensible à la casse, aux espaces et aux accents (emploi_ref_norm déjà normalisé)
+        avant_correction = df.filter(
+            pl.col("bareme") == "Barême Général"
+        ).select(pl.len()).item()
+
+        df = df.with_columns(
+            pl.struct(["emploi_ref_norm", "bareme"])
+            .map_elements(
+                lambda r: corriger_bareme_emploi(r["emploi_ref_norm"], r["bareme"]),
+                return_dtype=pl.Utf8
+            )
+            .alias("bareme")
+        )
+
+        n_info = int((df["bareme"] == "Informaticien").sum())
+        n_sec  = int((df["bareme"] == "SECRETAIRE DIRECTION").sum())
+        if n_info > 0:
+            print(f"  ✓ Correction BAREME → Informaticien      : {n_info} emplois")
+        if n_sec > 0:
+            print(f"  ✓ Correction BAREME → SECRETAIRE DIRECTION : {n_sec} emplois")
+
         table = (
             df.filter(pl.col("emploi_ref_norm").is_not_null())
             .select(["emploi_ref_norm", "bareme", "grade_ref"])
@@ -954,6 +1000,13 @@ base_avec_statut = pl.DataFrame()
 if indic_cluster is not None and "montant_brut_bareme" in base_gv.columns:
     print("  7c-3. Création variable Statut sur base_gv (montant_brut_bareme)...")
 
+    # Mapping des noms de barème entre fichier de correspondance et anstat_2025
+    # Clé = valeur dans base_gv (correspondance) | Valeur = nom dans anstat_2025
+    MAPPING_BAREME_ANSTAT = {
+        "Cadre-Sup-Santé Generaliste & Specialiste" : "Cadre-Sup-Santé",
+        "police"                                     : "para militaire",
+    }
+
     col_secteur_main = next(
         (c for c in ["bareme", "organisme", "CODE_ORGANISME"] if c in base_gv.columns),
         None,
@@ -962,6 +1015,22 @@ if indic_cluster is not None and "montant_brut_bareme" in base_gv.columns:
         (c for c in ["GRADE", "CODE_GRADE", "grade"] if c in base_gv.columns),
         None,
     )
+
+    # Appliquer le mapping sur la colonne secteur avant la jointure
+    if col_secteur_main and col_secteur_main in base_gv.columns:
+        n_avant_mapping = base_gv[col_secteur_main].is_not_null().sum()
+        base_gv = base_gv.with_columns(
+            pl.col(col_secteur_main)
+            .map_elements(
+                lambda v: MAPPING_BAREME_ANSTAT.get(v, v) if v is not None else v,
+                return_dtype=pl.Utf8
+            )
+            .alias(col_secteur_main)
+        )
+        for ancien, nouveau in MAPPING_BAREME_ANSTAT.items():
+            n_rem = int((base_gv[col_secteur_main] == nouveau).sum())
+            if n_rem > 0:
+                print(f"   Mapping barème : '{ancien}' → '{nouveau}' ({n_rem:,} agents)")
 
     cle_join_cluster = []
     if "secteur_ref" in indic_cluster.columns and col_secteur_main:
