@@ -225,8 +225,13 @@ def construire_panel_annee(df: pl.DataFrame) -> pl.DataFrame:
                 .item()
             )
             if n_lignes_tot > n_unique_org:
-                print(f"    ⚠️  Doublons intra-organisme : {n_lignes_tot - n_unique_org:,} lignes",
-                      flush=True)
+                n_doublons = n_lignes_tot - n_unique_org
+                raise ValueError(
+                    f"ARRÊT — Doublons intra-organisme détectés : {n_doublons:,} lignes en excès "
+                    f"({n_lignes_tot:,} lignes vs {n_unique_org:,} uniques "
+                    f"matricule × mois_annee × CODE_ORGANISME). "
+                    f"Corriger le Silver avant de relancer le programme 06."
+                )
             else:
                 print(f"    ✓ Unicité agent × mois × organisme confirmée", flush=True)
 
