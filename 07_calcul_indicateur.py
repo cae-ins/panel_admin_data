@@ -1059,21 +1059,42 @@ if indic_cluster is not None and "montant_brut_bareme" in base_gv.columns:
 
         # ── DIAGNOSTIC jointure ───────────────────────────────────────────
         print(f"   Clés jointure — Gold : {left_on}  |  Référentiel : {right_on}")
+
+        # 1. Vérification colonne par colonne
         for l, r in zip(left_on, right_on):
             set_gold = set(base_gv[l].drop_nulls().unique().to_list())
             set_ref  = set(indic_cluster[r].drop_nulls().unique().to_list())
-            list_gold = sorted(set_gold)
-            list_ref  = sorted(set_ref)
             dans_ref_pas_gold = sorted(set_ref - set_gold)
             dans_gold_pas_ref = sorted(set_gold - set_ref)
-            print(f"   [{l}] Gold ({len(set_gold)} modalités) : {list_gold}")
-            print(f"   [{r}] Référentiel ({len(set_ref)} modalités) : {list_ref}")
+            print(f"   [{l}] Gold ({len(set_gold)} modalités) : {sorted(set_gold)}")
+            print(f"   [{r}] Référentiel ({len(set_ref)} modalités) : {sorted(set_ref)}")
             if dans_ref_pas_gold:
                 print(f"     ⚠️  Dans référentiel mais absent du Gold : {dans_ref_pas_gold}")
             if dans_gold_pas_ref:
                 print(f"     ⚠️  Dans Gold mais absent du référentiel : {dans_gold_pas_ref}")
-            if not dans_ref_pas_gold and not dans_gold_pas_ref:
-                print(f"     ✓ Modalités identiques des deux côtés")
+
+        # 2. Vérification des combinaisons (tuples de clés)
+        if len(left_on) > 1:
+            combis_gold = set(
+                base_gv.select(left_on).drop_nulls().unique()
+                .iter_rows()
+            )
+            combis_ref = set(
+                indic_cluster.select(right_on).drop_nulls().unique()
+                .iter_rows()
+            )
+            dans_ref_pas_gold_c = sorted(combis_ref - combis_gold)
+            dans_gold_pas_ref_c = sorted(combis_gold - combis_ref)
+            print(f"   Combinaisons ({' × '.join(left_on)}) :")
+            print(f"     Gold         : {len(combis_gold):,} combinaisons")
+            print(f"     Référentiel  : {len(combis_ref):,} combinaisons")
+            if dans_ref_pas_gold_c:
+                print(f"     ⚠️  Dans référentiel mais absent du Gold : {dans_ref_pas_gold_c}")
+            if dans_gold_pas_ref_c:
+                print(f"     ⚠️  Dans Gold mais absent du référentiel : {dans_gold_pas_ref_c[:20]}"
+                      f"{'...' if len(dans_gold_pas_ref_c) > 20 else ''}")
+            if not dans_ref_pas_gold_c and not dans_gold_pas_ref_c:
+                print(f"     ✓ Combinaisons identiques des deux côtés")
         # ─────────────────────────────────────────────────────────────────
 
         indic_join = indic_cluster.with_columns(
