@@ -1062,10 +1062,12 @@ if indic_cluster is not None and "montant_brut_bareme" in base_gv.columns:
         for l, r in zip(left_on, right_on):
             set_gold = set(base_gv[l].drop_nulls().unique().to_list())
             set_ref  = set(indic_cluster[r].drop_nulls().unique().to_list())
+            list_gold = sorted(set_gold)
+            list_ref  = sorted(set_ref)
             dans_ref_pas_gold = sorted(set_ref - set_gold)
             dans_gold_pas_ref = sorted(set_gold - set_ref)
-            print(f"   [{l}] Gold         : {len(set_gold):,} modalités")
-            print(f"   [{r}] Référentiel  : {len(set_ref):,} modalités")
+            print(f"   [{l}] Gold ({len(set_gold)} modalités) : {list_gold}")
+            print(f"   [{r}] Référentiel ({len(set_ref)} modalités) : {list_ref}")
             if dans_ref_pas_gold:
                 print(f"     ⚠️  Dans référentiel mais absent du Gold : {dans_ref_pas_gold}")
             if dans_gold_pas_ref:
