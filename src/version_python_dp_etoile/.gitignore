@@ -1,0 +1,6 @@
+*.parquet
+*.pyc
+*.ipynb_checkpoints
+*.DS_Store
+*.pyc
+*.ipynb
