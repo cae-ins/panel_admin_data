@@ -115,8 +115,8 @@ CODES_POSTE_ELIGIBLES = {"124", "228", "271", "421", "425"}
 # Code organisme à exclure de tous les traitements
 CODE_ORGANISME_EXCLUS = "59"
 
-# Fichier de référence barème 2025 (dans staging/referentiel/)
-KEY_ANSTAT_2025 = "panel_admin/referentiel/anstat_2025.txt.xlsx"
+# Fichier de référence barème 2025 (dans staging/panel_admin/references/)
+KEY_ANSTAT_2025 = "panel_admin/references/anstat_2025.txt.xlsx"
 
 # Clé de sortie pour les indicateurs barème sans indemnités
 KEY_INDIC_BAREME_SANS_INDEM = f"{PREFIX_EXPORTS}/indicateurs_bareme_sans_indemnites.xlsx"
@@ -851,8 +851,15 @@ else:
             else pl.lit(0.0).alias("SALAIRE_BRUT")
         )
 
-n_pos = int((base["SALAIRE_BRUT"] > 0).sum())
-print(f"   Salaires > 0 : {n_pos:,} ({100*n_pos/len(base):.1f}%)\n")
+n_total  = len(base)
+n_pos    = int((base["SALAIRE_BRUT"] > 0).sum())
+n_nul    = int(base["SALAIRE_BRUT"].is_null().sum())
+n_zero   = int((base["SALAIRE_BRUT"] == 0).sum())
+n_neg    = int((base["SALAIRE_BRUT"] < 0).sum())
+print(f"   Salaires > 0  : {n_pos:,} ({100*n_pos/n_total:.1f}%)")
+print(f"   Nuls (null)   : {n_nul:,} ({100*n_nul/n_total:.1f}%)")
+print(f"   Zéros (= 0)   : {n_zero:,} ({100*n_zero/n_total:.1f}%)")
+print(f"   Négatifs (< 0): {n_neg:,} ({100*n_neg/n_total:.1f}%)\n")
 
 # ============================================================
 # 5. STANDARDISATION DU SEXE
@@ -1493,6 +1500,17 @@ if BAREME_DISPONIBLE:
             global_brut=global_brut_annee,
             stats_bareme_detail=stats_annee,
         )
+
+# ── Vérification : au moins une feuille doit contenir des données ────
+feuilles_visibles = [ws for ws in wb.worksheets if ws.sheet_state == "visible"]
+feuilles_avec_data = [ws for ws in feuilles_visibles if ws.max_row > 1]
+if not feuilles_avec_data:
+    raise ValueError(
+        "ARRÊT — Le classeur Excel ne contient aucune feuille avec données. "
+        "Vérifier que l'étape 7c (barème) a produit des agents conformes et "
+        "que le fichier anstat_2025.txt.xlsx est bien disponible dans "
+        f"staging/{KEY_ANSTAT_2025}."
+    )
 
 buf_xlsx = io.BytesIO()
 wb.save(buf_xlsx)
