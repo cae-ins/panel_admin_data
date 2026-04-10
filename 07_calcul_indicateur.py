@@ -1227,10 +1227,10 @@ elif SEUIL_WINS is not None:
     print(f"8b. ⚠️  montant_brut_total absent — winsorisation ignorée\n")
 
 # ============================================================
-# 9. INDICATEURS SUR LE REVENU TOTAL
+# 9. INDICATEURS SUR montant_brut_bareme
 # ============================================================
 
-print("9. Calcul indicateurs REVENU TOTAL...")
+print("9. Calcul indicateurs montant_brut_bareme...")
 
 indic_grade = compute_indicators(
     base_agrege, ["ANNEE", "MOIS_NUM", "MOIS", "GRADE_PRINCIPAL"], value_col_indic
