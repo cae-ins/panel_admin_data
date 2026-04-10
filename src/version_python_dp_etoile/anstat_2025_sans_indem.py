@@ -66,9 +66,23 @@ def charger_anstat_depuis_s3(client_s3, bucket, cle_s3):
     with tempfile.NamedTemporaryFile(suffix=".xlsx", delete=False) as tmp:
         tmp_path = tmp.name
         client_s3.download_file(bucket, cle_s3, tmp_path)
-        df = pl.read_excel(tmp_path)
+        # infer_schema_length=0 → tout est lu en String d'abord,
+        # ce qui évite l'erreur "Could not determine dtype for column 10"
+        df = pl.read_excel(tmp_path, infer_schema_length=0)
 
     os.unlink(tmp_path)  # supprimer le fichier temporaire
+
+    # Convertir les colonnes numériques (lues comme String) en Float64
+    colonnes_numeriques = [
+        c for c in df.columns
+        if c not in ("SECTEUR", "CATEGORIE", "GRADE", "CORPS", "EMPLOI",
+                      "AUTRES INDEMNITES")
+    ]
+    df = df.with_columns([
+        pl.col(c).cast(pl.Float64, strict=False) for c in colonnes_numeriques
+        if c in df.columns
+    ])
+
     print(f"✓ ANSTAT chargé : {len(df):,} lignes × {len(df.columns)} colonnes")
     return df
 

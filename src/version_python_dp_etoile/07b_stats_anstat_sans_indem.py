@@ -47,6 +47,7 @@ MINIO_ACCESS_KEY = os.getenv("MINIO_ACCESS_KEY", "datalab-team")
 MINIO_SECRET_KEY = os.getenv("MINIO_SECRET_KEY", "minio-datalabteam123")
 
 BUCKET_STAGING = os.getenv("BUCKET_STAGING", "staging")
+PREFIX_EXPORTS = "panel_admin/exports_gold"
 
 # --- CLIENT S3 (MinIO) ---
 s3 = boto3.client(
