@@ -2,18 +2,16 @@
 # PANEL ADMIN — ÉTAPE 7b : STATS ANSTAT SANS INDEMNITÉS
 # ============================================================
 # Calcule les statistiques barèmes officiels ANSTAT (min, max,
-# médiane, moyenne) par SECTEUR, CATÉGORIE et GRADE à partir
+# médiane, moyenne) par cluster (SECTEUR × GRADE) à partir
 # du fichier de référence anstat_2025.txt.xlsx, en ne retenant
 # que les composantes hors indemnités (Salaire de Base,
 # Résidence, Logement, Transport, Allocations 2 enfants).
 #
 # Source  : s3://staging/panel_admin/references/anstat_2025.txt.xlsx
 #
-# Sorties :
+# Sortie :
 #   s3://staging/panel_admin/exports_gold/
-#       anstat_sans_indem_SECTEUR.csv
-#       anstat_sans_indem_CATEGORIE.csv
-#       anstat_sans_indem_GRADE.csv
+#       anstat_sans_indem_SECTEUR_GRADE.csv
 #
 # Prérequis : le fichier ANSTAT doit avoir été uploadé
 #             par l'étape 00_upload_staging.py
@@ -87,7 +85,7 @@ def exporter_csv_staging(df: pl.DataFrame, nom_fichier: str) -> None:
 
 print()
 print("=" * 70)
-print("STATS ANSTAT SANS INDEMNITÉS")
+print("STATS ANSTAT SANS INDEMNITÉS — par cluster (SECTEUR × GRADE)")
 print("=" * 70)
 print()
 
@@ -102,13 +100,14 @@ print("\n2. Calcul du montant brut sans indemnités...")
 df_anstat = calculer_montant_brut_sans_indem(df_anstat, COLONNES_BRUT)
 print(f"  ✓ Colonne ajoutée — {len(df_anstat):,} lignes")
 
-# ── 3. Statistiques par groupe ─────────────────────────────
+# ── 3. Statistiques par cluster (SECTEUR × GRADE) ─────────
 
-print("\n3. Calcul des statistiques par SECTEUR, CATEGORIE, GRADE...")
-resultats = calculer_stats_par_groupes(df_anstat, COLONNES_GROUPAGE)
-
-for nom_groupe, df_stats in resultats.items():
-    print(f"\n  {nom_groupe} : {len(df_stats)} groupes")
+print("\n3. Calcul des statistiques par cluster (SECTEUR × GRADE)...")
+df_stats_cluster = calculer_stats_par_groupes(df_anstat, COLONNES_GROUPAGE)
+print(f"  ✓ {len(df_stats_cluster)} clusters trouvés")
+print(f"\n  Colonnes : {df_stats_cluster.columns}")
+print(f"\n  Aperçu :")
+print(df_stats_cluster)
 
 # ── 4. Export CSV vers Staging ──────────────────────────────
 
@@ -118,8 +117,8 @@ print("EXPORT CSV vers staging")
 print("=" * 70)
 print()
 
-for nom_groupe, df_stats in resultats.items():
-    exporter_csv_staging(df_stats, f"anstat_sans_indem_{nom_groupe}.csv")
+nom_fichier_export = "anstat_sans_indem_SECTEUR_GRADE.csv"
+exporter_csv_staging(df_stats_cluster, nom_fichier_export)
 
 # ── 5. Résumé ───────────────────────────────────────────────
 
@@ -131,12 +130,12 @@ print()
 print(f"Fichier source       : s3://{BUCKET_STAGING}{CLE_ANSTAT}")
 print(f"Lignes ANSTAT        : {len(df_anstat):,}")
 print(f"Composantes brut     : {', '.join(COLONNES_BRUT)}")
-print(f"Groupes calculés     : {', '.join(COLONNES_GROUPAGE)}")
+print(f"Cluster (groupage)   : {' × '.join(COLONNES_GROUPAGE)}")
+print(f"Nombre de clusters   : {len(df_stats_cluster)}")
 print()
-for nom_groupe, df_stats in resultats.items():
-    print(f"  {nom_groupe:15} : {len(df_stats):>4} entrées")
+print(f"  Statistiques calculées : Minimum, Maximum, Médiane, Moyenne, Nombre")
 print()
-print(f"CSV Staging   : s3://{BUCKET_STAGING}/{PREFIX_EXPORTS}/")
+print(f"CSV Staging   : s3://{BUCKET_STAGING}/{PREFIX_EXPORTS}/{nom_fichier_export}")
 print()
 print("=" * 70)
 print("✓ STATS ANSTAT SANS INDEMNITÉS TERMINÉ")

@@ -25,7 +25,7 @@ COLONNES_BRUT = [
     "Allocations\n (2 enfants)",
 ]
 
-COLONNES_GROUPAGE = ["SECTEUR", "CATEGORIE", "GRADE"]
+COLONNES_GROUPAGE = ["SECTEUR", "GRADE"]
 
 
 # ============================================================
@@ -119,15 +119,15 @@ def calculer_montant_brut_sans_indem(df, colonnes_composantes, colonne_apres="AU
     return df.select(cols)
 
 
-def calculer_stats_par_groupes(df, colonnes_groupage, colonne_valeur="Montant brut sans indemnités"):
-    """Calcule min, max, médiane, moyenne et décompte pour chaque groupe.
+def calculer_stats_par_groupes(df, colonnes_groupage=["SECTEUR", "GRADE"], colonne_valeur="Montant brut sans indemnités"):
+    """Calcule min, max, médiane, moyenne et décompte.
 
     Paramètres
     ----------
     df : pl.DataFrame
         DataFrame contenant les données.
     colonnes_groupage : list[str]
-        Colonnes sur lesquelles grouper (ex : SECTEUR, CATEGORIE, GRADE).
+        Colonnes sur lesquelles grouper (ex : SECTEUR et GRADE).
     colonne_valeur : str
         Colonne numérique à analyser.
 
@@ -136,19 +136,17 @@ def calculer_stats_par_groupes(df, colonnes_groupage, colonne_valeur="Montant br
     dict[str, pl.DataFrame]
         Dictionnaire {nom_colonne: DataFrame de statistiques}.
     """
-    resultats = {}
 
-    for colonne in colonnes_groupage:
-        resultats[colonne] = (
-            df.group_by(colonne)
-            .agg([
-                pl.col(colonne_valeur).min().alias("Minimum"),
-                pl.col(colonne_valeur).max().alias("Maximum"),
-                pl.col(colonne_valeur).median().alias("Médiane"),
-                pl.col(colonne_valeur).mean().alias("Moyenne"),
-                pl.len().alias("Nombre"),
+    resultats = (
+        df.group_by(colonnes_groupage)
+        .agg([
+            pl.col(colonne_valeur).min().alias("Minimum"),
+            pl.col(colonne_valeur).max().alias("Maximum"),
+            pl.col(colonne_valeur).median().alias("Médiane"),
+            pl.col(colonne_valeur).mean().alias("Moyenne"),
+            pl.len().alias("Nombre"),
             ])
-            .sort(colonne)
+            .sort(colonnes_groupage)
         )
 
     return resultats
@@ -171,12 +169,12 @@ def main():
     # 3. Calcul du montant brut sans indemnités
     df_anstat = calculer_montant_brut_sans_indem(df_anstat, COLONNES_BRUT)
 
-    # 4. Statistiques par groupe
-    resultats = calculer_stats_par_groupes(df_anstat, COLONNES_GROUPAGE)
+    # 4. Statistiques par cluster (SECTEUR × GRADE)
+    df_stats = calculer_stats_par_groupes(df_anstat, COLONNES_GROUPAGE)
 
-    for nom_groupe, df_stats in resultats.items():
-        print(f"\n--- Statistiques des salaires par {nom_groupe} ---")
-        print(df_stats)
+    print(f"\n--- Statistiques par cluster ({' × '.join(COLONNES_GROUPAGE)}) ---")
+    print(f"{len(df_stats)} clusters trouvés\n")
+    print(df_stats)
 
 
 if __name__ == "__main__":
