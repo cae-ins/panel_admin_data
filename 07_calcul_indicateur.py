@@ -1535,9 +1535,15 @@ if indic_cluster is not None or len(base_avec_statut) > 0:
         ecrire_feuille(wb2, "REF_ANSTAT_2025_Complet",
                        df_anstat_ref.select(cols_export_ref))
 
-    # Feuille 3 : Base principale avec Statut
+    # Sauvegarde base_avec_statut en Parquet sur Gold (trop volumineuse pour Excel)
     if len(base_avec_statut) > 0:
-        ecrire_feuille(wb2, "BASE_AVEC_STATUT", base_avec_statut)
+        key_statut_parquet = f"{PREFIX_PANEL}/base_avec_statut.parquet"
+        buf_pq = io.BytesIO()
+        base_avec_statut.write_parquet(buf_pq, compression="snappy")
+        buf_pq.seek(0)
+        s3.put_object(Bucket=BUCKET_GOLD, Key=key_statut_parquet, Body=buf_pq.getvalue())
+        print(f"   ✓ base_avec_statut → s3://{BUCKET_GOLD}/{key_statut_parquet} "
+              f"({len(base_avec_statut):,} lignes)")
 
         # Feuille 4 : Résumé statistique de la variable Statut
         if "Statut" in base_avec_statut.columns:
