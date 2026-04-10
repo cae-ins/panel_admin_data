@@ -610,6 +610,12 @@ def charger_anstat_2025() -> pl.DataFrame | None:
     finally:
         os.unlink(tmp_path)
 
+    # Renommage de la colonne allocation (ex : "Allocations\n (2 enfants)") → allocation_familiale
+    col_alloc = next((c for c in df.columns if "alloc" in c.lower()), None)
+    if col_alloc and col_alloc != "allocation_familiale":
+        df = df.rename({col_alloc: "allocation_familiale"})
+        print(f"     Renommage : '{col_alloc}' → 'allocation_familiale'")
+
     # Mapping flexible des colonnes de composantes de salaire
     # Patterns de recherche pour chaque composante
     patterns_composantes = {
