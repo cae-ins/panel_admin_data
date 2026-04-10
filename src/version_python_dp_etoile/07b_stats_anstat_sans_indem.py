@@ -9,9 +9,11 @@
 #
 # Source  : s3://staging/panel_admin/references/anstat_2025.txt.xlsx
 #
-# Sortie :
+# Sorties :
+#   s3://staging/panel_admin/references/
+#       anstat_2025_avec_brut_sans_indem.csv   (ANSTAT sans indemnités)
 #   s3://staging/panel_admin/exports_gold/
-#       anstat_sans_indem_SECTEUR_GRADE.csv
+#       anstat_sans_indem_SECTEUR_GRADE.csv    (stats min/max/méd/moy)
 #
 # Prérequis : le fichier ANSTAT doit avoir été uploadé
 #             par l'étape 00_upload_staging.py
@@ -45,7 +47,9 @@ MINIO_ACCESS_KEY = os.getenv("MINIO_ACCESS_KEY", "datalab-team")
 MINIO_SECRET_KEY = os.getenv("MINIO_SECRET_KEY", "minio-datalabteam123")
 
 BUCKET_STAGING = os.getenv("BUCKET_STAGING", "staging")
-PREFIX_EXPORTS = "panel_admin/exports_gold"
+PREFIX_GOLD    = "panel_admin/exports_gold"
+PREFIX_REF     = "panel_admin/references"
+
 
 # --- CLIENT S3 (MinIO) ---
 s3 = boto3.client(
@@ -68,15 +72,16 @@ s3 = boto3.client(
 # UTILITAIRES
 # ============================================================
 
-def exporter_csv_staging(df: pl.DataFrame, nom_fichier: str) -> None:
+def exporter_csv_staging(df: pl.DataFrame, prefix: str, nom_fichier: str) -> None:
     """Exporte un DataFrame en CSV dans le bucket staging."""
+    cle_s3 = f"{prefix}/{nom_fichier}"
     csv_bytes = df.write_csv().encode("utf-8")
     s3.put_object(
         Bucket=BUCKET_STAGING,
-        Key=f"{PREFIX_EXPORTS}/{nom_fichier}",
+        Key=cle_s3,
         Body=csv_bytes,
     )
-    print(f"  ✓ {nom_fichier}  ({len(df):,} lignes)")
+    print(f"  ✓ s3://{BUCKET_STAGING}/{cle_s3}  ({len(df):,} lignes)")
 
 
 # ============================================================
@@ -117,8 +122,14 @@ print("EXPORT CSV vers staging")
 print("=" * 70)
 print()
 
-nom_fichier_export = "anstat_sans_indem_SECTEUR_GRADE.csv"
-exporter_csv_staging(df_stats_cluster, nom_fichier_export)
+# a) ANSTAT enrichi (avec colonne "Montant brut sans indemnités") → references
+FICHIER_ANSTAT_SANS_INDEM = "anstat_2025_avec_brut_sans_indem.csv"
+exporter_csv_staging(df_anstat, PREFIX_REF, FICHIER_ANSTAT_SANS_INDEM)
+
+# b) Statistiques min/max/méd/moy par cluster → exports_gold
+FICHIER_STATS = "anstat_sans_indem_SECTEUR_GRADE.csv"
+exporter_csv_staging(df_stats_cluster, PREFIX_GOLD, FICHIER_STATS)
+
 
 # ── 5. Résumé ───────────────────────────────────────────────
 
@@ -135,7 +146,8 @@ print(f"Nombre de clusters   : {len(df_stats_cluster)}")
 print()
 print(f"  Statistiques calculées : Minimum, Maximum, Médiane, Moyenne, Nombre")
 print()
-print(f"CSV Staging   : s3://{BUCKET_STAGING}/{PREFIX_EXPORTS}/{nom_fichier_export}")
+print(f"  Export 1 (ANSTAT sans indèmnités) : s3://{BUCKET_STAGING}/{PREFIX_REF}/{FICHIER_ANSTAT_SANS_INDEM}")
+print(f"  Export 2 (Stats cluster)  : s3://{BUCKET_STAGING}/{PREFIX_GOLD}/{FICHIER_STATS}")
 print()
 print("=" * 70)
 print("✓ STATS ANSTAT SANS INDEMNITÉS TERMINÉ")
