@@ -1282,68 +1282,36 @@ print(f"   Total            : {total_indic:,} lignes\n")
 # 10. INDICATEURS SALAIRE BRUT (par ligne, pivot grade)
 # ============================================================
 
-print("10. Calcul indicateurs SALAIRE BRUT (pivot grade)...")
+print("10. Calcul indicateurs montant_brut_bareme (pivot grade)...")
 
-base_gv_brut = base_gv
-if SEUIL_WINS is not None:
-    wins_full_brut     = [c for c in ["ANNEE", "MOIS_NUM", "GRADE", "Code_CITP"]
-                          if c in base_gv.columns]
-    wins_fallback_brut = [c for c in ["ANNEE", "MOIS_NUM", "GRADE"]
-                          if c in base_gv.columns]
-
-    base_gv_brut = base_gv.with_columns([
-        pl.len().over(wins_full_brut).alias("_n_citp"),
-        pl.col("SALAIRE_BRUT")
-          .quantile(SEUIL_WINS, interpolation="nearest")
-          .over(wins_full_brut).alias("_pb_citp"),
-        pl.col("SALAIRE_BRUT")
-          .quantile(1 - SEUIL_WINS, interpolation="nearest")
-          .over(wins_full_brut).alias("_ph_citp"),
-        pl.col("SALAIRE_BRUT")
-          .quantile(SEUIL_WINS, interpolation="nearest")
-          .over(wins_fallback_brut).alias("_pb_grade"),
-        pl.col("SALAIRE_BRUT")
-          .quantile(1 - SEUIL_WINS, interpolation="nearest")
-          .over(wins_fallback_brut).alias("_ph_grade"),
-    ])
-    base_gv_brut = base_gv_brut.with_columns(
-        pl.when(pl.col("_n_citp") >= MIN_OBS_WINS)
-        .then(pl.col("SALAIRE_BRUT").clip(pl.col("_pb_citp"), pl.col("_ph_citp")))
-        .otherwise(pl.col("SALAIRE_BRUT").clip(pl.col("_pb_grade"), pl.col("_ph_grade")))
-        .alias("SALAIRE_BRUT")
-    ).drop(["_n_citp", "_pb_citp", "_ph_citp", "_pb_grade", "_ph_grade"])
-
-    n_modif_brut = int((base_gv_brut["SALAIRE_BRUT"] != base_gv["SALAIRE_BRUT"]).sum())
-    print(f"   Winsorisation SALAIRE_BRUT (mois × grade × CITP / repli grade) : "
-          f"{n_modif_brut:,} obs écrêtées")
-
+# Utilisation directe de montant_brut_bareme — pas de winsorisation sur ces feuilles
 brut_moyen = (
-    base_gv_brut
+    base_gv
     .group_by(["ANNEE", "MOIS_NUM", "MOIS", "GRADE"])
-    .agg(pl.col("SALAIRE_BRUT").mean().round(0).alias("Salaire_brut_moyen"))
+    .agg(pl.col("montant_brut_bareme").mean().round(0).alias("montant_brut_bareme_moyen"))
     .sort(["ANNEE", "MOIS_NUM"])
 )
 brut_median = (
-    base_gv_brut
+    base_gv
     .group_by(["ANNEE", "MOIS_NUM", "MOIS", "GRADE"])
-    .agg(pl.col("SALAIRE_BRUT").median().round(0).alias("Salaire_brut_median"))
+    .agg(pl.col("montant_brut_bareme").median().round(0).alias("montant_brut_bareme_median"))
     .sort(["ANNEE", "MOIS_NUM"])
 )
 
 brut_moyen_wide = brut_moyen.pivot(
-    values="Salaire_brut_moyen",
+    values="montant_brut_bareme_moyen",
     index=["ANNEE", "MOIS_NUM", "MOIS"],
     on="GRADE"
 ).sort(["ANNEE", "MOIS_NUM"])
 
 brut_median_wide = brut_median.pivot(
-    values="Salaire_brut_median",
+    values="montant_brut_bareme_median",
     index=["ANNEE", "MOIS_NUM", "MOIS"],
     on="GRADE"
 ).sort(["ANNEE", "MOIS_NUM"])
 
-print(f"   Brut moyen  : {len(brut_moyen_wide)} lignes × {len(brut_moyen_wide.columns)} cols")
-print(f"   Brut médian : {len(brut_median_wide)} lignes × {len(brut_median_wide.columns)} cols\n")
+print(f"   Moyen  : {len(brut_moyen_wide)} lignes × {len(brut_moyen_wide.columns)} cols")
+print(f"   Médian : {len(brut_median_wide)} lignes × {len(brut_median_wide.columns)} cols\n")
 
 # ============================================================
 # 11. MULTI-POSTES
@@ -1490,8 +1458,8 @@ ecrire_feuille(wb, "REVENU_Grade_Detail",      indic_grade)
 ecrire_feuille(wb, "REVENU_Grade_Sexe",         indic_grade_sexe)
 if len(indic_citp) > 0:
     ecrire_feuille(wb, "REVENU_CITP_Detail",    indic_citp)
-ecrire_feuille(wb, "SALAIRE_BRUT_Moyen",        brut_moyen_wide)
-ecrire_feuille(wb, "SALAIRE_BRUT_Median",       brut_median_wide)
+ecrire_feuille(wb, "montant_brut_bareme_Moyen",  brut_moyen_wide)
+ecrire_feuille(wb, "montant_brut_bareme_Median", brut_median_wide)
 ecrire_feuille(wb, "MULTI_Par_Grade_NbPostes",  multi_effectif)
 ecrire_feuille(wb, "MULTI_Distribution",        distrib_postes)
 
