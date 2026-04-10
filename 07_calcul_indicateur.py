@@ -105,8 +105,9 @@ GRADES_VALIDES = (
     [f"D{i}" for i in range(1, 4)]
 )
 
-# Composantes du salaire brut (codes F2, suffixe _f2 dans le Gold)
-COMPOSANTES_SALAIRE = ["124_f2", "228_f2", "271_f2", "421_f2", "425_f2"]
+# Composantes du salaire brut (codes F2, suffixe _F2 dans le Gold après normalisation Bronze)
+# Recherche insensible à la casse : on résout dynamiquement au moment de l'utilisation
+COMPOSANTES_SALAIRE_NOMS = {"124_F2", "228_F2", "271_F2", "421_F2", "425_F2"}
 
 # Codes poste éligibles pour le calcul du revenu (filtrage individus)
 CODES_POSTE_ELIGIBLES = {"124", "228", "271", "421", "425"}
@@ -204,7 +205,8 @@ def corriger_bareme_emploi(emploi_norm: str | None, bareme_actuel: str | None) -
     Corrige le BAREME d'un emploi uniquement si celui-ci vaut 'Barême Général'.
     Recherche insensible à la casse, aux espaces et aux accents (déjà normalisés).
     - 'informaticien' ou 'informatique' → 'Informaticien'
-    - 'secretaire'                      → 'SECRETAIRE DIRECTION'
+    - 'secretaire', 'secr.', 'secr '    → 'SECRETAIRE DIRECTION'
+      (détection via préfixe SECR — couvre toutes les abréviations)
     Si le barème n'est pas 'Barême Général', on ne touche pas.
     """
     if bareme_actuel != "Barême Général":
@@ -214,7 +216,7 @@ def corriger_bareme_emploi(emploi_norm: str | None, bareme_actuel: str | None) -
     # emploi_norm est déjà normalisé (majuscules, sans accents, sans ponctuation)
     if "INFORMATICIEN" in emploi_norm or "INFORMATIQUE" in emploi_norm:
         return "Informaticien"
-    if "SECRETAIRE" in emploi_norm:
+    if "SECRETAIRE" in emploi_norm or "SECR " in emploi_norm or emploi_norm.startswith("SECR"):
         return "SECRETAIRE DIRECTION"
     return bareme_actuel
 
@@ -831,7 +833,8 @@ if "montant_brut_bareme" in base.columns:
     print("   Source : montant_brut_bareme (postes 124/228/271/421/425, pré-agrégé en 06)")
 else:
     # Repli sur composantes élémentaires ou montant_brut
-    composantes_presentes = [c for c in COMPOSANTES_SALAIRE if c in base.columns]
+    # Détection insensible à la casse (124_F2 ou 124_f2)
+    composantes_presentes = [c for c in base.columns if c.upper() in COMPOSANTES_SALAIRE_NOMS]
     print(f"   ⚠️  montant_brut_bareme absent — repli composantes : {composantes_presentes}")
     if composantes_presentes:
         base = base.with_columns([
@@ -1192,7 +1195,9 @@ if SEUIL_WINS is not None and "montant_brut_total" in base_agrege.columns:
     n_modif = int((base_agrege["montant_brut_total_W"] != base_agrege["montant_brut_total"]).sum())
     print(f"   Groupe mois × grade × CITP (≥{MIN_OBS_WINS} obs) : {n_obs_citp:,} obs")
     print(f"   Repli  mois × grade         (<{MIN_OBS_WINS} obs) : {n_obs_grade:,} obs")
-    print(f"   Observations écrêtées : {n_modif:,}  ({100*n_modif/len(base_agrege):.2f}%)")
+    n_total_agrege = len(base_agrege)
+    pct_modif = (100 * n_modif / n_total_agrege) if n_total_agrege > 0 else 0.0
+    print(f"   Observations écrêtées : {n_modif:,}  ({pct_modif:.2f}%)")
     print(f"   → montant_brut_total_W sauvegardé pour autres usages")
     print(f"   → Indicateurs calculés sur REVENU_TOTAL (montant_brut_bareme)\n")
 elif SEUIL_WINS is not None:

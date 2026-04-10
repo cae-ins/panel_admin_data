@@ -62,8 +62,9 @@ BUCKET_GOLD    = os.getenv("BUCKET_GOLD",   "gold")
 PREFIX_SILVER  = "panel_admin"
 PREFIX_PANEL   = "panel_admin"
 
-# Codes poste éligibles pour montant_brut_bareme
-CODES_POSTE_ELIGIBLES = {"124", "228", "271", "421", "425"}
+# Noms des colonnes F2 (composantes barème issues de la Feuille 2 du fichier source)
+# Recherche insensible à la casse : 124_F2 ou 124_f2 selon la normalisation Bronze
+NOMS_F2 = {"124_F2", "228_F2", "271_F2", "421_F2", "425_F2"}
 
 # --- CLIENT S3 (MinIO) ---
 s3 = boto3.client(
@@ -214,7 +215,22 @@ def construire_panel_annee(df: pl.DataFrame) -> pl.DataFrame:
             .agg(pl.len().alias("NB_POSTES"))
         )
 
-        # Somme montant_brut sur tous les postes
+        # ── Check unicité agent × mois × organisme ───────────────────────
+        if "CODE_ORGANISME" in df.columns:
+            n_lignes_tot = len(df)
+            n_unique_org = (
+                df.select(["matricule", "mois_annee", "CODE_ORGANISME"])
+                .unique()
+                .select(pl.len())
+                .item()
+            )
+            if n_lignes_tot > n_unique_org:
+                print(f"    ⚠️  Doublons intra-organisme : {n_lignes_tot - n_unique_org:,} lignes",
+                      flush=True)
+            else:
+                print(f"    ✓ Unicité agent × mois × organisme confirmée", flush=True)
+
+        # ── Somme montant_brut sur tous les postes ────────────────────────
         if "montant_brut" in df.columns:
             df_brut = df.with_columns(
                 pl.col("montant_brut").cast(pl.Float64, strict=False).alias("montant_brut")
@@ -223,19 +239,32 @@ def construire_panel_annee(df: pl.DataFrame) -> pl.DataFrame:
                 df_brut.group_by(cles_agg)
                 .agg(pl.col("montant_brut").sum().alias("montant_brut_total"))
             )
-
-            # Somme montant_brut sur postes éligibles uniquement
-            if "CODE_POSTE" in df.columns:
-                agg_brut_bareme = (
-                    df_brut
-                    .with_columns(
-                        pl.col("CODE_POSTE").cast(pl.Utf8).str.strip_chars().alias("CODE_POSTE")
-                    )
-                    .filter(pl.col("CODE_POSTE").is_in(CODES_POSTE_ELIGIBLES))
-                    .group_by(cles_agg)
-                    .agg(pl.col("montant_brut").sum().alias("montant_brut_bareme"))
-                )
             del df_brut
+
+        # ── montant_brut_bareme = somme horizontale colonnes F2 ───────────
+        # Les colonnes F2 (124_F2, 228_F2, 271_F2, 421_F2, 425_F2) proviennent
+        # de la Feuille 2 du fichier source, jointe par MATRICULE||CODE_ORGANISME.
+        # Chaque ligne contient déjà la valeur correcte pour son organisme.
+        # On somme horizontalement puis on agrège par (matricule × mois_annee)
+        # pour cumuler les organismes différents d'un agent multi-postes.
+        cols_f2 = [c for c in df.columns if c.upper() in NOMS_F2]
+        if cols_f2:
+            print(f"    Composantes F2 détectées : {cols_f2}", flush=True)
+            agg_brut_bareme = (
+                df
+                .with_columns([
+                    pl.col(c).cast(pl.Float64, strict=False) for c in cols_f2
+                ])
+                .with_columns(
+                    pl.sum_horizontal([pl.col(c) for c in cols_f2])
+                    .alias("_bareme_row")
+                )
+                .group_by(cles_agg)
+                .agg(pl.col("_bareme_row").sum().alias("montant_brut_bareme"))
+            )
+        else:
+            print(f"    ⚠️  Aucune colonne F2 trouvée {sorted(NOMS_F2)} — "
+                  f"montant_brut_bareme non calculé", flush=True)
 
         # Somme montant_net sur tous les postes
         if "montant_net" in df.columns:
@@ -250,6 +279,31 @@ def construire_panel_annee(df: pl.DataFrame) -> pl.DataFrame:
         n_postes = agg_nb["NB_POSTES"]
         n_multi  = int((n_postes > 1).sum())
         print(f"    Multi-postes : {n_multi:,} / {len(agg_nb):,} individus×mois", flush=True)
+
+        # ── Stats NB_POSTES par période (mois_annee) ──────────────────────
+        if "mois_annee" in agg_nb.columns:
+            stats_periode = (
+                agg_nb
+                .group_by("mois_annee")
+                .agg([
+                    pl.len().alias("nb_agents"),
+                    (pl.col("NB_POSTES") > 1).sum().alias("nb_multipostes"),
+                    pl.col("NB_POSTES").mean().round(3).alias("moy_postes"),
+                ])
+                .with_columns(
+                    (100 * pl.col("nb_multipostes") / pl.col("nb_agents"))
+                    .round(2).alias("pct_multi")
+                )
+                .sort("mois_annee")
+            )
+            print(f"    {'mois_annee':<12} {'nb_agents':>12} {'multi-postes':>14} "
+                  f"{'%':>8} {'moy postes':>11}", flush=True)
+            print(f"    {'-'*12} {'-'*12} {'-'*14} {'-'*8} {'-'*11}", flush=True)
+            for row in stats_periode.iter_rows(named=True):
+                print(f"    {row['mois_annee']:<12} {row['nb_agents']:>12,} "
+                      f"{row['nb_multipostes']:>14,} {row['pct_multi']:>7.2f}% "
+                      f"{row['moy_postes']:>11.3f}", flush=True)
+            print(flush=True)
 
     # ── Sélection défensive : colonnes COLONNES_PANEL présentes dans df ───
     # Les nouvelles colonnes agrégées (NB_POSTES, montant_brut_total, etc.)
@@ -286,12 +340,12 @@ def construire_panel_annee(df: pl.DataFrame) -> pl.DataFrame:
         if agg_brut_bareme is not None:
             df = df.join(agg_brut_bareme, on=cles_agg, how="left")
         else:
-            # CODE_POSTE absent : montant_brut_bareme = montant_brut_total
+            # Colonnes F2 absentes : fallback montant_brut_bareme = montant_brut_total
             if agg_brut_total is not None:
                 df = df.with_columns(
                     pl.col("montant_brut_total").alias("montant_brut_bareme")
                 )
-                print("    ⚠️  CODE_POSTE absent — montant_brut_bareme = montant_brut_total",
+                print("    ⚠️  Colonnes F2 absentes — montant_brut_bareme = montant_brut_total",
                       flush=True)
         if agg_net_total is not None:
             df = df.join(agg_net_total, on=cles_agg, how="left")
