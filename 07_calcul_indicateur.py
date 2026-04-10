@@ -328,7 +328,7 @@ def grade_order_value(grade: str) -> int:
 
 
 def compute_indicators(df: pl.DataFrame, group_cols: list[str],
-                       value_col: str = "REVENU_TOTAL") -> pl.DataFrame:
+                       value_col: str = "montant_brut_bareme") -> pl.DataFrame:
     """Calcule les indicateurs statistiques complets par groupe."""
     return (
         df.group_by(group_cols)
@@ -1125,7 +1125,7 @@ print()
 
 agg_col   = "cle_unique" if MODE_SALAIRE_BRUT else "matricule"
 agg_label = agg_col
-print(f"8. Agrégation par {agg_label} → REVENU_TOTAL...")
+print(f"8. Agrégation par {agg_label} → montant_brut_bareme...")
 
 if agg_col not in base_gv.columns:
     agg_col = "matricule"
@@ -1141,8 +1141,8 @@ base_agrege = (
     base_gv
     .group_by(cols_agg)
     .agg([
-        # REVENU_TOTAL = montant_brut_bareme (Gold dédupliqué = 1 ligne/individu×mois)
-        pl.col("SALAIRE_BRUT").first().alias("REVENU_TOTAL"),
+        # montant_brut_bareme = montant_brut_bareme (Gold dédupliqué = 1 ligne/individu×mois)
+        pl.col("SALAIRE_BRUT").first().alias("montant_brut_bareme"),
         pl.col("montant_brut_total").first().alias("montant_brut_total")
           if "montant_brut_total" in base_gv.columns
           else pl.lit(None).cast(pl.Float64).alias("montant_brut_total"),
@@ -1168,17 +1168,17 @@ base_agrege = (
 base_gv = base_gv.drop("GRADE_ORDER")
 
 if not INCLURE_ZEROS:
-    base_agrege = base_agrege.filter(pl.col("REVENU_TOTAL") > 0)
-base_agrege = base_agrege.filter(pl.col("REVENU_TOTAL").is_not_null())
+    base_agrege = base_agrege.filter(pl.col("montant_brut_bareme") > 0)
+base_agrege = base_agrege.filter(pl.col("montant_brut_bareme").is_not_null())
 
 print(f"   {len(base_agrege):,} agents agrégés\n")
 
 # ============================================================
 # 8b. WINSORISATION SUR MONTANT_BRUT_TOTAL (sauvegardé pour autres usages)
-#     Les indicateurs seront calculés sur REVENU_TOTAL (= montant_brut_bareme)
+#     Les indicateurs seront calculés sur montant_brut_bareme (= montant_brut_bareme)
 # ============================================================
 
-value_col_indic = "REVENU_TOTAL"
+value_col_indic = "montant_brut_bareme"
 
 if SEUIL_WINS is not None and "montant_brut_total" in base_agrege.columns:
     wins_full     = [c for c in ["ANNEE", "MOIS_NUM", "GRADE_PRINCIPAL", "Code_CITP"]
@@ -1222,7 +1222,7 @@ if SEUIL_WINS is not None and "montant_brut_total" in base_agrege.columns:
     pct_modif = (100 * n_modif / n_total_agrege) if n_total_agrege > 0 else 0.0
     print(f"   Observations écrêtées : {n_modif:,}  ({pct_modif:.2f}%)")
     print(f"   → montant_brut_total_W sauvegardé pour autres usages")
-    print(f"   → Indicateurs calculés sur REVENU_TOTAL (montant_brut_bareme)\n")
+    print(f"   → Indicateurs calculés sur montant_brut_bareme (montant_brut_bareme)\n")
 elif SEUIL_WINS is not None:
     print(f"8b. ⚠️  montant_brut_total absent — winsorisation ignorée\n")
 
@@ -1356,7 +1356,7 @@ multi_detail = (
     .group_by(["ANNEE", "MOIS_NUM", "MOIS", "GRADE_PRINCIPAL", "NB_POSTES"])
     .agg([
         pl.len().alias("Effectif"),
-        pl.col("REVENU_TOTAL").mean().round(0).alias("Revenu_moyen"),
+        pl.col("montant_brut_bareme").mean().round(0).alias("Revenu_moyen"),
     ])
     .sort(["ANNEE", "MOIS_NUM", "GRADE_PRINCIPAL", "NB_POSTES"])
 )
@@ -1385,7 +1385,7 @@ distrib_postes = (
     .agg([
         pl.len().alias("Effectif"),
         (pl.len() * 100 / len(base_agrege)).round(2).alias("Pct"),
-        pl.col("REVENU_TOTAL").mean().round(0).alias("Revenu_moyen"),
+        pl.col("montant_brut_bareme").mean().round(0).alias("Revenu_moyen"),
     ])
     .sort("NB_POSTES")
 )
