@@ -1057,6 +1057,15 @@ if indic_cluster is not None and "montant_brut_bareme" in base_gv.columns:
         left_on  = [pair[1] for pair in cle_join_cluster]
         right_on = [pair[0] for pair in cle_join_cluster]
 
+        # ── DIAGNOSTIC jointure ───────────────────────────────────────────
+        print(f"   Clés jointure — Gold : {left_on}  |  Référentiel : {right_on}")
+        for l, r in zip(left_on, right_on):
+            vals_gold = base_gv[l].drop_nulls().unique().sort().to_list()[:10]
+            vals_ref  = indic_cluster[r].drop_nulls().unique().sort().to_list()
+            print(f"   [{l}] Gold (10 ex.) : {vals_gold}")
+            print(f"   [{r}] Référentiel   : {vals_ref}")
+        # ─────────────────────────────────────────────────────────────────
+
         indic_join = indic_cluster.with_columns(
             [pl.col(c).cast(pl.Utf8) for c in right_on]
         )
