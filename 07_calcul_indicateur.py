@@ -677,10 +677,11 @@ def calculer_indicateurs_cluster(df_ref: pl.DataFrame) -> pl.DataFrame | None:
     cols_ref = df_ref.columns
 
     def trouver_col(cols, patterns):
-        for col in cols:
-            col_n = unicodedata.normalize("NFKD", col.lower())
-            col_n = "".join(c for c in col_n if not unicodedata.combining(c))
-            for pat in patterns:
+        # Itérer patterns en premier pour respecter l'ordre de priorité
+        for pat in patterns:
+            for col in cols:
+                col_n = unicodedata.normalize("NFKD", col.lower())
+                col_n = "".join(c for c in col_n if not unicodedata.combining(c))
                 if re.search(pat, col_n, re.IGNORECASE):
                     return col
         return None
