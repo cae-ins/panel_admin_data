@@ -1091,10 +1091,12 @@ if indic_cluster is not None and "montant_brut_bareme" in base_gv.columns:
         base_gv = base_gv.with_columns(pl.lit("Cluster non déterminé").alias("Statut"))
         base_avec_statut = base_gv.clone()
 
-    n_statut = base_gv["Statut"].value_counts().sort("Statut")
+    n_statut  = base_gv["Statut"].value_counts().sort("Statut")
+    n_total_s = n_statut["count"].sum()
     print(f"   Distribution Statut :")
     for row in n_statut.iter_rows(named=True):
-        print(f"     {row['Statut']:<40} : {row['count']:,}")
+        pct = 100 * row["count"] / n_total_s if n_total_s > 0 else 0.0
+        print(f"     {row['Statut']:<40} : {row['count']:>10,}  ({pct:.1f}%)")
 
 elif "montant_brut_bareme" not in base_gv.columns:
     print("   ⚠️  montant_brut_bareme absent du Gold — régénérer le Gold avec programme 06 modifié")
