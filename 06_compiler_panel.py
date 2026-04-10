@@ -431,11 +431,15 @@ for cle in cles_silver:
     row_stat = {"annee": annee_str, "nb_obs": nb_lignes}
     if "matricule" in df_panel.columns:
         row_stat["nb_individus"] = df_panel["matricule"].n_unique()
+    # moy(montant_brut_total)
     col_brut = "montant_brut_total" if "montant_brut_total" in df_panel.columns else "montant_brut"
     if col_brut in df_panel.columns:
         brut = df_panel[col_brut].drop_nulls()
-        row_stat["brut_moyen"]   = round(brut.mean(),   0) if len(brut) > 0 else None
-        row_stat["brut_mediane"] = round(brut.median(), 0) if len(brut) > 0 else None
+        row_stat["moy_montant_brut_total"] = round(brut.mean(), 0) if len(brut) > 0 else None
+    # moy(montant_brut_bareme)
+    if "montant_brut_bareme" in df_panel.columns:
+        bareme = df_panel["montant_brut_bareme"].drop_nulls()
+        row_stat["moy_montant_brut_bareme"] = round(bareme.mean(), 0) if len(bareme) > 0 else None
     stats_par_annee.append(row_stat)
 
     del df_panel
@@ -461,8 +465,10 @@ for row in stats_par_annee:
     ligne = f"  {row['annee']}  :  {row.get('nb_obs', 0):>8,} obs"
     if "nb_individus" in row:
         ligne += f"  |  {row['nb_individus']:>6,} individus"
-    if "brut_moyen" in row and row["brut_moyen"]:
-        ligne += f"  |  brut moy = {row['brut_moyen']:,.0f}"
+    if "moy_montant_brut_total" in row and row["moy_montant_brut_total"]:
+        ligne += f"  |  moy(montant_brut_total) = {row['moy_montant_brut_total']:,.0f}"
+    if "moy_montant_brut_bareme" in row and row["moy_montant_brut_bareme"]:
+        ligne += f"  |  moy(montant_brut_bareme) = {row['moy_montant_brut_bareme']:,.0f}"
     print(ligne)
 
 print()
