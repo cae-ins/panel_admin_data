@@ -114,6 +114,14 @@ ETAPES = [
         "optionnelle": False,
     },
     {
+        "id":          "07b",
+        "nom":         "Stats ANSTAT sans indemnités",
+        "script":      "07b_stats_anstat_sans_indem.py",
+        "description": "Statistiques barèmes ANSTAT (min/max/médiane/moyenne) "
+                       "par SECTEUR, CATEGORIE et GRADE, hors indemnités.",
+        "optionnelle": True,
+    },
+    {
         "id":          "08",
         "nom":         "Excel avec sommaire",
         "script":      "08_creation_fichier_excel_avec_sommaire.py",
