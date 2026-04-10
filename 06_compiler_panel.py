@@ -293,7 +293,10 @@ def construire_panel_annee(df: pl.DataFrame) -> pl.DataFrame:
                 .agg([
                     pl.len().alias("nb_agents"),
                     (pl.col("NB_POSTES") > 1).sum().alias("nb_multipostes"),
-                    pl.col("NB_POSTES").mean().round(3).alias("moy_postes"),
+                    pl.col("NB_POSTES").mean().round(3).alias("moy_postes_tous"),
+                    pl.col("NB_POSTES")
+                      .filter(pl.col("NB_POSTES") > 1)
+                      .mean().round(3).alias("moy_postes_multi"),
                 ])
                 .with_columns(
                     (100 * pl.col("nb_multipostes") / pl.col("nb_agents"))
@@ -302,12 +305,13 @@ def construire_panel_annee(df: pl.DataFrame) -> pl.DataFrame:
                 .sort("mois_annee")
             )
             print(f"    {'mois_annee':<12} {'nb_agents':>12} {'multi-postes':>14} "
-                  f"{'%':>8} {'moy postes':>11}", flush=True)
-            print(f"    {'-'*12} {'-'*12} {'-'*14} {'-'*8} {'-'*11}", flush=True)
+                  f"{'%':>8} {'moy(tous)':>11} {'moy(multi)':>12}", flush=True)
+            print(f"    {'-'*12} {'-'*12} {'-'*14} {'-'*8} {'-'*11} {'-'*12}", flush=True)
             for row in stats_periode.iter_rows(named=True):
+                moy_multi = f"{row['moy_postes_multi']:.3f}" if row['moy_postes_multi'] is not None else "   —"
                 print(f"    {row['mois_annee']:<12} {row['nb_agents']:>12,} "
                       f"{row['nb_multipostes']:>14,} {row['pct_multi']:>7.2f}% "
-                      f"{row['moy_postes']:>11.3f}", flush=True)
+                      f"{row['moy_postes_tous']:>11.3f} {moy_multi:>12}", flush=True)
             print(flush=True)
 
     # ── Sélection défensive : colonnes COLONNES_PANEL présentes dans df ───
