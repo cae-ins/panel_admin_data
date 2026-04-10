@@ -1060,10 +1060,18 @@ if indic_cluster is not None and "montant_brut_bareme" in base_gv.columns:
         # ── DIAGNOSTIC jointure ───────────────────────────────────────────
         print(f"   Clés jointure — Gold : {left_on}  |  Référentiel : {right_on}")
         for l, r in zip(left_on, right_on):
-            vals_gold = base_gv[l].drop_nulls().unique().sort().to_list()[:10]
-            vals_ref  = indic_cluster[r].drop_nulls().unique().sort().to_list()
-            print(f"   [{l}] Gold (10 ex.) : {vals_gold}")
-            print(f"   [{r}] Référentiel   : {vals_ref}")
+            set_gold = set(base_gv[l].drop_nulls().unique().to_list())
+            set_ref  = set(indic_cluster[r].drop_nulls().unique().to_list())
+            dans_ref_pas_gold = sorted(set_ref - set_gold)
+            dans_gold_pas_ref = sorted(set_gold - set_ref)
+            print(f"   [{l}] Gold         : {len(set_gold):,} modalités")
+            print(f"   [{r}] Référentiel  : {len(set_ref):,} modalités")
+            if dans_ref_pas_gold:
+                print(f"     ⚠️  Dans référentiel mais absent du Gold : {dans_ref_pas_gold}")
+            if dans_gold_pas_ref:
+                print(f"     ⚠️  Dans Gold mais absent du référentiel : {dans_gold_pas_ref}")
+            if not dans_ref_pas_gold and not dans_gold_pas_ref:
+                print(f"     ✓ Modalités identiques des deux côtés")
         # ─────────────────────────────────────────────────────────────────
 
         indic_join = indic_cluster.with_columns(
