@@ -719,15 +719,13 @@ def calculer_indicateurs_cluster(df_ref: pl.DataFrame) -> pl.DataFrame | None:
             pl.len().alias("nb_obs_ref"),
         ])
         .sort(cluster_cols)
-        .rename({c: f"cluster_{c}" if c not in ("secteur", "grade") else c
-                 for c in cluster_cols})
     )
 
-    # Normaliser les noms de colonnes cluster pour la jointure ultérieure
+    # Normaliser les noms de colonnes cluster → secteur_ref / grade_ref
     rename_map = {}
-    if col_secteur and col_secteur not in ("secteur",):
+    if col_secteur:
         rename_map[col_secteur] = "secteur_ref"
-    if col_grade and col_grade not in ("grade",):
+    if col_grade:
         rename_map[col_grade] = "grade_ref"
     if rename_map:
         indic = indic.rename(rename_map)
