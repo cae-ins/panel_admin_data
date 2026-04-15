@@ -1,0 +1,142 @@
+# Filtrer selon les conditions
+filtered_df = panel_solde_df[
+    (panel_solde_df["Statut_def_mois"] == "Cas particulier") 
+]
+
+# Chemin et nom du fichier Excel de sortie
+output_file = "Cas_particuliers_stat_def_mois.xlsx"
+
+# Afficher les colonnes grade et grade 2
+filtered_df[["MATRICULE", "DATE_COLLECTE", "EMPLOI_NORM", "GRADE", "GRADE 2"]].to_excel(output_file, index=False)
+
+print(f"Fichier exporté : {output_file}")
+
+
+
+
+*****************************************************
+# Filtrer selon les conditions
+filtered_df = panel_solde_df[
+    (panel_solde_df["Statut_def_annee"] == "Cas particulier") 
+]
+
+# Chemin et nom du fichier Excel de sortie
+output_file = "Cas_particuliers_stat_def_annee.xlsx"
+
+# Afficher les colonnes grade et grade 2
+filtered_df[["EMPLOI_NORM", "GRADE", "GRADE 2"]].to_excel(output_file, index=False)
+
+print(f"Fichier exporté : {output_file}")
+
+**************************************************************
+
+# Étape 1 : Compter le nombre de statuts distincts par matricule
+statut_par_matricule = (
+    panel_solde_df.groupby("MATRICULE")["Statut_def_mois"]
+    .nunique()
+    .reset_index(name="nb_statuts_distincts")
+)
+
+# Étape 2 : Filtrer les matricules ayant plusieurs statuts
+problemes_statut = statut_par_matricule[statut_par_matricule["nb_statuts_distincts"] > 1]
+
+# Étape 3 : Nombre de matricules concernés
+nb_matricules = problemes_statut.shape[0]
+print(f"Nombre de matricules ayant plusieurs statuts : {nb_matricules}")
+
+# Étape 4 : Extraire les lignes correspondantes et exporter
+if nb_matricules > 0:
+    detail_problemes = panel_solde_df[
+        panel_solde_df["MATRICULE"].isin(problemes_statut["MATRICULE"])
+    ]
+    export_df = detail_problemes[["MATRICULE","DATE_COLLECTE", "Statut_def_mois"]]
+    output_file = "matricules_statut_problemes.xlsx"
+    export_df.to_excel(output_file, index=False)
+    print(f"✅ Export terminé : {output_file}")
+else:
+    print("✅ Aucun problème détecté, tous les matricules ont un seul statut.")
+
+
+******************************************************************
+
+
+# Étape 1 : Compter le nombre de statuts distincts par matricule
+statut_par_matricule = (
+    panel_solde_df.groupby("MATRICULE")["Statut_def_annee"]
+    .nunique()
+    .reset_index(name="nb_statuts_distincts")
+)
+
+# Étape 2 : Filtrer les matricules ayant plusieurs statuts
+problemes_statut = statut_par_matricule[statut_par_matricule["nb_statuts_distincts"] > 1]
+
+# Étape 3 : Nombre de matricules concernés
+nb_matricules = problemes_statut.shape[0]
+print(f"Nombre de matricules ayant plusieurs statuts : {nb_matricules}")
+
+# Étape 4 : Extraire les lignes correspondantes et exporter
+if nb_matricules > 0:
+    detail_problemes = panel_solde_df[
+        panel_solde_df["MATRICULE"].isin(problemes_statut["MATRICULE"])
+    ]
+    export_df = detail_problemes[["MATRICULE","DATE_COLLECTE", "Statut_def_annee"]]
+    output_file = "matricules_statut_problemes_2.xlsx"
+    export_df.to_excel(output_file, index=False)
+    print(f"✅ Export terminé : {output_file}")
+else:
+    print("✅ Aucun problème détecté, tous les matricules ont un seul statut.")
+
+******************************************************
+
+
+# Regrouper par matricule et compter le nombre de sexes distincts
+sexe_par_matricule = (
+    panel_solde_df.groupby("MATRICULE")["SEXE"]
+    .nunique()
+    .reset_index(name="nb_sexes_distincts")
+)
+
+# Filtrer ceux qui ont plus d’un sexe (incohérents)
+problemes_sexe = sexe_par_matricule[sexe_par_matricule["nb_sexes_distincts"] > 1]
+
+# Afficher les matricules problématiques
+print("Matricules ayant plusieurs sexes enregistrés :")
+print(problemes_sexe)
+
+
+********************************************************
+
+# Étape 1 : Supprimer les doublons sur la colonne AGE
+filtered_df = panel_solde_df.drop_duplicates(subset=["AGE"])
+
+# Étape 2 : Définir le chemin et le nom du fichier Excel de sortie
+output_file = "Age.xlsx"
+
+# Étape 3 : Exporter uniquement les colonnes pertinentes
+filtered_df[["AGE", "AGE_VALIDE", "AGE_IMPUTE"]].to_excel(output_file, index=False)
+
+# Étape 4 : Confirmation
+print(f"Fichier exporté : {output_file}")
+
+
+********************************************
+
+# Étape 1 : Supprimer les doublons exacts sur (MATRICULE, PERIODE_COLLECTE, AGE)
+age_unique = panel_solde_df.drop_duplicates(subset=["MATRICULE", "DATE_COLLECTE", "AGE"])
+
+# Étape 2 : Vérifier s'il existe plusieurs âges différents pour un même matricule et une même période
+age_incoherent = (
+    age_unique.groupby(["MATRICULE", "DATE_COLLECTE"])["AGE"]
+    .nunique()
+    .reset_index(name="nb_age_distincts")
+)
+
+# Étape 3 : Filtrer les cas incohérents
+problemes_age = age_incoherent[age_incoherent["nb_age_distincts"] > 1]
+
+# Étape 4 : Afficher un message selon le résultat
+if problemes_age.empty:
+    print("✅ Aucun problème détecté — les âges sont cohérents par matricule et période.")
+else:
+    print("⚠️ Matricules ayant plusieurs âges enregistrés pour une même période :")
+    print(problemes_age)
