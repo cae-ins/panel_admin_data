@@ -173,7 +173,7 @@ ecrire_feuille(wb, "RESUME_GLOBAL", resume_global,
                titre="Résumé global — Distribution du statut barème")
 
 # ── 1b. HORS_BAREME_Detail : situation × emploi × grade ─────
-cols_hors_det = [c for c in ["situation_normalisee", "emploi", "GRADE"]
+cols_hors_det = [c for c in ["situation_normalisee", "emploi", "GRADE", "GRADE_SOURCE"]
                  if c in hors.columns]
 if cols_hors_det:
     hors_detail = (
@@ -194,11 +194,12 @@ if "situation_normalisee" in hors.columns:
     ecrire_feuille(wb, "PAR_SITUATION", par_sit,
                    titre="Hors-barème par situation administrative")
 
-# ── 3. Par grade ────────────────────────────────────────────
+# ── 3. Par grade × source ───────────────────────────────────
+cols_grade_source = [c for c in ["Statut", "GRADE", "GRADE_SOURCE"] if c in hors.columns]
 if "GRADE" in hors.columns:
-    par_grade = stats_ventilees(hors, ["Statut", "GRADE"], total_hors)
+    par_grade = stats_ventilees(hors, cols_grade_source, total_hors)
     ecrire_feuille(wb, "PAR_GRADE", par_grade,
-                   titre="Hors-barème par grade")
+                   titre="Hors-barème par grade × source du grade")
 
 # ── 4. Par secteur (bareme) ─────────────────────────────────
 if "bareme" in hors.columns:
@@ -234,7 +235,7 @@ if len(cols_sit_emploi) > 1:
                    titre="Hors-barème : situation × secteur × emploi")
 
 # ── 8. Détail complet avec montants ─────────────────────────
-cols_detail = [c for c in ["Statut", "situation_normalisee", "bareme", "emploi", "GRADE"]
+cols_detail = [c for c in ["Statut", "situation_normalisee", "bareme", "emploi", "GRADE", "GRADE_SOURCE"]
                if c in hors.columns]
 if cols_detail:
     agg_exprs = [pl.len().alias("Effectif")]
@@ -264,12 +265,11 @@ if cols_detail:
 
 # ── 9. Cohérence progression des grades ─────────────────────
 # Un agent ne peut pas sauter de grade (ex : A4 → A7 sans A5, A6)
-# Ordre numérique au sein de chaque série (A, B, C, D)
+# Hiérarchie correcte : D est le plus bas, A est le plus haut
+# D1→D2→D3→C1→C2→C3→B1→B3→A3→A4→A5→A6→A7 (pas de B2, A commence à A3)
 ORDRE_GRADE = {g: i for i, g in enumerate(
-    [f"A{i}" for i in range(1, 8)] +
-    [f"B{i}" for i in range(1, 7)] +
-    [f"C{i}" for i in range(1, 6)] +
-    [f"D{i}" for i in range(1, 4)]
+    ["D1", "D2", "D3", "C1", "C2", "C3", "B1", "B3",
+     "A3", "A4", "A5", "A6", "A7"]
 )}
 
 cols_prog = [c for c in ["matricule", "mois_annee", "annee", "mois", "GRADE"]

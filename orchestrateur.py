@@ -122,6 +122,14 @@ ETAPES = [
         "optionnelle": True,
     },
     {
+        "id":          "07c",
+        "nom":         "Cohérence grades",
+        "script":      "07c_coherence_grades.py",
+        "description": "Analyse la progression des grades par agent : "
+                       "stable, progression normale, saut en avant, régression × source",
+        "optionnelle": True,
+    },
+    {
         "id":          "08",
         "nom":         "Excel avec sommaire",
         "script":      "08_creation_fichier_excel_avec_sommaire.py",
