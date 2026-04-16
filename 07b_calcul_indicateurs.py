@@ -371,6 +371,60 @@ if "GRADE_SOURCE" in base_gv.columns:
 BAREME_DISPONIBLE = ("bareme" in base_gv.columns
                      and base_gv["bareme"].is_not_null().sum() > 0)
 
+# ── Contrôle intégrité des conformes IMPUTÉS uniquement ─────────────
+# Les agents récupérés par la règle ±5% (OBSERVE) peuvent être
+# légèrement hors bornes strictes — c'est intentionnel.
+# Seuls les IMPUTÉS doivent être strictement dans [min_bareme, max_bareme].
+cols_borne = {"montant_brut_bareme", "min_bareme", "max_bareme",
+              "montant_brut_bareme_source"}
+if cols_borne.issubset(set(base_gv.columns)):
+    n_total_conf = len(base_gv)
+    n_observe = int((base_gv["montant_brut_bareme_source"] == "OBSERVE").sum())
+    n_impute  = int((base_gv["montant_brut_bareme_source"] == "IMPUTE").sum())
+    print(f"   Dont OBSERVE : {n_observe:,}  ({100*n_observe/n_total_conf:.1f}%)")
+    print(f"   Dont IMPUTE  : {n_impute:,}  ({100*n_impute/n_total_conf:.1f}%)")
+
+    # Contrôle strict uniquement sur les imputés
+    base_imputes = base_gv.filter(pl.col("montant_brut_bareme_source") == "IMPUTE")
+
+    n_sous_min = int(
+        base_imputes.filter(
+            pl.col("min_bareme").is_not_null() &
+            (pl.col("montant_brut_bareme") < pl.col("min_bareme"))
+        ).shape[0]
+    )
+    n_sur_max = int(
+        base_imputes.filter(
+            pl.col("max_bareme").is_not_null() &
+            (pl.col("montant_brut_bareme") > pl.col("max_bareme"))
+        ).shape[0]
+    )
+
+    print(f"\n   Contrôle intégrité des conformes IMPUTÉS ({n_impute:,}) :")
+    if n_sous_min == 0:
+        print(f"     ✅ Aucun imputé avec montant_brut_bareme < min_bareme")
+    else:
+        print(f"     ❌ Imputés avec montant_brut_bareme < min_bareme : {n_sous_min:,}  ← ANOMALIE")
+
+    if n_sur_max == 0:
+        print(f"     ✅ Aucun imputé avec montant_brut_bareme > max_bareme")
+    else:
+        print(f"     ❌ Imputés avec montant_brut_bareme > max_bareme : {n_sur_max:,}  ← ANOMALIE")
+
+    if n_impute > 0 and n_sous_min == 0 and n_sur_max == 0:
+        print(f"     ✅ Tous les imputés sont dans [min_bareme, max_bareme]")
+
+    if n_sous_min > 0 or n_sur_max > 0:
+        raise ValueError(
+            f"ARRÊT — {n_sous_min + n_sur_max:,} agents imputés ont un "
+            f"montant_brut_bareme hors [min_bareme, max_bareme].\n"
+            "Vérifiez l'étape 07a_imputer_hors_bareme.py."
+        )
+elif {"montant_brut_bareme", "min_bareme", "max_bareme"}.issubset(set(base_gv.columns)):
+    print("   ℹ️  Contrôle imputés ignoré (colonne montant_brut_bareme_source absente)")
+else:
+    print("   ℹ️  Contrôle intégrité ignoré (colonnes min/max_bareme absentes)")
+
 # Dériver ANNEES_ANALYSE depuis les données
 if "ANNEE" not in base_gv.columns:
     if "mois_annee" in base_gv.columns:
@@ -453,7 +507,7 @@ if not INCLURE_ZEROS:
     base_agrege = base_agrege.filter(pl.col("montant_brut_bareme") > 0)
 base_agrege = base_agrege.filter(pl.col("montant_brut_bareme").is_not_null())
 
-print(f"   {len(base_agrege):,} agents agrégés\n")
+print(f"   {len(base_agrege):,} observations agrégées (matricule × période)\n")
 
 # ============================================================
 # 3b. WINSORISATION SUR MONTANT_BRUT_TOTAL
@@ -469,6 +523,8 @@ if SEUIL_WINS is not None and "montant_brut_total" in base_agrege.columns:
     print(f"3b. Winsorisation MONTANT_BRUT_TOTAL "
           f"(P{int(SEUIL_WINS*100)}/P{int((1-SEUIL_WINS)*100)}) "
           f"— seuil groupe : {MIN_OBS_WINS} obs...")
+    print(f"   Clusters principaux : ANNEE × MOIS × GRADE × CITP")
+    print(f"   Repli               : ANNEE × MOIS × GRADE")
 
     base_agrege = base_agrege.with_columns([
         pl.len().over(wins_full).alias("_n_citp"),
@@ -499,10 +555,11 @@ if SEUIL_WINS is not None and "montant_brut_total" in base_agrege.columns:
     n_modif = int((base_agrege["montant_brut_total_W"] != base_agrege["montant_brut_total"]).sum())
     n_total_agrege = len(base_agrege)
     pct_modif = (100 * n_modif / n_total_agrege) if n_total_agrege > 0 else 0.0
-    print(f"   Groupe mois × grade × CITP (≥{MIN_OBS_WINS} obs) : {n_obs_citp:,} obs")
-    print(f"   Repli  mois × grade         (<{MIN_OBS_WINS} obs) : {n_obs_grade:,} obs")
+    print(f"   Groupe année × mois × grade × CITP (≥{MIN_OBS_WINS} obs) : {n_obs_citp:,} obs")
+    print(f"   Repli  année × mois × grade         (<{MIN_OBS_WINS} obs) : {n_obs_grade:,} obs")
     print(f"   Observations écrêtées : {n_modif:,}  ({pct_modif:.2f}%)")
-    print(f"   → Indicateurs calculés sur montant_brut_bareme\n")
+    print(f"   → montant_brut_total_W : winsorisé, disponible pour usage futur")
+    print(f"   → Indicateurs Excel    : montant_brut_bareme (non winsorisé)\n")
 elif SEUIL_WINS is not None:
     print(f"3b. ⚠️  montant_brut_total absent — winsorisation ignorée\n")
 
