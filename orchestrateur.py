@@ -13,7 +13,9 @@
 #   04  Validation Silver (contrôles qualité)
 #   05  Silver → Gold     (agrégations masse salariale + effectifs)
 #   06  Compilation panel individu × période
-#   07  Calcul des indicateurs salaires
+#   07  Calcul statut barème         → base_avec_statut.parquet
+#   07a Imputation hors-barème       → base_avec_statut_corrigee.parquet
+#   07b Calcul indicateurs salaires  (conformes + imputés)
 #   08  Fichier Excel avec sommaire structuré
 #   09  Chargement panel Gold → PostgreSQL (alimente Superset)
 #
@@ -107,27 +109,27 @@ ETAPES = [
     },
     {
         "id":          "07",
-        "nom":         "Calcul indicateurs",
+        "nom":         "Calcul statut barème",
         "script":      "07_calcul_indicateur.py",
-        "description": "Indicateurs salaires : P25/P75, grade, sexe, CITP, "
-                       "multi-postes, salaire brut par composantes",
+        "description": "Calcul Statut (Conforme/Inférieur/Supérieur) via fuzzy join barème "
+                       "et référentiel anstat_2025. Produit base_avec_statut.parquet.",
+        "optionnelle": False,
+    },
+    {
+        "id":          "07a",
+        "nom":         "Imputation hors-barème",
+        "script":      "07a_imputer_hors_bareme.py",
+        "description": "Forward/backward fill pour les agents avec 1-5 mois hors-barème. "
+                       "Produit base_avec_statut_corrigee.parquet.",
         "optionnelle": False,
     },
     {
         "id":          "07b",
-        "nom":         "Analyse hors-barème",
-        "script":      "07b_analyse_hors_bareme.py",
-        "description": "Stats des agents hors-barème (Inférieur/Supérieur) "
-                       "ventilées par situation, emploi et grade",
-        "optionnelle": True,
-    },
-    {
-        "id":          "07c",
-        "nom":         "Cohérence grades",
-        "script":      "07c_coherence_grades.py",
-        "description": "Analyse la progression des grades par agent : "
-                       "stable, progression normale, saut en avant, régression × source",
-        "optionnelle": True,
+        "nom":         "Calcul indicateurs salaires",
+        "script":      "07b_calcul_indicateurs.py",
+        "description": "Indicateurs salaires (P25/P75, grade, sexe, CITP, multi-postes) "
+                       "sur la base des agents conformes + imputés.",
+        "optionnelle": False,
     },
     {
         "id":          "08",

@@ -1,13 +1,13 @@
 # ============================================================
-# PANEL ADMIN — ÉTAPE 7 : CALCUL DES INDICATEURS SALAIRES
+# PANEL ADMIN — ÉTAPE 7 : CALCUL DU STATUT BARÈME
 # ============================================================
-# Produit les indicateurs statistiques complets sur les salaires
-# à partir des fichiers Gold panel.
+# Calcule le statut barème (Conforme / Inférieur / Supérieur /
+# Cluster non déterminé) pour chaque agent fonctionnaire à partir
+# des fichiers Gold panel et du référentiel anstat_2025.
 #
-# Prérequis : 03b_imputer_grades_silver.py et 06_compiler_panel.py
-# doivent avoir été exécutés. Les colonnes GRADE et GRADE_SOURCE
-# sont lues directement depuis le Gold panel — aucune imputation
-# n'est recalculée ici.
+# Prérequis : 06_compiler_panel.py doit avoir été exécuté.
+# Les colonnes GRADE et GRADE_SOURCE sont lues directement depuis
+# le Gold panel.
 #
 # Paramètres configurables :
 #   MODE_SALAIRE_BRUT : True  = agrégation par cle_unique (salaire brut)
@@ -17,19 +17,12 @@
 #   INCLURE_ZEROS     : True  = inclure salaires = 0 ou NA
 #                       False = salaire strictement > 0
 #
-# Tables produites (Excel multi-feuilles) :
-#   REVENU_Grade_Detail      : Effectif, moy, méd, min, max, P25, P75 par grade
-#   REVENU_Grade_Sexe        : Idem, par grade × sexe
-#   REVENU_CITP_Detail       : Idem, par CITP
-#   SALAIRE_BRUT_Moyen       : Salaire brut moyen par année × mois × grade (pivot)
-#   SALAIRE_BRUT_Median      : Salaire brut médian par année × mois × grade (pivot)
-#   MULTI_Par_Grade_NbPostes : Effectifs par grade × nombre de postes (pivot)
-#   MULTI_Distribution       : Distribution globale mono/multi-postes
-#   MODELE_ANSTAT_2024       : Modèle statistique ANSTAT — année 2024
-#   MODELE_ANSTAT_2025       : Modèle statistique ANSTAT — année 2025
+# Sortie  : s3://gold/panel_admin/base_avec_statut.parquet
 #
-# Source  : s3://gold/panel_admin/panel_YYYY.parquet
-# Sortie  : s3://staging/panel_admin/exports_gold/indicateurs_*.xlsx
+# Pipeline :
+#   07  (ce script)   → Calcul Statut barème → base_avec_statut.parquet
+#   07a               → Imputation hors-barème → base_avec_statut_corrigee.parquet
+#   07b               → Indicateurs salaires (conformes + imputés)
 #
 # Dépendances :
 #   pip install polars boto3 python-dotenv openpyxl
@@ -88,8 +81,6 @@ KEY_CORRESPONDANCE = "panel_admin/references/CORRESPONDANCE_GRILLE_EMPLOI.xlsx"
 _mode_label    = "salaire_brut"  if MODE_SALAIRE_BRUT else "revenu_salarial"
 _periode_label = "2024_2025"     if PERIODE_RECENTE   else "2015_recent"
 _zeros_label   = "avec_zeros"    if INCLURE_ZEROS     else "sans_zeros"
-OUTPUT_KEY     = (f"{PREFIX_EXPORTS}/indicateurs_{_mode_label}"
-                  f"_{_periode_label}_{_zeros_label}.xlsx")
 
 # Libellés mois français
 MOIS_FR = {
@@ -105,8 +96,7 @@ GRADES_VALIDES = (
     [f"D{i}" for i in range(1, 4)]
 )
 
-# Composantes du salaire brut (codes F2, suffixe _F2 dans le Gold après normalisation Bronze)
-# Recherche insensible à la casse : on résout dynamiquement au moment de l'utilisation
+# Composantes du salaire brut (codes F2, suffixe _F2 dans le Gold)
 COMPOSANTES_SALAIRE_NOMS = {"124_F2", "228_F2", "271_F2", "421_F2", "425_F2"}
 
 # Codes poste éligibles pour le calcul du revenu (filtrage individus)
@@ -118,8 +108,8 @@ CODE_ORGANISME_EXCLUS = "59"
 # Fichier de référence barème 2025 (dans staging/panel_admin/references/)
 KEY_ANSTAT_2025 = "panel_admin/references/anstat_2025.txt.xlsx"
 
-# Clé de sortie pour les indicateurs barème sans indemnités
-KEY_INDIC_BAREME_SANS_INDEM = f"{PREFIX_EXPORTS}/indicateurs_bareme_sans_indemnites.xlsx"
+# Clé de sortie base_avec_statut
+KEY_BASE_AVEC_STATUT = f"{PREFIX_PANEL}/base_avec_statut.parquet"
 
 # --- CLIENT S3 ---
 s3 = boto3.client(
@@ -138,9 +128,8 @@ s3 = boto3.client(
 )
 
 print("=" * 70)
-print(f"INDICATEURS SALAIRES — Mode : "
-      f"{'Salaire brut (cle_unique)' if MODE_SALAIRE_BRUT else 'Revenu salarial (matricule)'}"
-      f" | Période : {'2024-2025' if PERIODE_RECENTE else '2015 → récent'}")
+print("STATUT BARÈME — Calcul du statut (Conforme/Inférieur/Supérieur)")
+print(f"  Période : {'2024-2025' if PERIODE_RECENTE else '2015 → récent'}")
 print("=" * 70)
 print()
 
@@ -203,17 +192,13 @@ def normaliser_pour_matching(texte) -> str | None:
 def corriger_bareme_emploi(emploi_norm: str | None, bareme_actuel: str | None) -> str | None:
     """
     Corrige le BAREME d'un emploi uniquement si celui-ci vaut 'Barême Général'.
-    Recherche insensible à la casse, aux espaces et aux accents (déjà normalisés).
     - 'informaticien' ou 'informatique' → 'Informaticien'
     - 'secretaire', 'secr.', 'secr '    → 'SECRETAIRE DIRECTION'
-      (détection via préfixe SECR — couvre toutes les abréviations)
-    Si le barème n'est pas 'Barême Général', on ne touche pas.
     """
     if bareme_actuel != "Barême Général":
         return bareme_actuel
     if emploi_norm is None:
         return bareme_actuel
-    # emploi_norm est déjà normalisé (majuscules, sans accents, sans ponctuation)
     if "INFORMATICIEN" in emploi_norm or "INFORMATIQUE" in emploi_norm:
         return "Informaticien"
     if "SECRETAIRE" in emploi_norm or "SECR " in emploi_norm or emploi_norm.startswith("SECR"):
@@ -225,8 +210,6 @@ def charger_table_bareme() -> pl.DataFrame | None:
     """
     Charge la table CORRESPONDANCE_GRILLE_EMPLOI depuis staging et
     renvoie une table de jointure (emploi_norm → bareme, grade_ref).
-    Corrige le BAREME des informaticiens et secrétaires de direction
-    lorsque leur BAREME actuel est 'Barême Général'.
     Renvoie None si le fichier est absent (étape non bloquante).
     """
     with tempfile.NamedTemporaryFile(suffix=".xlsx", delete=False) as tmp:
@@ -244,13 +227,6 @@ def charger_table_bareme() -> pl.DataFrame | None:
             .map_elements(normaliser_pour_matching, return_dtype=pl.Utf8)
             .alias("emploi_ref_norm")
         )
-
-        # Correction BAREME pour Informaticien et SECRETAIRE DIRECTION
-        # Uniquement si le bareme actuel est 'Barême Général'
-        # Insensible à la casse, aux espaces et aux accents (emploi_ref_norm déjà normalisé)
-        avant_correction = df.filter(
-            pl.col("bareme") == "Barême Général"
-        ).select(pl.len()).item()
 
         df = df.with_columns(
             pl.struct(["emploi_ref_norm", "bareme"])
@@ -284,10 +260,7 @@ def charger_table_bareme() -> pl.DataFrame | None:
 
 def fuzzy_join_bareme(df: pl.DataFrame, table_join: pl.DataFrame,
                       col_emploi: str) -> pl.DataFrame:
-    """
-    Ajoute les colonnes 'bareme' et 'grade_ref' au DataFrame
-    via fuzzy join sur le libellé emploi normalisé.
-    """
+    """Ajoute les colonnes 'bareme' et 'grade_ref' via fuzzy join sur emploi normalisé."""
     df = df.with_columns(
         pl.col(col_emploi)
         .map_elements(normaliser_pour_matching, return_dtype=pl.Utf8)
@@ -327,269 +300,6 @@ def grade_order_value(grade: str) -> int:
     return 0
 
 
-def compute_indicators(df: pl.DataFrame, group_cols: list[str],
-                       value_col: str = "montant_brut_bareme") -> pl.DataFrame:
-    """Calcule les indicateurs statistiques complets par groupe."""
-    return (
-        df.group_by(group_cols)
-        .agg([
-            pl.len().alias("Effectif"),
-            pl.col(value_col).mean().round(0).alias("Revenu_moyen"),
-            pl.col(value_col).median().round(0).alias("Revenu_median"),
-            pl.col(value_col).min().round(0).alias("Revenu_min"),
-            pl.col(value_col).max().round(0).alias("Revenu_max"),
-            pl.col(value_col).quantile(0.25, interpolation="nearest")
-              .round(0).alias("Revenu_p25"),
-            pl.col(value_col).quantile(0.75, interpolation="nearest")
-              .round(0).alias("Revenu_p75"),
-        ])
-        .sort(group_cols)
-    )
-
-
-def construire_feuille_anstat(
-    wb: Workbook,
-    sheet_name: str,
-    annee_label: str,
-    global_brut: dict,
-    stats_bareme_detail: pl.DataFrame,
-) -> None:
-    """
-    Crée une feuille MODELE_ANSTAT pour une année donnée.
-    Appelée en boucle pour 2024 et 2025.
-    """
-    ws = wb.create_sheet(sheet_name)
-    ws.sheet_view.showGridLines = False
-
-    fill_titre   = PatternFill("solid", fgColor="1F4E79")
-    fill_entete  = PatternFill("solid", fgColor="2E75B6")
-    fill_global  = PatternFill("solid", fgColor="FFF2CC")
-    fill_secteur = PatternFill("solid", fgColor="D6E4F0")
-    fill_alt     = [PatternFill("solid", fgColor="EBF3FB"),
-                    PatternFill("solid", fgColor="FFFFFF")]
-
-    font_titre   = Font(bold=True, color="FFFFFF", size=12)
-    font_entete  = Font(bold=True, color="FFFFFF", size=10)
-    font_global  = Font(bold=True, color="7F6000", size=11)
-    font_secteur = Font(bold=True, color="1F4E79", size=10)
-    font_sous    = Font(size=10, italic=True)
-    font_montant = Font(size=10)
-
-    al_centre = Alignment(horizontal="center", vertical="center")
-    al_gauche = Alignment(horizontal="left",   vertical="center")
-    al_droite = Alignment(horizontal="right",  vertical="center")
-    al_indent = Alignment(horizontal="left",   vertical="center", indent=2)
-
-    # Titre avec l'année
-    ws.merge_cells("A1:D1")
-    titre_cell = ws.cell(
-        row=1, column=1,
-        value=f"MODÈLE DE DONNÉES DE SALAIRE DES FONCTIONNAIRES — {annee_label}"
-    )
-    titre_cell.font      = font_titre
-    titre_cell.fill      = fill_titre
-    titre_cell.alignment = al_centre
-    ws.row_dimensions[1].height = 28
-
-    # En-têtes colonnes
-    ws.cell(row=2, column=1, value="salaires en FCFA").font = Font(size=10)
-    for col_i, label in enumerate(
-        ["salaire brut minimum", "salaire brut moyen", "salaire brut maximum"],
-        start=2
-    ):
-        c = ws.cell(row=2, column=col_i, value=label)
-        c.font      = font_entete
-        c.fill      = fill_entete
-        c.alignment = al_centre
-    ws.row_dimensions[2].height = 22
-
-    def get_val(key: str, col: str):
-        if key == "_GLOBAL_":
-            return global_brut.get(col)
-        rows = stats_bareme_detail.filter(pl.col("bareme_detail") == key)
-        if len(rows) == 0:
-            return None
-        return rows.row(0, named=True).get(col)
-
-    row_cur  = 3
-    sous_idx = 0
-    for libelle, bareme_key in ORDRE_MODELE_ANSTAT:
-        est_global   = bareme_key == "_GLOBAL_"
-        est_titre    = bareme_key is None
-        est_sous_gpe = not est_global and not est_titre
-
-        if est_global:
-            for col_i, val in enumerate([
-                "TOUS SECTEURS CONFONDUS",
-                get_val("_GLOBAL_", "salaire_brut_min"),
-                get_val("_GLOBAL_", "salaire_brut_moyen"),
-                get_val("_GLOBAL_", "salaire_brut_max"),
-            ], start=1):
-                c = ws.cell(row=row_cur, column=col_i, value=val)
-                c.font      = font_global
-                c.fill      = fill_global
-                c.alignment = al_gauche if col_i == 1 else al_centre
-                if col_i > 1 and isinstance(val, (int, float)):
-                    c.number_format = "#,##0"
-            ws.row_dimensions[row_cur].height = 22
-
-        elif est_titre:
-            ws.merge_cells(
-                start_row=row_cur, start_column=1,
-                end_row=row_cur,   end_column=4
-            )
-            c = ws.cell(row=row_cur, column=1, value=libelle)
-            c.font      = font_secteur
-            c.fill      = fill_secteur
-            c.alignment = al_gauche
-            ws.row_dimensions[row_cur].height = 20
-
-        else:
-            bg = fill_alt[sous_idx % 2]
-            sous_idx += 1
-            c1 = ws.cell(row=row_cur, column=1, value=libelle)
-            c1.font      = font_sous
-            c1.fill      = bg
-            c1.alignment = al_indent
-            for col_i, stat_key in enumerate(
-                ["salaire_brut_min", "salaire_brut_moyen", "salaire_brut_max"],
-                start=2
-            ):
-                val = get_val(bareme_key, stat_key)
-                c = ws.cell(row=row_cur, column=col_i, value=val)
-                c.font          = font_montant
-                c.fill          = bg
-                c.alignment     = al_droite
-                c.number_format = "#,##0"
-            ws.row_dimensions[row_cur].height = 18
-
-        row_cur += 1
-
-    # Largeurs colonnes
-    ws.column_dimensions["A"].width = 55
-    for col_letter in ["B", "C", "D"]:
-        ws.column_dimensions[col_letter].width = 22
-    ws.freeze_panes = "A3"
-    print(f"   ✓ {sheet_name} ({row_cur - 3} lignes)")
-
-
-def charger_silver_filtres_poste() -> pl.DataFrame | None:
-    """
-    Lit les fichiers Silver, exclut l'organisme 59, filtre les individus
-    ayant au moins une ligne avec CODE_POSTE dans CODES_POSTE_ELIGIBLES,
-    retient TOUTES leurs lignes (autres postes inclus) et calcule
-    REVENU = sum(montant_brut) par individu × période.
-    Retourne None si la colonne CODE_POSTE est absente.
-    """
-    bucket_silver = os.getenv("BUCKET_SILVER", "silver")
-    prefix_silver = "panel_admin"
-
-    pages_s = s3.get_paginator("list_objects_v2").paginate(
-        Bucket=bucket_silver, Prefix=prefix_silver
-    )
-    cles_silver = sorted([
-        obj["Key"]
-        for page in pages_s
-        for obj in page.get("Contents", [])
-        if obj["Key"].endswith(".parquet")
-    ])
-
-    if not cles_silver:
-        print("   ⚠️  Aucun fichier Silver trouvé — analyse postes ignorée")
-        return None
-
-    frames_silver = []
-    for cle in cles_silver:
-        buf = io.BytesIO()
-        s3.download_fileobj(bucket_silver, cle, buf)
-        buf.seek(0)
-        df_s = pl.read_parquet(buf)
-
-        # Exclusion organisme 59
-        if "CODE_ORGANISME" in df_s.columns:
-            df_s = df_s.filter(pl.col("CODE_ORGANISME").cast(pl.Utf8) != CODE_ORGANISME_EXCLUS)
-
-        frames_silver.append(df_s)
-
-    if not frames_silver:
-        return None
-
-    silver = pl.concat(frames_silver, how="diagonal")
-    del frames_silver
-    gc.collect()
-
-    if "CODE_POSTE" not in silver.columns:
-        print("   ⚠️  Colonne CODE_POSTE absente du Silver — analyse postes ignorée")
-        return None
-
-    if "montant_brut" not in silver.columns:
-        print("   ⚠️  Colonne montant_brut absente du Silver — analyse postes ignorée")
-        return None
-
-    # Cast CODE_POSTE en string pour la comparaison
-    silver = silver.with_columns(
-        pl.col("CODE_POSTE").cast(pl.Utf8).str.strip_chars().alias("CODE_POSTE")
-    )
-
-    # Identifier les individus éligibles (matricule × mois_annee avec CODE_POSTE éligible)
-    cle_ind = [c for c in ["matricule", "mois_annee"] if c in silver.columns]
-    if not cle_ind:
-        print("   ⚠️  Colonnes matricule/mois_annee absentes — analyse postes ignorée")
-        return None
-
-    individus_eligibles = (
-        silver
-        .filter(pl.col("CODE_POSTE").is_in(CODES_POSTE_ELIGIBLES))
-        .select(cle_ind)
-        .unique()
-        .with_columns(pl.lit(True).alias("_eligible"))
-    )
-
-    # Conserver TOUTES les lignes des individus éligibles
-    silver_filtre = (
-        silver
-        .join(individus_eligibles, on=cle_ind, how="inner")
-        .drop("_eligible")
-    )
-
-    n_individus = silver_filtre.select(cle_ind).unique().select(pl.len()).item()
-    print(f"   Individus éligibles (postes {sorted(CODES_POSTE_ELIGIBLES)}) : "
-          f"{n_individus:,}")
-    print(f"   Lignes retenues (tous postes) : {len(silver_filtre):,}")
-
-    # Calcul REVENU = sum(montant_brut) UNIQUEMENT sur les lignes
-    # avec CODE_POSTE éligible (124, 228, 271, 421, 425)
-    silver_eligibles = silver_filtre.filter(
-        pl.col("CODE_POSTE").is_in(CODES_POSTE_ELIGIBLES)
-    )
-    print(f"   Lignes éligibles pour le calcul REVENU : {len(silver_eligibles):,}")
-
-    revenu_calcule = (
-        silver_eligibles
-        .group_by(cle_ind)
-        .agg(
-            pl.col("montant_brut").cast(pl.Float64, strict=False).sum().alias("REVENU")
-        )
-    )
-
-    # Métadonnées récupérées depuis silver_filtre (toutes les lignes)
-    cols_meta = [
-        c for c in ["CODE_ORGANISME", "CODE_GRADE", "GRADE", "bareme",
-                    "organisme", "sexe", "Code_CITP", "Metier_CITP",
-                    "emploi", "situation_normalisee"]
-        if c in silver_filtre.columns
-    ]
-    meta = (
-        silver_filtre
-        .group_by(cle_ind)
-        .agg([pl.col(c).first().alias(c) for c in cols_meta])
-    )
-
-    revenu = revenu_calcule.join(meta, on=cle_ind, how="left")
-    print(f"   REVENU calculé pour {len(revenu):,} observations individu × période\n")
-    return revenu
-
-
 def charger_anstat_2025() -> pl.DataFrame | None:
     """
     Charge le fichier anstat_2025.txt.xlsx depuis staging/referentiel/,
@@ -610,14 +320,13 @@ def charger_anstat_2025() -> pl.DataFrame | None:
     finally:
         os.unlink(tmp_path)
 
-    # Renommage de la colonne allocation (ex : "Allocations\n (2 enfants)") → allocation_familiale
+    # Renommage de la colonne allocation
     col_alloc = next((c for c in df.columns if "alloc" in c.lower()), None)
     if col_alloc and col_alloc != "allocation_familiale":
         df = df.rename({col_alloc: "allocation_familiale"})
         print(f"     Renommage : '{col_alloc}' → 'allocation_familiale'")
 
     # Mapping flexible des colonnes de composantes de salaire
-    # Patterns de recherche pour chaque composante
     patterns_composantes = {
         "salaire_base":       [r"salaire.*base", r"base.*salaire", r"traitement.*base",
                                r"^salaire$", r"^base$"],
@@ -650,7 +359,6 @@ def charger_anstat_2025() -> pl.DataFrame | None:
         print("   ⚠️  Aucune composante de salaire identifiée")
         return None
 
-    # Cast et création de montant_brut_sans_indemnites
     df = df.with_columns([
         pl.col(c).cast(pl.Float64, strict=False)
         for c in composantes_trouvees.values()
@@ -673,11 +381,9 @@ def calculer_indicateurs_cluster(df_ref: pl.DataFrame) -> pl.DataFrame | None:
     if "montant_brut_sans_indemnites" not in df_ref.columns:
         return None
 
-    # Trouver colonnes secteur et grade dans le fichier de référence
     cols_ref = df_ref.columns
 
     def trouver_col(cols, patterns):
-        # Itérer patterns en premier pour respecter l'ordre de priorité
         for pat in patterns:
             for col in cols:
                 col_n = unicodedata.normalize("NFKD", col.lower())
@@ -722,7 +428,6 @@ def calculer_indicateurs_cluster(df_ref: pl.DataFrame) -> pl.DataFrame | None:
         .sort(cluster_cols)
     )
 
-    # Normaliser les noms de colonnes cluster → secteur_ref / grade_ref
     rename_map = {}
     if col_secteur:
         rename_map[col_secteur] = "secteur_ref"
@@ -765,8 +470,7 @@ del frames
 gc.collect()
 print(f"   ✓ Total : {len(base):,} lignes × {len(base.columns)} colonnes")
 
-# Exclusion défensive de l'organisme 59 (au cas où le Gold
-# aurait été produit avant l'ajout du filtre dans 03_bronze_to_silver.py)
+# Exclusion défensive de l'organisme 59
 if "CODE_ORGANISME" in base.columns:
     n_avant = len(base)
     base = base.filter(pl.col("CODE_ORGANISME").cast(pl.Utf8) != CODE_ORGANISME_EXCLUS)
@@ -800,8 +504,6 @@ print()
 print("3. Extraction année/mois depuis mois_annee...")
 
 # mois_annee est au format MMYYYY (ex. "012015")
-# mois  = slice(0, 2)  →  "01"
-# annee = slice(2, 4)  →  "2015" (4 chiffres à partir de la position 2)
 base = base.with_columns([
     pl.col("mois_annee").str.slice(2, 4).cast(pl.Int32, strict=False).alias("ANNEE"),
     pl.col("mois_annee").str.slice(0, 2).cast(pl.Int32, strict=False).alias("MOIS_NUM"),
@@ -837,8 +539,6 @@ if "montant_brut_bareme" in base.columns:
     )
     print("   Source : montant_brut_bareme (postes 124/228/271/421/425, pré-agrégé en 06)")
 else:
-    # Repli sur composantes élémentaires ou montant_brut
-    # Détection insensible à la casse (124_F2 ou 124_f2)
     composantes_presentes = [c for c in base.columns if c.upper() in COMPOSANTES_SALAIRE_NOMS]
     print(f"   ⚠️  montant_brut_bareme absent — repli composantes : {composantes_presentes}")
     if composantes_presentes:
@@ -906,15 +606,13 @@ print()
 print("6. Détection multi-postes (par matricule)...")
 
 if "NB_POSTES" in base.columns:
-    # NB_POSTES déjà pré-calculé dans le Gold par le programme 06
     total_multi  = int((base["NB_POSTES"] > 1).sum())
     total_agents = len(base)
     print(f"   NB_POSTES issu du Gold (pré-calculé en étape 06)")
     print(f"   Multi-postes : {total_multi:,} / {total_agents:,} "
           f"({100*total_multi/total_agents:.1f}%)\n")
 elif "matricule" in base.columns:
-    # Repli : recalcul depuis les lignes (Gold non régénéré avec programme 06 modifié)
-    print("   ⚠️  NB_POSTES absent du Gold — recalcul depuis les lignes (Gold à régénérer)")
+    print("   ⚠️  NB_POSTES absent du Gold — recalcul depuis les lignes")
     nb_postes = (
         base.group_by(["mois_annee", "matricule"])
         .agg(pl.len().alias("NB_POSTES"))
@@ -936,8 +634,6 @@ else:
 # ============================================================
 # 7. FILTRAGE SUR GRADES VALIDES
 # ============================================================
-# On filtre sur GRADE valide (issu de 06b, OBSERVE ou IMPUTE).
-# Les NF_NON_IMPUTABLE sont exclus des calculs d'indicateurs.
 
 print("7. Filtrage grades valides avant agrégation...")
 
@@ -980,7 +676,6 @@ else:
         print("  ⚠️  Table barème absente — feuilles barème non produites")
     else:
         print(f"  ⚠️  Colonne emploi absente dans le panel — feuilles barème non produites")
-        print(f"       Colonnes disponibles : {base_gv.columns}")
     BAREME_DISPONIBLE = False
 
 # --- Exclusion police (non-fonctionnaires — pas de statut barème) ---
@@ -1000,21 +695,15 @@ if "montant_brut_bareme" in base_gv.columns:
     print(f"   Exclusion sans salaire (montant_brut_bareme ≤ 0) : {n_zero:,} agents retirés")
 
 print(f"   Base après exclusions : {len(base_gv):,} agents")
-
 print()
 
 # ============================================================
-# 7c. STATUT BARÈME — calcul anticipé pour filtrer sur "Conformes"
+# 7c. STATUT BARÈME
 # ============================================================
-# Le Statut est calculé ici (avant les indicateurs) pour que
-# les indicateurs ne portent que sur les agents "Conformes au barème".
-# Source : montant_brut_bareme du Gold (pré-agrégé en étape 06).
-# Plus besoin de remonter au Silver.
 
-print("7c. Calcul Statut barème (filtrage sur conformes avant indicateurs)...")
+print("7c. Calcul Statut barème...")
 print()
 
-# --- Chargement référentiel anstat_2025 ---
 print("  7c-1. Chargement référentiel anstat_2025.txt.xlsx...")
 df_anstat_ref   = charger_anstat_2025()
 indic_cluster   = None
@@ -1027,14 +716,11 @@ if df_anstat_ref is not None and "montant_brut_sans_indemnites" in df_anstat_ref
     if result_cluster is not None:
         indic_cluster, col_secteur_ref, col_grade_ref = result_cluster
 
-# --- Création variable Statut directement sur base_gv ---
 base_avec_statut = pl.DataFrame()
 
 if indic_cluster is not None and "montant_brut_bareme" in base_gv.columns:
     print("  7c-3. Création variable Statut sur base_gv (montant_brut_bareme)...")
 
-    # Mapping des noms de barème entre fichier de correspondance et anstat_2025
-    # Clé = valeur dans base_gv (correspondance) | Valeur = nom dans anstat_2025
     MAPPING_BAREME_ANSTAT = {
         "Cadre-Sup-Santé Generaliste & Specialiste" : "Cadre-Sup-Santé",
     }
@@ -1048,9 +734,7 @@ if indic_cluster is not None and "montant_brut_bareme" in base_gv.columns:
         None,
     )
 
-    # Appliquer le mapping sur la colonne secteur avant la jointure
     if col_secteur_main and col_secteur_main in base_gv.columns:
-        n_avant_mapping = base_gv[col_secteur_main].is_not_null().sum()
         base_gv = base_gv.with_columns(
             pl.col(col_secteur_main)
             .map_elements(
@@ -1074,10 +758,8 @@ if indic_cluster is not None and "montant_brut_bareme" in base_gv.columns:
         left_on  = [pair[1] for pair in cle_join_cluster]
         right_on = [pair[0] for pair in cle_join_cluster]
 
-        # ── DIAGNOSTIC jointure ───────────────────────────────────────────
         print(f"   Clés jointure — Gold : {left_on}  |  Référentiel : {right_on}")
 
-        # 1. Vérification colonne par colonne
         for l, r in zip(left_on, right_on):
             set_gold = set(base_gv[l].drop_nulls().unique().to_list())
             set_ref  = set(indic_cluster[r].drop_nulls().unique().to_list())
@@ -1090,15 +772,12 @@ if indic_cluster is not None and "montant_brut_bareme" in base_gv.columns:
             if dans_gold_pas_ref:
                 print(f"     ⚠️  Dans Gold mais absent du référentiel : {dans_gold_pas_ref}")
 
-        # 2. Vérification des combinaisons (tuples de clés)
         if len(left_on) > 1:
             combis_gold = set(
-                base_gv.select(left_on).drop_nulls().unique()
-                .iter_rows()
+                base_gv.select(left_on).drop_nulls().unique().iter_rows()
             )
             combis_ref = set(
-                indic_cluster.select(right_on).drop_nulls().unique()
-                .iter_rows()
+                indic_cluster.select(right_on).drop_nulls().unique().iter_rows()
             )
             dans_ref_pas_gold_c = sorted(combis_ref - combis_gold)
             dans_gold_pas_ref_c = sorted(combis_gold - combis_ref)
@@ -1112,7 +791,6 @@ if indic_cluster is not None and "montant_brut_bareme" in base_gv.columns:
                       f"{'...' if len(dans_gold_pas_ref_c) > 20 else ''}")
             if not dans_ref_pas_gold_c and not dans_gold_pas_ref_c:
                 print(f"     ✓ Combinaisons identiques des deux côtés")
-        # ─────────────────────────────────────────────────────────────────
 
         indic_join = indic_cluster.with_columns(
             [pl.col(c).cast(pl.Utf8) for c in right_on]
@@ -1139,13 +817,13 @@ if indic_cluster is not None and "montant_brut_bareme" in base_gv.columns:
         base_gv = base_gv.with_columns(pl.lit("Cluster non déterminé").alias("Statut"))
         base_avec_statut = base_gv.clone()
 
-    # --- Vérification para-militaires (ne doivent pas être dans la base) ---
+    # --- Vérification para-militaires ---
     if col_secteur_main and col_secteur_main in base_gv.columns:
         n_para = int((base_gv[col_secteur_main] == "para militaire").sum())
         if n_para == 0:
             print(f"   ✓ Vérification para-militaires : aucun agent para-militaire dans la base")
         else:
-            print(f"   ⚠️  ALERTE : {n_para:,} agents avec barème 'para militaire' détectés — à investiguer")
+            print(f"   ⚠️  ALERTE : {n_para:,} agents avec barème 'para militaire' détectés")
 
     n_statut  = base_gv["Statut"].value_counts().sort("Statut")
     n_total_s = n_statut["count"].sum()
@@ -1194,555 +872,100 @@ if indic_cluster is not None and "montant_brut_bareme" in base_gv.columns:
             print(f"     {row['Statut']:<40} : {row['count']:>10,}  ({pct:.1f}%)")
 
 elif "montant_brut_bareme" not in base_gv.columns:
-    print("   ⚠️  montant_brut_bareme absent du Gold — régénérer le Gold avec programme 06 modifié")
+    print("   ⚠️  montant_brut_bareme absent du Gold — régénérer le Gold avec programme 06")
     base_gv = base_gv.with_columns(pl.lit("Cluster non déterminé").alias("Statut"))
     base_avec_statut = base_gv.clone()
 else:
     base_gv = base_gv.with_columns(pl.lit("Cluster non déterminé").alias("Statut"))
     base_avec_statut = base_gv.clone()
-
-# --- Filtrage "Conforme au barème" ---
-if "Statut" in base_gv.columns:
-    n_avant = len(base_gv)
-    base_gv = base_gv.filter(pl.col("Statut") == "Conforme au barème")
-    n_apres = len(base_gv)
-    if n_avant > 0:
-        print(f"\n   Filtrage Conformes : {n_apres:,} / {n_avant:,} "
-              f"({100*n_apres/n_avant:.1f}% retenus pour les indicateurs)")
-else:
-    print("   ⚠️  Statut non disponible — indicateurs calculés sur tous les individus")
 
 print()
 
 # ============================================================
-# 8. AGRÉGATION → REVENU TOTAL
+# 8. STATS HORS-BARÈME PAR TRANCHES (console)
 # ============================================================
 
-agg_col   = "cle_unique" if MODE_SALAIRE_BRUT else "matricule"
-agg_label = agg_col
-print(f"8. Agrégation par {agg_label} → montant_brut_bareme...")
-
-if agg_col not in base_gv.columns:
-    agg_col = "matricule"
-
-base_gv = base_gv.with_columns(
-    pl.col("GRADE").map_elements(grade_order_value, return_dtype=pl.Int32)
-    .alias("GRADE_ORDER")
-)
-
-cols_agg = ["ANNEE", "MOIS_NUM", "MOIS", agg_col]
-
-base_agrege = (
-    base_gv
-    .group_by(cols_agg)
-    .agg([
-        # montant_brut_bareme = montant_brut_bareme (Gold dédupliqué = 1 ligne/individu×mois)
-        pl.col("SALAIRE_BRUT").first().alias("montant_brut_bareme"),
-        pl.col("montant_brut_total").first().alias("montant_brut_total")
-          if "montant_brut_total" in base_gv.columns
-          else pl.lit(None).cast(pl.Float64).alias("montant_brut_total"),
-        pl.col("NB_POSTES").first().alias("NB_POSTES"),
-        pl.col("GRADE").sort_by("GRADE_ORDER", descending=True).first().alias("GRADE_PRINCIPAL"),
-        pl.col("GRADE_SOURCE").sort_by("GRADE_ORDER", descending=True).first().alias("GRADE_SOURCE_PRINCIPAL"),
-        pl.col("SEXE_STD").first().alias("SEXE_STD"),
-        pl.col("Code_CITP").first().alias("Code_CITP")
-          if "Code_CITP" in base_gv.columns
-          else pl.lit(None).cast(pl.Utf8).alias("Code_CITP"),
-        pl.col("Metier_CITP").first().alias("Metier_CITP")
-          if "Metier_CITP" in base_gv.columns
-          else pl.lit(None).cast(pl.Utf8).alias("Metier_CITP"),
-        pl.col("bareme").first().alias("bareme")
-          if "bareme" in base_gv.columns
-          else pl.lit(None).cast(pl.Utf8).alias("bareme"),
-        pl.col("bareme_detail").first().alias("bareme_detail")
-          if "bareme_detail" in base_gv.columns
-          else pl.lit(None).cast(pl.Utf8).alias("bareme_detail"),
-    ])
-)
-
-base_gv = base_gv.drop("GRADE_ORDER")
-
-if not INCLURE_ZEROS:
-    base_agrege = base_agrege.filter(pl.col("montant_brut_bareme") > 0)
-base_agrege = base_agrege.filter(pl.col("montant_brut_bareme").is_not_null())
-
-print(f"   {len(base_agrege):,} agents agrégés\n")
-
-# ============================================================
-# 8b. WINSORISATION SUR MONTANT_BRUT_TOTAL (sauvegardé pour autres usages)
-#     Les indicateurs seront calculés sur montant_brut_bareme (= montant_brut_bareme)
-# ============================================================
-
-value_col_indic = "montant_brut_bareme"
-
-if SEUIL_WINS is not None and "montant_brut_total" in base_agrege.columns:
-    wins_full     = [c for c in ["ANNEE", "MOIS_NUM", "GRADE_PRINCIPAL", "Code_CITP"]
-                     if c in base_agrege.columns]
-    wins_fallback = [c for c in ["ANNEE", "MOIS_NUM", "GRADE_PRINCIPAL"]
-                     if c in base_agrege.columns]
-    print(f"8b. Winsorisation MONTANT_BRUT_TOTAL "
-          f"(P{int(SEUIL_WINS*100)}/P{int((1-SEUIL_WINS)*100)}) "
-          f"— seuil groupe : {MIN_OBS_WINS} obs...")
-
-    base_agrege = base_agrege.with_columns([
-        pl.len().over(wins_full).alias("_n_citp"),
-        pl.col("montant_brut_total")
-          .quantile(SEUIL_WINS, interpolation="nearest")
-          .over(wins_full).alias("_pb_citp"),
-        pl.col("montant_brut_total")
-          .quantile(1 - SEUIL_WINS, interpolation="nearest")
-          .over(wins_full).alias("_ph_citp"),
-        pl.col("montant_brut_total")
-          .quantile(SEUIL_WINS, interpolation="nearest")
-          .over(wins_fallback).alias("_pb_grade"),
-        pl.col("montant_brut_total")
-          .quantile(1 - SEUIL_WINS, interpolation="nearest")
-          .over(wins_fallback).alias("_ph_grade"),
-    ])
-
-    n_obs_citp  = int((base_agrege["_n_citp"] >= MIN_OBS_WINS).sum())
-    n_obs_grade = len(base_agrege) - n_obs_citp
-
-    base_agrege = base_agrege.with_columns(
-        pl.when(pl.col("_n_citp") >= MIN_OBS_WINS)
-        .then(pl.col("montant_brut_total").clip(pl.col("_pb_citp"), pl.col("_ph_citp")))
-        .otherwise(pl.col("montant_brut_total").clip(pl.col("_pb_grade"), pl.col("_ph_grade")))
-        .alias("montant_brut_total_W")
-    ).drop(["_n_citp", "_pb_citp", "_ph_citp", "_pb_grade", "_ph_grade"])
-
-    n_modif = int((base_agrege["montant_brut_total_W"] != base_agrege["montant_brut_total"]).sum())
-    print(f"   Groupe mois × grade × CITP (≥{MIN_OBS_WINS} obs) : {n_obs_citp:,} obs")
-    print(f"   Repli  mois × grade         (<{MIN_OBS_WINS} obs) : {n_obs_grade:,} obs")
-    n_total_agrege = len(base_agrege)
-    pct_modif = (100 * n_modif / n_total_agrege) if n_total_agrege > 0 else 0.0
-    print(f"   Observations écrêtées : {n_modif:,}  ({pct_modif:.2f}%)")
-    print(f"   → montant_brut_total_W sauvegardé pour autres usages")
-    print(f"   → Indicateurs calculés sur montant_brut_bareme (montant_brut_bareme)\n")
-elif SEUIL_WINS is not None:
-    print(f"8b. ⚠️  montant_brut_total absent — winsorisation ignorée\n")
-
-# ============================================================
-# 9. INDICATEURS SUR montant_brut_bareme
-# ============================================================
-
-print("9. Calcul indicateurs montant_brut_bareme...")
-
-indic_grade = compute_indicators(
-    base_agrege, ["ANNEE", "MOIS_NUM", "MOIS", "GRADE_PRINCIPAL"], value_col_indic
-)
-indic_grade_sexe = compute_indicators(
-    base_agrege, ["ANNEE", "MOIS_NUM", "MOIS", "SEXE_STD", "GRADE_PRINCIPAL"], value_col_indic
-)
-
-if "Code_CITP" in base_agrege.columns:
-    indic_citp = compute_indicators(
-        base_agrege.filter(
-            pl.col("Code_CITP").is_not_null() & (pl.col("Code_CITP") != "Non renseigné")
-        ),
-        ["ANNEE", "MOIS_NUM", "MOIS", "Code_CITP", "Metier_CITP"],
-        value_col_indic,
-    )
-else:
-    indic_citp = pl.DataFrame()
-
-# Ventilations barème
-indic_bareme       = pl.DataFrame()
-indic_bareme_grade = pl.DataFrame()
-indic_bareme_sexe  = pl.DataFrame()
-
-if BAREME_DISPONIBLE:
-    base_b = base_agrege.filter(pl.col("bareme").is_not_null())
-    indic_bareme = compute_indicators(
-        base_b, ["ANNEE", "MOIS_NUM", "MOIS", "bareme"], value_col_indic
-    )
-    indic_bareme_grade = compute_indicators(
-        base_b, ["ANNEE", "MOIS_NUM", "MOIS", "bareme", "GRADE_PRINCIPAL"], value_col_indic
-    )
-    indic_bareme_sexe = compute_indicators(
-        base_b, ["ANNEE", "MOIS_NUM", "MOIS", "bareme", "SEXE_STD"], value_col_indic
-    )
-
-total_indic = (len(indic_grade) + len(indic_grade_sexe) + len(indic_citp)
-               + len(indic_bareme) + len(indic_bareme_grade) + len(indic_bareme_sexe))
-print(f"   Grade            : {len(indic_grade):,} lignes")
-print(f"   Grade × Sexe     : {len(indic_grade_sexe):,} lignes")
-print(f"   CITP             : {len(indic_citp):,} lignes")
-if BAREME_DISPONIBLE:
-    print(f"   Barème           : {len(indic_bareme):,} lignes")
-    print(f"   Barème × Grade   : {len(indic_bareme_grade):,} lignes")
-    print(f"   Barème × Sexe    : {len(indic_bareme_sexe):,} lignes")
-print(f"   Total            : {total_indic:,} lignes\n")
-
-# ============================================================
-# 10. INDICATEURS SALAIRE BRUT (par ligne, pivot grade)
-# ============================================================
-
-print("10. Calcul indicateurs montant_brut_bareme (pivot grade)...")
-
-# Utilisation directe de montant_brut_bareme — pas de winsorisation sur ces feuilles
-brut_moyen = (
-    base_gv
-    .group_by(["ANNEE", "MOIS_NUM", "MOIS", "GRADE"])
-    .agg(pl.col("montant_brut_bareme").mean().round(0).alias("montant_brut_bareme_moyen"))
-    .sort(["ANNEE", "MOIS_NUM"])
-)
-brut_median = (
-    base_gv
-    .group_by(["ANNEE", "MOIS_NUM", "MOIS", "GRADE"])
-    .agg(pl.col("montant_brut_bareme").median().round(0).alias("montant_brut_bareme_median"))
-    .sort(["ANNEE", "MOIS_NUM"])
-)
-
-brut_moyen_wide = brut_moyen.pivot(
-    values="montant_brut_bareme_moyen",
-    index=["ANNEE", "MOIS_NUM", "MOIS"],
-    on="GRADE"
-).sort(["ANNEE", "MOIS_NUM"])
-
-brut_median_wide = brut_median.pivot(
-    values="montant_brut_bareme_median",
-    index=["ANNEE", "MOIS_NUM", "MOIS"],
-    on="GRADE"
-).sort(["ANNEE", "MOIS_NUM"])
-
-print(f"   Moyen  : {len(brut_moyen_wide)} lignes × {len(brut_moyen_wide.columns)} cols")
-print(f"   Médian : {len(brut_median_wide)} lignes × {len(brut_median_wide.columns)} cols\n")
-
-# ============================================================
-# 11. MULTI-POSTES
-# ============================================================
-
-print("11. Création feuilles multi-postes...")
-
-multi_detail = (
-    base_agrege
-    .group_by(["ANNEE", "MOIS_NUM", "MOIS", "GRADE_PRINCIPAL", "NB_POSTES"])
-    .agg([
-        pl.len().alias("Effectif"),
-        pl.col("montant_brut_bareme").mean().round(0).alias("Revenu_moyen"),
-    ])
-    .sort(["ANNEE", "MOIS_NUM", "GRADE_PRINCIPAL", "NB_POSTES"])
-)
-
-multi_detail = multi_detail.with_columns(
-    pl.when(pl.col("NB_POSTES") >= 5)
-    .then(pl.lit("5+"))
-    .otherwise(pl.col("NB_POSTES").cast(pl.Utf8))
-    .alias("NB_POSTES_LABEL")
-)
-
-multi_effectif = multi_detail.pivot(
-    values="Effectif",
-    index=["ANNEE", "MOIS_NUM", "MOIS", "GRADE_PRINCIPAL"],
-    on="NB_POSTES_LABEL",
-    aggregate_function="sum",
-).sort(["ANNEE", "MOIS_NUM", "GRADE_PRINCIPAL"])
-
-for c in ["1", "2", "3", "4", "5+"]:
-    if c in multi_effectif.columns:
-        multi_effectif = multi_effectif.with_columns(pl.col(c).fill_null(0))
-
-distrib_postes = (
-    base_agrege
-    .group_by("NB_POSTES")
-    .agg([
-        pl.len().alias("Effectif"),
-        (pl.len() * 100 / len(base_agrege)).round(2).alias("Pct"),
-        pl.col("montant_brut_bareme").mean().round(0).alias("Revenu_moyen"),
-    ])
-    .sort("NB_POSTES")
-)
-
-print(f"   Multi-postes détail  : {len(multi_effectif)} lignes")
-print(f"   Distribution globale : {len(distrib_postes)} lignes\n")
-
-# ============================================================
-# 12. PRÉ-CALCUL DONNÉES MODELE_ANSTAT PAR ANNÉE
-# ============================================================
-# On prépare un dict {annee: (global_brut, stats_bareme_detail)}
-# pour éviter de refiltrer base_gv_b plusieurs fois.
-
-anstat_data_par_annee: dict[int, tuple[dict, pl.DataFrame]] = {}
-
-if BAREME_DISPONIBLE:
-    print("12. Pré-calcul données MODELE_ANSTAT par année...")
-    for annee in [2024, 2025]:
-        if annee not in ANNEES_ANALYSE:
-            print(f"   ⚠️  Année {annee} absente de la période — ignorée")
-            continue
-
-        base_gv_b_annee = base_gv.filter(
-            (pl.col("ANNEE") == annee)
-            & pl.col("bareme_detail").is_not_null()
-            & pl.col("SALAIRE_BRUT").is_not_null()
-            & (pl.col("SALAIRE_BRUT") > 0)
-        )
-
-        if len(base_gv_b_annee) == 0:
-            print(f"   ⚠️  Aucune donnée barème pour {annee} — feuille ignorée")
-            continue
-
-        global_brut_annee = base_gv_b_annee.select([
-            pl.col("SALAIRE_BRUT").min().round(0).alias("salaire_brut_min"),
-            pl.col("SALAIRE_BRUT").mean().round(0).alias("salaire_brut_moyen"),
-            pl.col("SALAIRE_BRUT").max().round(0).alias("salaire_brut_max"),
-            pl.col("SALAIRE_BRUT").median().round(0).alias("salaire_brut_mediane"),
-        ]).row(0, named=True)
-
-        stats_annee = (
-            base_gv_b_annee.group_by("bareme_detail")
-            .agg([
-                pl.col("SALAIRE_BRUT").min().round(0).alias("salaire_brut_min"),
-                pl.col("SALAIRE_BRUT").mean().round(0).alias("salaire_brut_moyen"),
-                pl.col("SALAIRE_BRUT").max().round(0).alias("salaire_brut_max"),
-                pl.col("SALAIRE_BRUT").median().round(0).alias("salaire_brut_mediane"),
-                pl.len().alias("nb_obs"),
-            ])
-            .sort("bareme_detail")
-        )
-
-        anstat_data_par_annee[annee] = (global_brut_annee, stats_annee)
-        print(f"   ✓ {annee} : {len(stats_annee)} barèmes, "
-              f"{len(base_gv_b_annee):,} observations")
-    print()
-
-# ============================================================
-# 13b. RAPPEL — variables Statut déjà calculées en section 7c
-# ============================================================
-# base_revenus, df_anstat_ref, indic_cluster, base_avec_statut
-# sont déjà disponibles depuis la section 7c.
-# Aucun recalcul nécessaire ici.
-
-print("13b. Variables Statut/barème déjà calculées en section 7c — OK\n")
-
-# ============================================================
-# 13. EXPORT EXCEL
-# ============================================================
-
-print("13. Export Excel...")
-
-def appliquer_style_entete(ws, n_cols: int) -> None:
-    fill  = PatternFill("solid", fgColor="4F81BD")
-    font  = Font(color="FFFFFF", bold=True, size=11)
-    align = Alignment(horizontal="center", vertical="center")
-    for col in range(1, n_cols + 1):
-        cell = ws.cell(row=1, column=col)
-        cell.fill      = fill
-        cell.font      = font
-        cell.alignment = align
-
-
-def ecrire_feuille(wb: Workbook, nom: str, df: pl.DataFrame) -> None:
-    if len(df) == 0:
-        return
-    ws = wb.create_sheet(title=nom)
-    for j, col in enumerate(df.columns, start=1):
-        ws.cell(row=1, column=j, value=col)
-    for i, row in enumerate(df.iter_rows(named=True), start=2):
-        for j, col in enumerate(df.columns, start=1):
-            ws.cell(row=i, column=j, value=row[col])
-    appliquer_style_entete(ws, len(df.columns))
-    ws.freeze_panes = "A2"
-    print(f"   ✓ {nom} ({len(df):,} lignes)")
-
-
-wb = Workbook()
-wb.remove(wb.active)
-
-ecrire_feuille(wb, "REVENU_Grade_Detail",      indic_grade)
-ecrire_feuille(wb, "REVENU_Grade_Sexe",         indic_grade_sexe)
-if len(indic_citp) > 0:
-    ecrire_feuille(wb, "REVENU_CITP_Detail",    indic_citp)
-ecrire_feuille(wb, "montant_brut_bareme_Moyen",  brut_moyen_wide)
-ecrire_feuille(wb, "montant_brut_bareme_Median", brut_median_wide)
-ecrire_feuille(wb, "MULTI_Par_Grade_NbPostes",  multi_effectif)
-ecrire_feuille(wb, "MULTI_Distribution",        distrib_postes)
-
-# --- Stats hors-barème (non-conformes) ---
 STATUTS_HORS_BAREME = ["Inférieur au minimum du barème", "Supérieur au maximum du barème"]
-cols_hors = [c for c in ["situation_normalisee", "emploi", "GRADE"]
-             if c in base_avec_statut.columns]
-if "Statut" in base_avec_statut.columns and cols_hors:
-    hors_bareme = base_avec_statut.filter(pl.col("Statut").is_in(STATUTS_HORS_BAREME))
-    total_hors = len(hors_bareme)
-    if total_hors > 0:
-        print(f"   Agents hors-barème : {total_hors:,} (détail dans 07b_analyse_hors_bareme.py)")
 
-        # --- Écarts relatifs au barème par tranches (affichage console) ---
-        cols_req = {"montant_brut_bareme", "min_bareme", "max_bareme", "Statut"}
-        if cols_req.issubset(set(hors_bareme.columns)):
-            ORDRE_TRANCHES = ["< 5%", "5% – 10%", "10% – 25%", "25% – 50%", "≥ 50%"]
-            for statut_label, borne_col, sens in [
-                ("Inférieur au minimum du barème", "min_bareme",
-                 lambda df: (pl.col(borne_col) - pl.col("montant_brut_bareme")) / pl.col(borne_col) * 100),
-                ("Supérieur au maximum du barème", "max_bareme",
-                 lambda df: (pl.col("montant_brut_bareme") - pl.col(borne_col)) / pl.col(borne_col) * 100),
-            ]:
-                sous = hors_bareme.filter(pl.col("Statut") == statut_label)
-                n_sous = len(sous)
-                if n_sous == 0:
-                    continue
-                sous = sous.with_columns(
-                    sens(sous).alias("ecart_pct")
-                ).with_columns(
-                    pl.when(pl.col("ecart_pct") < 5)  .then(pl.lit("< 5%"))
-                    .when(pl.col("ecart_pct") < 10)   .then(pl.lit("5% – 10%"))
-                    .when(pl.col("ecart_pct") < 25)   .then(pl.lit("10% – 25%"))
-                    .when(pl.col("ecart_pct") < 50)   .then(pl.lit("25% – 50%"))
-                    .otherwise(pl.lit("≥ 50%"))
-                    .alias("tranche")
+if (len(base_avec_statut) > 0 and "Statut" in base_avec_statut.columns
+        and {"montant_brut_bareme", "min_bareme", "max_bareme"}.issubset(
+            set(base_avec_statut.columns))):
+    hors_bareme = base_avec_statut.filter(pl.col("Statut").is_in(STATUTS_HORS_BAREME))
+    total_hors  = len(hors_bareme)
+    if total_hors > 0:
+        ORDRE_TRANCHES = ["< 5%", "5% – 10%", "10% – 25%", "25% – 50%", "≥ 50%"]
+        for statut_label, borne_col in [
+            ("Inférieur au minimum du barème", "min_bareme"),
+            ("Supérieur au maximum du barème", "max_bareme"),
+        ]:
+            sous = hors_bareme.filter(pl.col("Statut") == statut_label)
+            n_sous = len(sous)
+            if n_sous == 0:
+                continue
+            if statut_label == "Inférieur au minimum du barème":
+                ecart_expr = (
+                    (pl.col(borne_col) - pl.col("montant_brut_bareme"))
+                    / pl.col(borne_col) * 100
                 )
-                counts = {
-                    row["tranche"]: row["count"]
-                    for row in sous["tranche"].value_counts().iter_rows(named=True)
-                }
-                print(f"\n   Écarts au barème — {statut_label} ({n_sous:,}) :")
-                for t in ORDRE_TRANCHES:
-                    n_t = counts.get(t, 0)
-                    pct = 100 * n_t / n_sous if n_sous > 0 else 0.0
-                    print(f"     {t:<12} : {n_t:>10,}  ({pct:.1f}%)")
+            else:
+                ecart_expr = (
+                    (pl.col("montant_brut_bareme") - pl.col(borne_col))
+                    / pl.col(borne_col) * 100
+                )
+            sous = sous.with_columns(ecart_expr.alias("ecart_pct")).with_columns(
+                pl.when(pl.col("ecart_pct") < 5)  .then(pl.lit("< 5%"))
+                .when(pl.col("ecart_pct") < 10)   .then(pl.lit("5% – 10%"))
+                .when(pl.col("ecart_pct") < 25)   .then(pl.lit("10% – 25%"))
+                .when(pl.col("ecart_pct") < 50)   .then(pl.lit("25% – 50%"))
+                .otherwise(pl.lit("≥ 50%"))
+                .alias("tranche")
+            )
+            counts = {
+                row["tranche"]: row["count"]
+                for row in sous["tranche"].value_counts().iter_rows(named=True)
+            }
+            print(f"   Écarts au barème — {statut_label} ({n_sous:,}) :")
+            for t in ORDRE_TRANCHES:
+                n_t = counts.get(t, 0)
+                pct = 100 * n_t / n_sous if n_sous > 0 else 0.0
+                print(f"     {t:<12} : {n_t:>10,}  ({pct:.1f}%)")
+            print()
     else:
         print("   ℹ️  Aucun agent hors-barème détecté")
 
-# --- Feuilles barème (si disponibles) ---
-if BAREME_DISPONIBLE:
-    ecrire_feuille(wb, "REVENU_Bareme_Detail",  indic_bareme)
-    ecrire_feuille(wb, "REVENU_Bareme_Grade",   indic_bareme_grade)
-    ecrire_feuille(wb, "REVENU_Bareme_Sexe",    indic_bareme_sexe)
-
-    # --- Feuilles MODELE_ANSTAT_2024 et MODELE_ANSTAT_2025 ---
-    # Une feuille par année, construite depuis les données filtrées
-    # calculées à l'étape 12.
-    for annee in [2024, 2025]:
-        if annee not in anstat_data_par_annee:
-            print(f"   ⚠️  MODELE_ANSTAT_{annee} ignorée (données absentes)")
-            continue
-        global_brut_annee, stats_annee = anstat_data_par_annee[annee]
-        construire_feuille_anstat(
-            wb=wb,
-            sheet_name=f"MODELE_ANSTAT_{annee}",
-            annee_label=str(annee),
-            global_brut=global_brut_annee,
-            stats_bareme_detail=stats_annee,
-        )
-
-# ── Vérification : au moins une feuille doit contenir des données ────
-feuilles_visibles = [ws for ws in wb.worksheets if ws.sheet_state == "visible"]
-feuilles_avec_data = [ws for ws in feuilles_visibles if ws.max_row > 1]
-if not feuilles_avec_data:
-    raise ValueError(
-        "ARRÊT — Le classeur Excel ne contient aucune feuille avec données. "
-        "Vérifier que l'étape 7c (barème) a produit des agents conformes et "
-        "que le fichier anstat_2025.txt.xlsx est bien disponible dans "
-        f"staging/{KEY_ANSTAT_2025}."
-    )
-
-buf_xlsx = io.BytesIO()
-wb.save(buf_xlsx)
-buf_xlsx.seek(0)
-xlsx_bytes = buf_xlsx.getvalue()
-
-s3.put_object(
-    Bucket=BUCKET_STAGING,
-    Key=OUTPUT_KEY,
-    Body=xlsx_bytes,
-    ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-)
-
-taille_kb = len(xlsx_bytes) / 1024
-print(f"\n✅ Fichier créé : s3://{BUCKET_STAGING}/{OUTPUT_KEY}")
-print(f"   Taille   : {taille_kb:.1f} KB")
-print(f"   Feuilles : {len(wb.sheetnames)}\n")
-
 # ============================================================
-# 14. EXPORT EXCEL — INDICATEURS BARÈME SANS INDEMNITÉS + STATUT
+# 9. SAUVEGARDE base_avec_statut.parquet → Gold
 # ============================================================
 
-if indic_cluster is not None or len(base_avec_statut) > 0:
-    print("14. Export Excel indicateurs barème sans indemnités...")
+print("9. Sauvegarde base_avec_statut.parquet...")
 
-    wb2 = Workbook()
-    wb2.remove(wb2.active)
-
-    # Feuille 1 : Indicateurs barème par cluster (depuis référentiel)
-    if indic_cluster is not None and len(indic_cluster) > 0:
-        ecrire_feuille(wb2, "INDIC_Cluster_Secteur_Grade", indic_cluster)
-
-    # Feuille 2 : Référentiel complet avec montant_brut_sans_indemnites
-    if df_anstat_ref is not None and len(df_anstat_ref) > 0:
-        # Limiter aux colonnes pertinentes pour ne pas surcharger
-        cols_export_ref = [c for c in df_anstat_ref.columns
-                           if c != "montant_brut_sans_indemnites"] + ["montant_brut_sans_indemnites"]
-        ecrire_feuille(wb2, "REF_ANSTAT_2025_Complet",
-                       df_anstat_ref.select(cols_export_ref))
-
-    # Sauvegarde base_avec_statut en Parquet sur Gold (trop volumineuse pour Excel)
-    if len(base_avec_statut) > 0:
-        key_statut_parquet = f"{PREFIX_PANEL}/base_avec_statut.parquet"
-        buf_pq = io.BytesIO()
-        base_avec_statut.write_parquet(buf_pq, compression="snappy")
-        buf_pq.seek(0)
-        s3.put_object(Bucket=BUCKET_GOLD, Key=key_statut_parquet, Body=buf_pq.getvalue())
-        print(f"   ✓ base_avec_statut → s3://{BUCKET_GOLD}/{key_statut_parquet} "
-              f"({len(base_avec_statut):,} lignes)")
-
-        # Feuille 4 : Résumé statistique de la variable Statut
-        if "Statut" in base_avec_statut.columns:
-            total = len(base_avec_statut)
-            resume_statut = (
-                base_avec_statut
-                .group_by("Statut")
-                .agg(pl.len().alias("Effectif"))
-                .with_columns(
-                    (pl.col("Effectif") * 100 / total).round(2).alias("Pourcentage (%)")
-                )
-                .sort("Statut")
-            )
-            ecrire_feuille(wb2, "RESUME_STATUT", resume_statut)
-
-        # Feuille 5 : Stats hors-barème par situation / emploi / grade
-        STATUTS_HORS_BAREME = ["Inférieur au minimum du barème", "Supérieur au maximum du barème"]
-        cols_hors = [c for c in ["situation_normalisee", "emploi", "GRADE"]
-                     if c in base_avec_statut.columns]
-        if "Statut" in base_avec_statut.columns and cols_hors:
-            hors_bareme = base_avec_statut.filter(pl.col("Statut").is_in(STATUTS_HORS_BAREME))
-            total_hors = len(hors_bareme)
-            if total_hors > 0:
-                stats_hors = (
-                    hors_bareme
-                    .group_by(["Statut"] + cols_hors)
-                    .agg(pl.len().alias("Effectif"))
-                    .with_columns(
-                        (pl.col("Effectif") * 100 / total_hors).round(2).alias("Proportion (%)")
-                    )
-                    .sort(["Statut"] + cols_hors)
-                )
-                ecrire_feuille(wb2, "HORS_BAREME_Detail", stats_hors)
-                print(f"   ✓ HORS_BAREME_Detail : {total_hors:,} agents hors-barème")
-            else:
-                print("   ℹ️  Aucun agent hors-barème détecté")
-
-    buf2 = io.BytesIO()
-    wb2.save(buf2)
-    buf2.seek(0)
-    bytes2 = buf2.getvalue()
-
+if len(base_avec_statut) > 0:
+    buf_pq = io.BytesIO()
+    base_avec_statut.write_parquet(buf_pq, compression="snappy")
+    buf_pq.seek(0)
     s3.put_object(
-        Bucket=BUCKET_STAGING,
-        Key=KEY_INDIC_BAREME_SANS_INDEM,
-        Body=bytes2,
-        ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        Bucket=BUCKET_GOLD,
+        Key=KEY_BASE_AVEC_STATUT,
+        Body=buf_pq.getvalue(),
     )
+    print(f"   ✅ s3://{BUCKET_GOLD}/{KEY_BASE_AVEC_STATUT}")
+    print(f"   {len(base_avec_statut):,} lignes × {len(base_avec_statut.columns)} colonnes")
 
-    taille2_kb = len(bytes2) / 1024
-    print(f"\n✅ Fichier indicateurs barème : s3://{BUCKET_STAGING}/{KEY_INDIC_BAREME_SANS_INDEM}")
-    print(f"   Taille   : {taille2_kb:.1f} KB")
-    print(f"   Feuilles : {len(wb2.sheetnames)}\n")
+    # Résumé final Statut
+    if "Statut" in base_avec_statut.columns:
+        total = len(base_avec_statut)
+        print(f"\n   Résumé final Statut :")
+        for row in (
+            base_avec_statut["Statut"].value_counts().sort("Statut").iter_rows(named=True)
+        ):
+            pct = 100 * row["count"] / total if total > 0 else 0.0
+            print(f"     {row['Statut']:<40} : {row['count']:>10,}  ({pct:.1f}%)")
 else:
-    print("14. ⚠️  Aucun indicateur barème sans indemnités à exporter\n")
+    print("   ⚠️  base_avec_statut vide — fichier non sauvegardé")
 
+print()
 print("=" * 70)
-print("✓ CALCUL INDICATEURS TERMINÉ")
+print("✓ CALCUL STATUT BARÈME TERMINÉ")
 print("=" * 70)
 print()
-print("Prochaine étape : exécuter 08_creation_fichier_excel_avec_sommaire.py")
+print("Prochaine étape : exécuter 07a_imputer_hors_bareme.py")
