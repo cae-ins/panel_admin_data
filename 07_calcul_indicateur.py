@@ -528,39 +528,28 @@ base = base.with_columns(
 )
 
 # ============================================================
-# 4. CALCUL DU SALAIRE BRUT (montant_brut_bareme prioritaire)
+# 4. VÉRIFICATION montant_brut_bareme
 # ============================================================
 
-print("4. Calcul du salaire brut (montant_brut_bareme prioritaire)...")
+print("4. Vérification montant_brut_bareme (pré-calculé en étape 06)...")
 
-if "montant_brut_bareme" in base.columns:
-    base = base.with_columns(
-        pl.col("montant_brut_bareme").cast(pl.Float64, strict=False).alias("SALAIRE_BRUT")
+if "montant_brut_bareme" not in base.columns:
+    raise RuntimeError(
+        "Colonne montant_brut_bareme absente du Gold panel.\n"
+        "Vérifiez que l'étape 06_compiler_panel.py a été exécutée avec les colonnes F2."
     )
-    print("   Source : montant_brut_bareme (postes 124/228/271/421/425, pré-agrégé en 06)")
-else:
-    composantes_presentes = [c for c in base.columns if c.upper() in COMPOSANTES_SALAIRE_NOMS]
-    print(f"   ⚠️  montant_brut_bareme absent — repli composantes : {composantes_presentes}")
-    if composantes_presentes:
-        base = base.with_columns([
-            pl.col(c).cast(pl.Float64, strict=False) for c in composantes_presentes
-        ])
-        base = base.with_columns(
-            pl.sum_horizontal([pl.col(c) for c in composantes_presentes])
-            .alias("SALAIRE_BRUT")
-        )
-    else:
-        base = base.with_columns(
-            pl.col("montant_brut").cast(pl.Float64, strict=False).alias("SALAIRE_BRUT")
-            if "montant_brut" in base.columns
-            else pl.lit(0.0).alias("SALAIRE_BRUT")
-        )
+
+# Cast en Float64 sur place (la colonne peut arriver en Int64 depuis le parquet)
+base = base.with_columns(
+    pl.col("montant_brut_bareme").cast(pl.Float64, strict=False)
+)
 
 n_total  = len(base)
-n_pos    = int((base["SALAIRE_BRUT"] > 0).sum())
-n_nul    = int(base["SALAIRE_BRUT"].is_null().sum())
-n_zero   = int((base["SALAIRE_BRUT"] == 0).sum())
-n_neg    = int((base["SALAIRE_BRUT"] < 0).sum())
+n_pos    = int((base["montant_brut_bareme"] > 0).sum())
+n_nul    = int(base["montant_brut_bareme"].is_null().sum())
+n_zero   = int((base["montant_brut_bareme"] == 0).sum())
+n_neg    = int((base["montant_brut_bareme"] < 0).sum())
+print(f"   Source : montant_brut_bareme (postes 124/228/271/421/425, pré-agrégé en 06)")
 print(f"   Salaires > 0  : {n_pos:,} ({100*n_pos/n_total:.1f}%)")
 print(f"   Nuls (null)   : {n_nul:,} ({100*n_nul/n_total:.1f}%)")
 print(f"   Zéros (= 0)   : {n_zero:,} ({100*n_zero/n_total:.1f}%)")
@@ -641,7 +630,7 @@ if INCLURE_ZEROS:
     base_gv = base.filter(pl.col("GRADE").is_in(GRADES_VALIDES))
 else:
     base_gv = base.filter(
-        pl.col("GRADE").is_in(GRADES_VALIDES) & (pl.col("SALAIRE_BRUT") > 0)
+        pl.col("GRADE").is_in(GRADES_VALIDES) & (pl.col("montant_brut_bareme") > 0)
     )
 
 n_gv = len(base_gv)

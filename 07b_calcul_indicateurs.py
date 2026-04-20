@@ -425,6 +425,55 @@ elif {"montant_brut_bareme", "min_bareme", "max_bareme"}.issubset(set(base_gv.co
 else:
     print("   ℹ️  Contrôle intégrité ignoré (colonnes min/max_bareme absentes)")
 
+# ── Diagnostic : conformes avec montant_brut_bareme anormalement bas ─
+# Seuil = minimum théorique absolu du référentiel (D1 min = ~201 000 FCFA)
+# On descend à 100 000 pour capturer les cas vraiment aberrants
+SEUIL_DIAGNOSTIC = 100_000
+
+cols_diag = {"montant_brut_bareme", "GRADE", "bareme", "min_bareme", "max_bareme"}
+if cols_diag.issubset(set(base_gv.columns)):
+    suspects = base_gv.filter(
+        pl.col("montant_brut_bareme") < SEUIL_DIAGNOSTIC
+    )
+    n_suspects = len(suspects)
+
+    if n_suspects == 0:
+        print(f"\n   ✅ Aucun conforme avec montant_brut_bareme < {SEUIL_DIAGNOSTIC:,} FCFA")
+    else:
+        print(f"\n   ⚠️  DIAGNOSTIC — Conformes avec montant_brut_bareme < "
+              f"{SEUIL_DIAGNOSTIC:,} FCFA : {n_suspects:,} observations")
+
+        # Résumé par GRADE × bareme × min_bareme
+        cols_id = [c for c in ["matricule", "mois_annee", "GRADE", "bareme",
+                                "montant_brut_bareme", "min_bareme", "max_bareme",
+                                "montant_brut_bareme_source"]
+                   if c in base_gv.columns]
+        apercu = (
+            suspects
+            .select(cols_id)
+            .sort(["montant_brut_bareme"])
+        )
+        print(f"   Détail (jusqu'à 20 lignes) :")
+        print(apercu.head(20))
+
+        # Résumé groupé : GRADE × bareme × min_bareme
+        resume = (
+            suspects
+            .group_by([c for c in ["GRADE", "bareme", "min_bareme"] if c in suspects.columns])
+            .agg([
+                pl.len().alias("nb_obs"),
+                pl.col("montant_brut_bareme").min().alias("montant_min"),
+                pl.col("montant_brut_bareme").max().alias("montant_max"),
+            ])
+            .sort("nb_obs", descending=True)
+        )
+        print(f"\n   Résumé par GRADE × barème × min_bareme :")
+        print(resume)
+        print()
+        print("   ℹ️  Ces cas peuvent indiquer un conflit de colonnes dans le join")
+        print("      (min_bareme résiduel d'un run précédent) ou une anomalie source.")
+        print("      Vérifier base_avec_statut.parquet → colonnes min_bareme/max_bareme.")
+
 # Dériver ANNEES_ANALYSE depuis les données
 if "ANNEE" not in base_gv.columns:
     if "mois_annee" in base_gv.columns:
@@ -447,11 +496,7 @@ if agg_col not in base_gv.columns:
     agg_col = "matricule"
 print(f"3. Agrégation par {agg_col} → montant_brut_bareme...")
 
-# SALAIRE_BRUT depuis montant_brut_bareme
-if "SALAIRE_BRUT" not in base_gv.columns:
-    base_gv = base_gv.with_columns(
-        pl.col("montant_brut_bareme").cast(pl.Float64, strict=False).alias("SALAIRE_BRUT")
-    )
+# montant_brut_bareme est la référence directe — pas d'alias intermédiaire
 
 # MOIS label si absent
 if "MOIS" not in base_gv.columns and "MOIS_NUM" in base_gv.columns:
@@ -472,7 +517,7 @@ base_agrege = (
     base_gv
     .group_by(cols_agg)
     .agg([
-        pl.col("SALAIRE_BRUT").first().alias("montant_brut_bareme"),
+        pl.col("montant_brut_bareme").first().alias("montant_brut_bareme"),
         pl.col("montant_brut_total").first().alias("montant_brut_total")
           if "montant_brut_total" in base_gv.columns
           else pl.lit(None).cast(pl.Float64).alias("montant_brut_total"),
@@ -713,8 +758,8 @@ if BAREME_DISPONIBLE:
         base_gv_b_annee = base_gv.filter(
             (pl.col("ANNEE") == annee)
             & pl.col("bareme_detail").is_not_null()
-            & pl.col("SALAIRE_BRUT").is_not_null()
-            & (pl.col("SALAIRE_BRUT") > 0)
+            & pl.col("montant_brut_bareme").is_not_null()
+            & (pl.col("montant_brut_bareme") > 0)
         )
 
         if len(base_gv_b_annee) == 0:
@@ -722,19 +767,19 @@ if BAREME_DISPONIBLE:
             continue
 
         global_brut_annee = base_gv_b_annee.select([
-            pl.col("SALAIRE_BRUT").min().round(0).alias("salaire_brut_min"),
-            pl.col("SALAIRE_BRUT").mean().round(0).alias("salaire_brut_moyen"),
-            pl.col("SALAIRE_BRUT").max().round(0).alias("salaire_brut_max"),
-            pl.col("SALAIRE_BRUT").median().round(0).alias("salaire_brut_mediane"),
+            pl.col("montant_brut_bareme").min().round(0).alias("salaire_brut_min"),
+            pl.col("montant_brut_bareme").mean().round(0).alias("salaire_brut_moyen"),
+            pl.col("montant_brut_bareme").max().round(0).alias("salaire_brut_max"),
+            pl.col("montant_brut_bareme").median().round(0).alias("salaire_brut_mediane"),
         ]).row(0, named=True)
 
         stats_annee = (
             base_gv_b_annee.group_by("bareme_detail")
             .agg([
-                pl.col("SALAIRE_BRUT").min().round(0).alias("salaire_brut_min"),
-                pl.col("SALAIRE_BRUT").mean().round(0).alias("salaire_brut_moyen"),
-                pl.col("SALAIRE_BRUT").max().round(0).alias("salaire_brut_max"),
-                pl.col("SALAIRE_BRUT").median().round(0).alias("salaire_brut_mediane"),
+                pl.col("montant_brut_bareme").min().round(0).alias("salaire_brut_min"),
+                pl.col("montant_brut_bareme").mean().round(0).alias("salaire_brut_moyen"),
+                pl.col("montant_brut_bareme").max().round(0).alias("salaire_brut_max"),
+                pl.col("montant_brut_bareme").median().round(0).alias("salaire_brut_mediane"),
                 pl.len().alias("nb_obs"),
             ])
             .sort("bareme_detail")
