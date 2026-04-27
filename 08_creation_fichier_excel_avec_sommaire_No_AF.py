@@ -71,9 +71,10 @@ PREFIX_EXPORTS = "panel_admin/exports_gold"
 _mode_label    = "salaire_brut"  if MODE_SALAIRE_BRUT else "revenu_salarial"
 _periode_label = "2024_2025"     if PERIODE_RECENTE   else "2015_recent"
 _zeros_label   = "avec_zeros"    if INCLURE_ZEROS     else "sans_zeros"
-_base_name     = f"indicateurs_{_mode_label}_{_periode_label}_{_zeros_label}"
-INPUT_KEY      = f"{PREFIX_EXPORTS}/{_base_name}.xlsx"
-OUTPUT_KEY     = f"{PREFIX_EXPORTS}/{_base_name}_SOMMAIRE.xlsx"
+_input_name    = f"indicateurs_{_mode_label}_{_periode_label}_{_zeros_label}"
+_output_name   = f"indicateurs_{_mode_label}_{_periode_label}"
+INPUT_KEY      = f"{PREFIX_EXPORTS}/{_input_name}.xlsx"
+OUTPUT_KEY     = f"{PREFIX_EXPORTS}/{_output_name}_SOMMAIRE.xlsx"
 
 # Classification CITP grands groupes
 CITP_GRANDS_GROUPES = {
@@ -158,9 +159,11 @@ dt_citp         = lire_feuille("REVENU_CITP_Detail")
 dt_grade        = lire_feuille("REVENU_Grade_Detail")
 dt_grade_sexe   = lire_feuille("REVENU_Grade_Sexe")
 dt_multi        = lire_feuille("MULTI_Par_Grade_NbPostes")
-dt_bareme       = lire_feuille("REVENU_Bareme_Detail")
-dt_bareme_grade = lire_feuille("REVENU_Bareme_Grade")
-dt_bareme_sexe  = lire_feuille("REVENU_Bareme_Sexe")
+dt_bareme       = lire_feuille("REVENU_Total_Bareme")
+dt_bareme_grade = lire_feuille("REVENU_Total_Bar_Grade")
+dt_bareme_sexe  = lire_feuille("REVENU_Total_Bar_Sexe")
+# Table effectifs uniques par groupe sur la période (branche No_allocation_Familiale)
+dt_eff_uniques  = lire_feuille("EFFECTIFS_UNIQUES_PERIODE")
 
 # Feuilles MODELE_ANSTAT par année — produites directement par 07
 dt_anstat: dict[int, pl.DataFrame | None] = {}
@@ -246,6 +249,34 @@ def ajuster_largeurs(ws, largeurs: dict[int, int]) -> None:
 print("🔨 Préparation des données par section...")
 
 
+def get_eff_unique(groupe_type: str, groupe_valeur: str) -> int:
+    """Retourne le nb d'agents uniques pour un groupe depuis EFFECTIFS_UNIQUES_PERIODE."""
+    if dt_eff_uniques is None:
+        return 0
+    rows = dt_eff_uniques.filter(
+        (pl.col("groupe_type") == groupe_type) &
+        (pl.col("groupe_valeur") == str(groupe_valeur))
+    )
+    if len(rows) == 0:
+        return 0
+    return int(rows["nb_agents_uniques"][0])
+
+
+def get_eff_unique_citp_gg(grand_groupe: int) -> int:
+    """Retourne le nb d'agents uniques pour un grand groupe CITP."""
+    if dt_eff_uniques is None or dt_citp is None:
+        return 0
+    # On agrège les codes CITP appartenant au grand groupe
+    codes_gg = []
+    if dt_citp is not None and "Code_CITP" in dt_citp.columns and "GRAND_GROUPE" in dt_citp.columns:
+        codes_gg = (dt_citp.filter(pl.col("GRAND_GROUPE") == grand_groupe)
+                    ["Code_CITP"].unique().to_list())
+    total = 0
+    for code in codes_gg:
+        total += get_eff_unique("CITP", code)
+    return total
+
+
 def extract_grand_groupe(code_citp) -> int | None:
     if code_citp is None:
         return None
@@ -266,8 +297,12 @@ if dt_citp is not None and "Code_CITP" in dt_citp.columns:
     )
     for gg in range(1, 10):
         sub = dt_citp.filter(pl.col("GRAND_GROUPE") == gg)
+        # Effectif = agents uniques sur la période (pas somme mensuelle)
+        eff = get_eff_unique_citp_gg(gg) if dt_eff_uniques is not None else (
+            int(sub["Effectif"].sum()) if len(sub) > 0 else 0
+        )
         stats_citp[gg] = {
-            "effectif_total": int(sub["Effectif"].sum()) if len(sub) > 0 else 0,
+            "effectif_total": eff,
             "nb_metiers":     sub["Code_CITP"].n_unique() if len(sub) > 0 else 0,
         }
     print(f"  ✓ CITP : {sum(1 for v in stats_citp.values() if v['effectif_total'] > 0)} grands groupes avec données")
@@ -277,7 +312,10 @@ stats_grade: dict[str, dict] = {}
 if dt_grade is not None and "GRADE_PRINCIPAL" in dt_grade.columns:
     for grade_val in sorted(dt_grade["GRADE_PRINCIPAL"].unique().to_list()):
         sub = dt_grade.filter(pl.col("GRADE_PRINCIPAL") == grade_val)
-        eff_total = int(sub["Effectif"].sum())
+        # Effectif = agents uniques sur la période (pas somme mensuelle)
+        eff_total = get_eff_unique("GRADE", grade_val) if dt_eff_uniques is not None else (
+            int(sub["Effectif"].sum())
+        )
         rev_pond = (
             float((sub["Effectif"] * sub["Revenu_moyen"]).sum() / sub["Effectif"].sum())
             if sub["Effectif"].sum() > 0 else 0.0
@@ -293,7 +331,10 @@ stats_sexe: dict[str, dict] = {}
 if dt_grade_sexe is not None and "SEXE_STD" in dt_grade_sexe.columns:
     for sexe_val in dt_grade_sexe["SEXE_STD"].unique().to_list():
         sub = dt_grade_sexe.filter(pl.col("SEXE_STD") == sexe_val)
-        eff_total = int(sub["Effectif"].sum())
+        # Effectif = agents uniques sur la période (pas somme mensuelle)
+        eff_total = get_eff_unique("SEXE", sexe_val) if dt_eff_uniques is not None else (
+            int(sub["Effectif"].sum())
+        )
         rev_pond = (
             float((sub["Effectif"] * sub["Revenu_moyen"]).sum() / sub["Effectif"].sum())
             if sub["Effectif"].sum() > 0 else 0.0
@@ -317,7 +358,10 @@ if BAREME_DISPONIBLE and "bareme" in dt_bareme.columns:
     baremes_liste = sorted(dt_bareme["bareme"].drop_nulls().unique().to_list())
     for b in baremes_liste:
         sub = dt_bareme.filter(pl.col("bareme") == b)
-        eff = int(sub["Effectif"].sum()) if "Effectif" in sub.columns else 0
+        # Effectif = agents uniques sur la période (pas somme mensuelle)
+        eff = get_eff_unique("BAREME", b) if dt_eff_uniques is not None else (
+            int(sub["Effectif"].sum()) if "Effectif" in sub.columns else 0
+        )
         rev = (
             float((sub["Effectif"] * sub["Revenu_moyen"]).sum() / sub["Effectif"].sum())
             if "Effectif" in sub.columns and sub["Effectif"].sum() > 0 else 0.0

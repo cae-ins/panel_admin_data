@@ -18,16 +18,25 @@
 #   INCLURE_ZEROS     : True  = inclure salaires = 0 ou NA
 #                       False = salaire strictement > 0
 #
+# Deux populations distinctes :
+#   M1 — Statut conforme (barème)        → grade / CITP / sexe
+#        Variable : montant_brut_sans_ind_sans_alloc (codes 124+228+271+425)
+#   M2 — Statut_Total conforme (barème)  → secteur / barème
+#        Variable : montant_brut_total (Feuille 1, tous codes postes)
+#
 # Tables produites (Excel multi-feuilles) :
-#   REVENU_Grade_Detail      : Effectif, moy, méd, min, max, P25, P75 par grade
-#   REVENU_Grade_Sexe        : Idem, par grade × sexe
-#   REVENU_CITP_Detail       : Idem, par CITP
-#   montant_brut_bareme_Moyen  : Salaire brut moyen par année × mois × grade (pivot)
-#   montant_brut_bareme_Median : Salaire brut médian par année × mois × grade (pivot)
-#   MULTI_Par_Grade_NbPostes : Effectifs par grade × nombre de postes (pivot)
-#   MULTI_Distribution       : Distribution globale mono/multi-postes
-#   MODELE_ANSTAT_2024       : Modèle statistique ANSTAT — année 2024
-#   MODELE_ANSTAT_2025       : Modèle statistique ANSTAT — année 2025
+#   M1 — REVENU_Grade_Detail      : Effectif, moy, méd, min, max, P25, P75 par grade
+#   M1 — REVENU_Grade_Sexe        : Idem, par grade × sexe
+#   M1 — REVENU_CITP_Detail       : Idem, par CITP
+#   M1 — Sal_Bareme_Moyen         : Salaire moyen par année × mois × grade (pivot)
+#   M1 — Sal_Bareme_Median        : Salaire médian par année × mois × grade (pivot)
+#   M1 — MULTI_Par_Grade_NbPostes : Effectifs par grade × nombre de postes (pivot)
+#   M1 — MULTI_Distribution       : Distribution globale mono/multi-postes
+#   M2 — REVENU_Total_Bareme      : Idem, par barème/secteur
+#   M2 — REVENU_Total_Bar_Grade   : Idem, par barème × grade
+#   M2 — REVENU_Total_Bar_Sexe    : Idem, par barème × sexe
+#   M2 — MODELE_ANSTAT_2024       : Modèle statistique ANSTAT — année 2024
+#   M2 — MODELE_ANSTAT_2025       : Modèle statistique ANSTAT — année 2025
 #
 # Source  : s3://gold/panel_admin/base_avec_statut_corrigee.parquet
 # Sortie  : s3://staging/panel_admin/exports_gold/indicateurs_*.xlsx
@@ -153,7 +162,7 @@ def grade_order_value(grade: str) -> int:
 
 
 def compute_indicators(df: pl.DataFrame, group_cols: list[str],
-                       value_col: str = "montant_brut_bareme") -> pl.DataFrame:
+                       value_col: str = "montant_brut_sans_ind_sans_alloc") -> pl.DataFrame:
     """Calcule les indicateurs statistiques complets par groupe."""
     return (
         df.group_by(group_cols)
@@ -341,13 +350,26 @@ except Exception:
 print(f"   {len(base_avec_statut):,} lignes × {len(base_avec_statut.columns)} colonnes")
 print(f"   Agents uniques : {base_avec_statut.select('matricule').n_unique():,}")
 
-# Distribution Statut
+# Distribution Statut M1 et M2
 total = len(base_avec_statut)
-print(f"\n   Distribution Statut (entrée) :")
+print(f"\n   Distribution Statut — Méthodo 1 (montant_brut_sans_ind_sans_alloc) :")
 for row in base_avec_statut["Statut"].value_counts().sort("Statut").iter_rows(named=True):
     pct = 100 * row["count"] / total if total > 0 else 0.0
     print(f"     {row['Statut']:<40} : {row['count']:>10,}  ({pct:.1f}%)")
+
+if "Statut_Total" in base_avec_statut.columns:
+    print(f"\n   Distribution Statut_Total — Méthodo 2 (montant_brut_total) :")
+    for row in base_avec_statut["Statut_Total"].value_counts().sort("Statut_Total").iter_rows(named=True):
+        pct = 100 * row["count"] / total if total > 0 else 0.0
+        print(f"     {row['Statut_Total']:<40} : {row['count']:>10,}  ({pct:.1f}%)")
 print()
+
+# Flag M2 : actif si Statut_Total ET montant_brut_total sont disponibles
+M2_ACTIVE = (
+    "Statut_Total" in base_avec_statut.columns
+    and "montant_brut_total" in base_avec_statut.columns
+)
+print(f"   Méthodo 2 (Statut_Total) : {'activée' if M2_ACTIVE else 'non disponible (Statut_Total ou montant_brut_total absent)'}\n")
 
 # ============================================================
 # 2. FILTRAGE SUR "Conforme au barème"
@@ -361,55 +383,108 @@ n_apres = len(base_gv)
 pct = 100 * n_apres / n_avant if n_avant > 0 else 0.0
 print(f"   {n_apres:,} / {n_avant:,} ({pct:.1f}% retenus pour les indicateurs)")
 
-# Stats GRADE_SOURCE dans les conformes
+# ── Bilan détaillé des conformes retenus ─────────────────────────────
+n_gv = len(base_gv)
+# 1. Par statut fonctionnaire
+col_statut_fonct = next(
+    (c for c in ["statut_fonctionnaire", "situation_normalisee"] if c in base_gv.columns), None
+)
+if col_statut_fonct:
+    print(f"   Par statut fonctionnaire ({col_statut_fonct}) :")
+    statut_counts = (
+        base_gv.group_by(col_statut_fonct)
+        .agg(pl.len().alias("n"))
+        .sort("n", descending=True)
+    )
+    for row in statut_counts.iter_rows(named=True):
+        pct = 100 * row["n"] / n_gv if n_gv > 0 else 0.0
+        print(f"     {str(row[col_statut_fonct]):<35} : {row['n']:>10,}  ({pct:.1f}%)")
+# 2. Source du grade (GRADE_SOURCE = observé ou imputé par 03b)
 if "GRADE_SOURCE" in base_gv.columns:
-    n_gv = len(base_gv)
-    for source in ["OBSERVE", "IMPUTE"]:
+    print(f"   Source du grade (GRADE_SOURCE) :")
+    for source, label in [("OBSERVE", "Grade observé"), ("IMPUTE", "Grade imputé")]:
         n = int((base_gv["GRADE_SOURCE"] == source).sum())
-        print(f"   GRADE_{source:<10} : {n:,}  ({100*n/n_gv:.1f}%)")
+        print(f"     {label:<35} : {n:>10,}  ({100*n/n_gv:.1f}%)")
 
 BAREME_DISPONIBLE = ("bareme" in base_gv.columns
                      and base_gv["bareme"].is_not_null().sum() > 0)
+
+# ── Exclusion GRADE D2 (catégorie en voie de disparition) ───────────
+# D2 est exclue de TOUS les indicateurs (grade, sexe, CITP, barème, ANSTAT).
+# Le filtre est appliqué ici une seule fois, avant toute agrégation.
+col_grade_d2 = next(
+    (c for c in ["GRADE", "GRADE_PRINCIPAL"] if c in base_gv.columns), None
+)
+if col_grade_d2:
+    n_avant_d2 = len(base_gv)
+    base_gv = base_gv.filter(pl.col(col_grade_d2) != "D2")
+    n_d2 = n_avant_d2 - len(base_gv)
+    if n_d2 > 0:
+        print(f"\n   Exclusion D2 (catégorie en voie de disparition) : {n_d2:,} lignes retirées")
+        print(f"   Base M1 après exclusion D2 : {len(base_gv):,} agents")
+    else:
+        print(f"\n   ✓ Aucun agent D2 dans les conformes M1")
+
+# ── Filtrage Méthodo 2 (Statut_Total) ───────────────────────────────
+base_gv_m2 = pl.DataFrame()
+base_agrege_m2 = pl.DataFrame()
+if M2_ACTIVE:
+    n_av_m2 = len(base_avec_statut)
+    base_gv_m2 = base_avec_statut.filter(pl.col("Statut_Total") == "Conforme au barème")
+    # Exclusion D2
+    if col_grade_d2 and col_grade_d2 in base_gv_m2.columns:
+        base_gv_m2 = base_gv_m2.filter(pl.col(col_grade_d2) != "D2")
+    # Cast montant_brut_total en Float64
+    base_gv_m2 = base_gv_m2.with_columns(
+        pl.col("montant_brut_total").cast(pl.Float64, strict=False)
+    )
+    pct_m2 = 100 * len(base_gv_m2) / n_av_m2 if n_av_m2 > 0 else 0.0
+    print(f"\n   Méthodo 2 — Statut_Total Conforme (sans D2) : {len(base_gv_m2):,} ({pct_m2:.1f}%)")
+print()
 
 # ── Contrôle intégrité des conformes IMPUTÉS uniquement ─────────────
 # Les agents récupérés par la règle ±5% (OBSERVE) peuvent être
 # légèrement hors bornes strictes — c'est intentionnel.
 # Seuls les IMPUTÉS doivent être strictement dans [min_bareme, max_bareme].
-cols_borne = {"montant_brut_bareme", "min_bareme", "max_bareme",
-              "montant_brut_bareme_source"}
+cols_borne = {"montant_brut_sans_ind_sans_alloc", "min_bareme", "max_bareme",
+              "montant_brut_sans_ind_sans_alloc_source"}
 if cols_borne.issubset(set(base_gv.columns)):
     n_total_conf = len(base_gv)
-    n_observe = int((base_gv["montant_brut_bareme_source"] == "OBSERVE").sum())
-    n_impute  = int((base_gv["montant_brut_bareme_source"] == "IMPUTE").sum())
-    print(f"   Dont OBSERVE : {n_observe:,}  ({100*n_observe/n_total_conf:.1f}%)")
-    print(f"   Dont IMPUTE  : {n_impute:,}  ({100*n_impute/n_total_conf:.1f}%)")
+    n_observe = int((base_gv["montant_brut_sans_ind_sans_alloc_source"] == "OBSERVE").sum())
+    n_impute  = int((base_gv["montant_brut_sans_ind_sans_alloc_source"] == "IMPUTE").sum())
+    # 3. Source du salaire (montant_brut_sans_ind_sans_alloc_source)
+    #    OBSERVE = valeur lue directement dans le Gold panel
+    #    IMPUTE  = valeur imputée par 07a (forward/backward fill, agent hors-barème ≤ 5 mois)
+    print(f"   Source du salaire (montant_brut_sans_ind_sans_alloc_source) :")
+    print(f"     Salaire observé              : {n_observe:>10,}  ({100*n_observe/n_total_conf:.1f}%)")
+    print(f"     Salaire imputé (via 07a)     : {n_impute:>10,}  ({100*n_impute/n_total_conf:.1f}%)")
 
     # Contrôle strict uniquement sur les imputés
-    base_imputes = base_gv.filter(pl.col("montant_brut_bareme_source") == "IMPUTE")
+    base_imputes = base_gv.filter(pl.col("montant_brut_sans_ind_sans_alloc_source") == "IMPUTE")
 
     n_sous_min = int(
         base_imputes.filter(
             pl.col("min_bareme").is_not_null() &
-            (pl.col("montant_brut_bareme") < pl.col("min_bareme"))
+            (pl.col("montant_brut_sans_ind_sans_alloc") < pl.col("min_bareme"))
         ).shape[0]
     )
     n_sur_max = int(
         base_imputes.filter(
             pl.col("max_bareme").is_not_null() &
-            (pl.col("montant_brut_bareme") > pl.col("max_bareme"))
+            (pl.col("montant_brut_sans_ind_sans_alloc") > pl.col("max_bareme"))
         ).shape[0]
     )
 
     print(f"\n   Contrôle intégrité des conformes IMPUTÉS ({n_impute:,}) :")
     if n_sous_min == 0:
-        print(f"     ✅ Aucun imputé avec montant_brut_bareme < min_bareme")
+        print(f"     ✅ Aucun imputé avec montant_brut_sans_ind_sans_alloc < min_bareme")
     else:
-        print(f"     ❌ Imputés avec montant_brut_bareme < min_bareme : {n_sous_min:,}  ← ANOMALIE")
+        print(f"     ❌ Imputés avec montant_brut_sans_ind_sans_alloc < min_bareme : {n_sous_min:,}  ← ANOMALIE")
 
     if n_sur_max == 0:
-        print(f"     ✅ Aucun imputé avec montant_brut_bareme > max_bareme")
+        print(f"     ✅ Aucun imputé avec montant_brut_sans_ind_sans_alloc > max_bareme")
     else:
-        print(f"     ❌ Imputés avec montant_brut_bareme > max_bareme : {n_sur_max:,}  ← ANOMALIE")
+        print(f"     ❌ Imputés avec montant_brut_sans_ind_sans_alloc > max_bareme : {n_sur_max:,}  ← ANOMALIE")
 
     if n_impute > 0 and n_sous_min == 0 and n_sur_max == 0:
         print(f"     ✅ Tous les imputés sont dans [min_bareme, max_bareme]")
@@ -417,41 +492,41 @@ if cols_borne.issubset(set(base_gv.columns)):
     if n_sous_min > 0 or n_sur_max > 0:
         raise ValueError(
             f"ARRÊT — {n_sous_min + n_sur_max:,} agents imputés ont un "
-            f"montant_brut_bareme hors [min_bareme, max_bareme].\n"
+            f"montant_brut_sans_ind_sans_alloc hors [min_bareme, max_bareme].\n"
             "Vérifiez l'étape 07a_imputer_hors_bareme.py."
         )
-elif {"montant_brut_bareme", "min_bareme", "max_bareme"}.issubset(set(base_gv.columns)):
-    print("   ℹ️  Contrôle imputés ignoré (colonne montant_brut_bareme_source absente)")
+elif {"montant_brut_sans_ind_sans_alloc", "min_bareme", "max_bareme"}.issubset(set(base_gv.columns)):
+    print("   ℹ️  Contrôle imputés ignoré (colonne montant_brut_sans_ind_sans_alloc_source absente)")
 else:
     print("   ℹ️  Contrôle intégrité ignoré (colonnes min/max_bareme absentes)")
 
-# ── Diagnostic : conformes avec montant_brut_bareme anormalement bas ─
+# ── Diagnostic : conformes avec montant_brut_sans_ind_sans_alloc anormalement bas ─
 # Seuil = minimum théorique absolu du référentiel (D1 min = ~201 000 FCFA)
 # On descend à 100 000 pour capturer les cas vraiment aberrants
 SEUIL_DIAGNOSTIC = 100_000
 
-cols_diag = {"montant_brut_bareme", "GRADE", "bareme", "min_bareme", "max_bareme"}
+cols_diag = {"montant_brut_sans_ind_sans_alloc", "GRADE", "bareme", "min_bareme", "max_bareme"}
 if cols_diag.issubset(set(base_gv.columns)):
     suspects = base_gv.filter(
-        pl.col("montant_brut_bareme") < SEUIL_DIAGNOSTIC
+        pl.col("montant_brut_sans_ind_sans_alloc") < SEUIL_DIAGNOSTIC
     )
     n_suspects = len(suspects)
 
     if n_suspects == 0:
-        print(f"\n   ✅ Aucun conforme avec montant_brut_bareme < {SEUIL_DIAGNOSTIC:,} FCFA")
+        print(f"\n   ✅ Aucun conforme avec montant_brut_sans_ind_sans_alloc < {SEUIL_DIAGNOSTIC:,} FCFA")
     else:
-        print(f"\n   ⚠️  DIAGNOSTIC — Conformes avec montant_brut_bareme < "
+        print(f"\n   ⚠️  DIAGNOSTIC — Conformes avec montant_brut_sans_ind_sans_alloc < "
               f"{SEUIL_DIAGNOSTIC:,} FCFA : {n_suspects:,} observations")
 
         # Résumé par GRADE × bareme × min_bareme
         cols_id = [c for c in ["matricule", "mois_annee", "GRADE", "bareme",
-                                "montant_brut_bareme", "min_bareme", "max_bareme",
-                                "montant_brut_bareme_source"]
+                                "montant_brut_sans_ind_sans_alloc", "min_bareme", "max_bareme",
+                                "montant_brut_sans_ind_sans_alloc_source"]
                    if c in base_gv.columns]
         apercu = (
             suspects
             .select(cols_id)
-            .sort(["montant_brut_bareme"])
+            .sort(["montant_brut_sans_ind_sans_alloc"])
         )
         print(f"   Détail (jusqu'à 20 lignes) :")
         print(apercu.head(20))
@@ -462,8 +537,8 @@ if cols_diag.issubset(set(base_gv.columns)):
             .group_by([c for c in ["GRADE", "bareme", "min_bareme"] if c in suspects.columns])
             .agg([
                 pl.len().alias("nb_obs"),
-                pl.col("montant_brut_bareme").min().alias("montant_min"),
-                pl.col("montant_brut_bareme").max().alias("montant_max"),
+                pl.col("montant_brut_sans_ind_sans_alloc").min().alias("montant_min"),
+                pl.col("montant_brut_sans_ind_sans_alloc").max().alias("montant_max"),
             ])
             .sort("nb_obs", descending=True)
         )
@@ -494,9 +569,9 @@ print()
 agg_col   = "cle_unique" if MODE_SALAIRE_BRUT else "matricule"
 if agg_col not in base_gv.columns:
     agg_col = "matricule"
-print(f"3. Agrégation par {agg_col} → montant_brut_bareme...")
+print(f"3. Agrégation par {agg_col} → montant_brut_sans_ind_sans_alloc...")
 
-# montant_brut_bareme est la référence directe — pas d'alias intermédiaire
+# montant_brut_sans_ind_sans_alloc est la référence directe — pas d'alias intermédiaire
 
 # MOIS label si absent
 if "MOIS" not in base_gv.columns and "MOIS_NUM" in base_gv.columns:
@@ -517,7 +592,7 @@ base_agrege = (
     base_gv
     .group_by(cols_agg)
     .agg([
-        pl.col("montant_brut_bareme").first().alias("montant_brut_bareme"),
+        pl.col("montant_brut_sans_ind_sans_alloc").first().alias("montant_brut_sans_ind_sans_alloc"),
         pl.col("montant_brut_total").first().alias("montant_brut_total")
           if "montant_brut_total" in base_gv.columns
           else pl.lit(None).cast(pl.Float64).alias("montant_brut_total"),
@@ -549,29 +624,71 @@ base_agrege = (
 base_gv = base_gv.drop("GRADE_ORDER")
 
 if not INCLURE_ZEROS:
-    base_agrege = base_agrege.filter(pl.col("montant_brut_bareme") > 0)
-base_agrege = base_agrege.filter(pl.col("montant_brut_bareme").is_not_null())
+    base_agrege = base_agrege.filter(pl.col("montant_brut_sans_ind_sans_alloc") > 0)
+base_agrege = base_agrege.filter(pl.col("montant_brut_sans_ind_sans_alloc").is_not_null())
 
-print(f"   {len(base_agrege):,} observations agrégées (matricule × période)\n")
+print(f"   M1 : {len(base_agrege):,} observations agrégées (matricule × période)")
+
+# ── Agrégation M2 ────────────────────────────────────────────────────
+if M2_ACTIVE and len(base_gv_m2) > 0:
+    base_gv_m2 = base_gv_m2.with_columns(
+        pl.col("GRADE").map_elements(grade_order_value, return_dtype=pl.Int32)
+        .alias("GRADE_ORDER")
+    )
+    agg_col_m2 = agg_col if agg_col in base_gv_m2.columns else "matricule"
+    cols_agg_m2 = ["ANNEE", "MOIS_NUM", "MOIS", agg_col_m2]
+    base_agrege_m2 = (
+        base_gv_m2
+        .group_by(cols_agg_m2)
+        .agg([
+            pl.col("montant_brut_total").first().alias("montant_brut_total"),
+            pl.col("NB_POSTES").first().alias("NB_POSTES")
+              if "NB_POSTES" in base_gv_m2.columns
+              else pl.lit(1).alias("NB_POSTES"),
+            pl.col("GRADE").sort_by("GRADE_ORDER", descending=True).first().alias("GRADE_PRINCIPAL"),
+            pl.col("SEXE_STD").first().alias("SEXE_STD")
+              if "SEXE_STD" in base_gv_m2.columns
+              else pl.lit("Non renseigné").alias("SEXE_STD"),
+            pl.col("Code_CITP").first().alias("Code_CITP")
+              if "Code_CITP" in base_gv_m2.columns
+              else pl.lit(None).cast(pl.Utf8).alias("Code_CITP"),
+            pl.col("Metier_CITP").first().alias("Metier_CITP")
+              if "Metier_CITP" in base_gv_m2.columns
+              else pl.lit(None).cast(pl.Utf8).alias("Metier_CITP"),
+            pl.col("bareme").first().alias("bareme")
+              if "bareme" in base_gv_m2.columns
+              else pl.lit(None).cast(pl.Utf8).alias("bareme"),
+        ])
+    )
+    base_gv_m2 = base_gv_m2.drop("GRADE_ORDER")
+    base_agrege_m2 = base_agrege_m2.filter(pl.col("montant_brut_total").is_not_null())
+    if not INCLURE_ZEROS:
+        base_agrege_m2 = base_agrege_m2.filter(pl.col("montant_brut_total") > 0)
+    print(f"   M2 : {len(base_agrege_m2):,} observations agrégées (matricule × période)")
+
+print()
 
 # ============================================================
 # 3b. WINSORISATION SUR MONTANT_BRUT_TOTAL
 # ============================================================
 
-value_col_indic = "montant_brut_bareme"
+value_col_indic = "montant_brut_sans_ind_sans_alloc"
 
-if SEUIL_WINS is not None and "montant_brut_total" in base_agrege.columns:
+# Winsorisation appliquée sur base_agrege_m2 (M2) car c'est montant_brut_total
+# qui est utilisé pour les indicateurs barème/secteur.
+if SEUIL_WINS is not None and M2_ACTIVE and len(base_agrege_m2) > 0 \
+        and "montant_brut_total" in base_agrege_m2.columns:
     wins_full     = [c for c in ["ANNEE", "MOIS_NUM", "GRADE_PRINCIPAL", "Code_CITP"]
-                     if c in base_agrege.columns]
+                     if c in base_agrege_m2.columns]
     wins_fallback = [c for c in ["ANNEE", "MOIS_NUM", "GRADE_PRINCIPAL"]
-                     if c in base_agrege.columns]
-    print(f"3b. Winsorisation MONTANT_BRUT_TOTAL "
+                     if c in base_agrege_m2.columns]
+    print(f"3b. Winsorisation MONTANT_BRUT_TOTAL sur M2 "
           f"(P{int(SEUIL_WINS*100)}/P{int((1-SEUIL_WINS)*100)}) "
           f"— seuil groupe : {MIN_OBS_WINS} obs...")
-    print(f"   Clusters principaux : ANNEE × MOIS × GRADE × CITP")
-    print(f"   Repli               : ANNEE × MOIS × GRADE")
+    print(f"   Population  : conformes Statut_Total (M2) — {len(base_agrege_m2):,} obs")
+    print(f"   Clusters    : ANNEE × MOIS × GRADE × CITP  |  repli : ANNEE × MOIS × GRADE")
 
-    base_agrege = base_agrege.with_columns([
+    base_agrege_m2 = base_agrege_m2.with_columns([
         pl.len().over(wins_full).alias("_n_citp"),
         pl.col("montant_brut_total")
           .quantile(SEUIL_WINS, interpolation="nearest")
@@ -587,32 +704,92 @@ if SEUIL_WINS is not None and "montant_brut_total" in base_agrege.columns:
           .over(wins_fallback).alias("_ph_grade"),
     ])
 
-    n_obs_citp  = int((base_agrege["_n_citp"] >= MIN_OBS_WINS).sum())
-    n_obs_grade = len(base_agrege) - n_obs_citp
+    n_obs_citp  = int((base_agrege_m2["_n_citp"] >= MIN_OBS_WINS).sum())
+    n_obs_grade = len(base_agrege_m2) - n_obs_citp
 
-    base_agrege = base_agrege.with_columns(
+    base_agrege_m2 = base_agrege_m2.with_columns(
         pl.when(pl.col("_n_citp") >= MIN_OBS_WINS)
         .then(pl.col("montant_brut_total").clip(pl.col("_pb_citp"), pl.col("_ph_citp")))
         .otherwise(pl.col("montant_brut_total").clip(pl.col("_pb_grade"), pl.col("_ph_grade")))
         .alias("montant_brut_total_W")
     ).drop(["_n_citp", "_pb_citp", "_ph_citp", "_pb_grade", "_ph_grade"])
 
-    n_modif = int((base_agrege["montant_brut_total_W"] != base_agrege["montant_brut_total"]).sum())
-    n_total_agrege = len(base_agrege)
-    pct_modif = (100 * n_modif / n_total_agrege) if n_total_agrege > 0 else 0.0
-    print(f"   Groupe année × mois × grade × CITP (≥{MIN_OBS_WINS} obs) : {n_obs_citp:,} obs")
-    print(f"   Repli  année × mois × grade         (<{MIN_OBS_WINS} obs) : {n_obs_grade:,} obs")
+    n_modif = int((base_agrege_m2["montant_brut_total_W"] != base_agrege_m2["montant_brut_total"]).sum())
+    n_total_m2 = len(base_agrege_m2)
+    pct_modif = (100 * n_modif / n_total_m2) if n_total_m2 > 0 else 0.0
+    print(f"   Groupe ANNEE × MOIS × GRADE × CITP (≥{MIN_OBS_WINS} obs) : {n_obs_citp:,} obs")
+    print(f"   Repli  ANNEE × MOIS × GRADE         (<{MIN_OBS_WINS} obs) : {n_obs_grade:,} obs")
     print(f"   Observations écrêtées : {n_modif:,}  ({pct_modif:.2f}%)")
-    print(f"   → montant_brut_total_W : winsorisé, disponible pour usage futur")
-    print(f"   → Indicateurs Excel    : montant_brut_bareme (non winsorisé)\n")
+    print(f"   → montant_brut_total_W disponible dans base_agrege_m2 pour usage futur\n")
 elif SEUIL_WINS is not None:
-    print(f"3b. ⚠️  montant_brut_total absent — winsorisation ignorée\n")
+    print(f"3b. Winsorisation ignorée "
+          f"({'M2 inactif' if not M2_ACTIVE else 'base_agrege_m2 vide ou montant_brut_total absent'})\n")
 
 # ============================================================
-# 4. INDICATEURS SUR montant_brut_bareme
+# 3c. EFFECTIFS UNIQUES PAR GROUPE SUR LA PÉRIODE COMPLÈTE
+# ============================================================
+# Pour le sommaire : compter les agents uniques (matricule) sur l'ensemble
+# de la période, pas la somme des effectifs mensuels.
+# Un agent présent 24 mois compte pour 1, pas pour 24.
+
+print("3c. Calcul effectifs uniques par groupe (période complète)...")
+
+col_id = "matricule" if "matricule" in base_gv.columns else agg_col
+
+eff_unique_grade = (
+    base_gv
+    .group_by("GRADE_PRINCIPAL" if "GRADE_PRINCIPAL" in base_gv.columns else "GRADE")
+    .agg(pl.col(col_id).n_unique().alias("nb_agents_uniques"))
+    .rename({"GRADE_PRINCIPAL" if "GRADE_PRINCIPAL" in base_gv.columns else "GRADE": "groupe_valeur"})
+    .with_columns(pl.lit("GRADE").alias("groupe_type"))
+) if "GRADE" in base_gv.columns else pl.DataFrame()
+
+eff_unique_sexe = (
+    base_gv
+    .filter(pl.col("SEXE_STD").is_not_null())
+    .group_by("SEXE_STD")
+    .agg(pl.col(col_id).n_unique().alias("nb_agents_uniques"))
+    .rename({"SEXE_STD": "groupe_valeur"})
+    .with_columns(pl.lit("SEXE").alias("groupe_type"))
+) if "SEXE_STD" in base_gv.columns else pl.DataFrame()
+
+eff_unique_citp = (
+    base_gv
+    .filter(pl.col("Code_CITP").is_not_null() & (pl.col("Code_CITP") != "Non renseigné"))
+    .group_by("Code_CITP")
+    .agg(pl.col(col_id).n_unique().alias("nb_agents_uniques"))
+    .rename({"Code_CITP": "groupe_valeur"})
+    .with_columns(pl.lit("CITP").alias("groupe_type"))
+) if "Code_CITP" in base_gv.columns else pl.DataFrame()
+
+eff_unique_bareme = (
+    base_gv
+    .filter(pl.col("bareme").is_not_null())
+    .group_by("bareme")
+    .agg(pl.col(col_id).n_unique().alias("nb_agents_uniques"))
+    .rename({"bareme": "groupe_valeur"})
+    .with_columns(pl.lit("BAREME").alias("groupe_type"))
+) if "bareme" in base_gv.columns else pl.DataFrame()
+
+# Table globale unique — toutes les dimensions
+frames_eff = [f for f in [eff_unique_grade, eff_unique_sexe, eff_unique_citp, eff_unique_bareme]
+              if len(f) > 0]
+if frames_eff:
+    effectifs_uniques_periode = pl.concat(frames_eff, how="diagonal")
+else:
+    effectifs_uniques_periode = pl.DataFrame({"groupe_type": [], "groupe_valeur": [],
+                                               "nb_agents_uniques": []})
+
+# Total global unique
+total_agents_uniques = int(base_gv[col_id].n_unique()) if col_id in base_gv.columns else 0
+print(f"   Total agents uniques sur la période : {total_agents_uniques:,}")
+print(f"   Lignes table effectifs uniques : {len(effectifs_uniques_periode):,}\n")
+
+# ============================================================
+# 4. INDICATEURS SUR montant_brut_sans_ind_sans_alloc
 # ============================================================
 
-print("4. Calcul indicateurs montant_brut_bareme...")
+print("4. Calcul indicateurs montant_brut_sans_ind_sans_alloc...")
 
 indic_grade = compute_indicators(
     base_agrege, ["ANNEE", "MOIS_NUM", "MOIS", "GRADE_PRINCIPAL"], value_col_indic
@@ -632,67 +809,80 @@ if "Code_CITP" in base_agrege.columns:
 else:
     indic_citp = pl.DataFrame()
 
-# Ventilations barème
-indic_bareme       = pl.DataFrame()
-indic_bareme_grade = pl.DataFrame()
-indic_bareme_sexe  = pl.DataFrame()
+# Ventilations barème : calculées en section 4b depuis les conformes Statut_Total (M2)
+# Population M1 (Statut conforme) → grade / CITP / sexe uniquement
 
-if BAREME_DISPONIBLE:
-    base_b = base_agrege.filter(pl.col("bareme").is_not_null())
-    indic_bareme = compute_indicators(
-        base_b, ["ANNEE", "MOIS_NUM", "MOIS", "bareme"], value_col_indic
-    )
-    indic_bareme_grade = compute_indicators(
-        base_b, ["ANNEE", "MOIS_NUM", "MOIS", "bareme", "GRADE_PRINCIPAL"], value_col_indic
-    )
-    indic_bareme_sexe = compute_indicators(
-        base_b, ["ANNEE", "MOIS_NUM", "MOIS", "bareme", "SEXE_STD"], value_col_indic
-    )
+total_indic = len(indic_grade) + len(indic_grade_sexe) + len(indic_citp)
+print(f"   M1 — Grade            : {len(indic_grade):,} lignes")
+print(f"   M1 — Grade × Sexe     : {len(indic_grade_sexe):,} lignes")
+print(f"   M1 — CITP             : {len(indic_citp):,} lignes")
+print(f"   M1 — Total            : {total_indic:,} lignes")
 
-total_indic = (len(indic_grade) + len(indic_grade_sexe) + len(indic_citp)
-               + len(indic_bareme) + len(indic_bareme_grade) + len(indic_bareme_sexe))
-print(f"   Grade            : {len(indic_grade):,} lignes")
-print(f"   Grade × Sexe     : {len(indic_grade_sexe):,} lignes")
-print(f"   CITP             : {len(indic_citp):,} lignes")
-if BAREME_DISPONIBLE:
-    print(f"   Barème           : {len(indic_bareme):,} lignes")
-    print(f"   Barème × Grade   : {len(indic_bareme_grade):,} lignes")
-    print(f"   Barème × Sexe    : {len(indic_bareme_sexe):,} lignes")
-print(f"   Total            : {total_indic:,} lignes\n")
+# ── Indicateurs Méthodo 2 — barème / secteur uniquement ──────────────────
+# Population : conformes Statut_Total (M2)
+# Variable   : montant_brut_total
+# Périmètre  : barème × grade × sexe uniquement
+#              (grade / CITP / sexe sont produits en M1)
+indic_bareme_m2      = pl.DataFrame()
+indic_bareme_grade_m2 = pl.DataFrame()
+indic_bareme_sexe_m2 = pl.DataFrame()
+
+if M2_ACTIVE and len(base_agrege_m2) > 0 and BAREME_DISPONIBLE:
+    print(f"\n4b. Calcul indicateurs barème — Méthodo 2"
+          f" (montant_brut_total, conformes Statut_Total)...")
+    if "bareme" in base_agrege_m2.columns:
+        base_b_m2 = base_agrege_m2.filter(
+            pl.col("bareme").is_not_null() & pl.col("montant_brut_total").is_not_null()
+        )
+        indic_bareme_m2 = compute_indicators(
+            base_b_m2, ["ANNEE", "MOIS_NUM", "MOIS", "bareme"], "montant_brut_total"
+        )
+        indic_bareme_grade_m2 = compute_indicators(
+            base_b_m2, ["ANNEE", "MOIS_NUM", "MOIS", "bareme", "GRADE_PRINCIPAL"], "montant_brut_total"
+        )
+        indic_bareme_sexe_m2 = compute_indicators(
+            base_b_m2, ["ANNEE", "MOIS_NUM", "MOIS", "bareme", "SEXE_STD"], "montant_brut_total"
+        )
+        print(f"   M2 — Barème           : {len(indic_bareme_m2):,} lignes")
+        print(f"   M2 — Barème × Grade   : {len(indic_bareme_grade_m2):,} lignes")
+        print(f"   M2 — Barème × Sexe    : {len(indic_bareme_sexe_m2):,} lignes")
+print()
 
 # ============================================================
 # 5. INDICATEURS SALAIRE BRUT (pivot grade)
 # ============================================================
 
-print("5. Calcul indicateurs montant_brut_bareme (pivot grade)...")
+print("5. Calcul indicateurs montant_brut_sans_ind_sans_alloc (pivot grade)...")
 
 brut_moyen = (
     base_gv
     .group_by(["ANNEE", "MOIS_NUM", "MOIS", "GRADE"])
-    .agg(pl.col("montant_brut_bareme").mean().round(0).alias("montant_brut_bareme_moyen"))
+    .agg(pl.col("montant_brut_sans_ind_sans_alloc").mean().round(0).alias("montant_brut_sans_ind_sans_alloc_moyen"))
     .sort(["ANNEE", "MOIS_NUM"])
 )
 brut_median = (
     base_gv
     .group_by(["ANNEE", "MOIS_NUM", "MOIS", "GRADE"])
-    .agg(pl.col("montant_brut_bareme").median().round(0).alias("montant_brut_bareme_median"))
+    .agg(pl.col("montant_brut_sans_ind_sans_alloc").median().round(0).alias("montant_brut_sans_ind_sans_alloc_median"))
     .sort(["ANNEE", "MOIS_NUM"])
 )
 
 brut_moyen_wide = brut_moyen.pivot(
-    values="montant_brut_bareme_moyen",
+    values="montant_brut_sans_ind_sans_alloc_moyen",
     index=["ANNEE", "MOIS_NUM", "MOIS"],
     on="GRADE"
 ).sort(["ANNEE", "MOIS_NUM"])
 
 brut_median_wide = brut_median.pivot(
-    values="montant_brut_bareme_median",
+    values="montant_brut_sans_ind_sans_alloc_median",
     index=["ANNEE", "MOIS_NUM", "MOIS"],
     on="GRADE"
 ).sort(["ANNEE", "MOIS_NUM"])
 
-print(f"   Moyen  : {len(brut_moyen_wide)} lignes × {len(brut_moyen_wide.columns)} cols")
-print(f"   Médian : {len(brut_median_wide)} lignes × {len(brut_median_wide.columns)} cols\n")
+print(f"   M1 — Moyen  : {len(brut_moyen_wide)} lignes × {len(brut_moyen_wide.columns)} cols")
+print(f"   M1 — Médian : {len(brut_median_wide)} lignes × {len(brut_median_wide.columns)} cols")
+# Note : pas de pivot M2 par grade — les indicateurs grade sont M1 uniquement
+print()
 
 # ============================================================
 # 6. MULTI-POSTES
@@ -705,7 +895,7 @@ multi_detail = (
     .group_by(["ANNEE", "MOIS_NUM", "MOIS", "GRADE_PRINCIPAL", "NB_POSTES"])
     .agg([
         pl.len().alias("Effectif"),
-        pl.col("montant_brut_bareme").mean().round(0).alias("Revenu_moyen"),
+        pl.col("montant_brut_sans_ind_sans_alloc").mean().round(0).alias("Revenu_moyen"),
     ])
     .sort(["ANNEE", "MOIS_NUM", "GRADE_PRINCIPAL", "NB_POSTES"])
 )
@@ -734,7 +924,7 @@ distrib_postes = (
     .agg([
         pl.len().alias("Effectif"),
         (pl.len() * 100 / len(base_agrege)).round(2).alias("Pct"),
-        pl.col("montant_brut_bareme").mean().round(0).alias("Revenu_moyen"),
+        pl.col("montant_brut_sans_ind_sans_alloc").mean().round(0).alias("Revenu_moyen"),
     ])
     .sort("NB_POSTES")
 )
@@ -748,38 +938,48 @@ print(f"   Distribution globale : {len(distrib_postes)} lignes\n")
 
 anstat_data_par_annee: dict[int, tuple[dict, pl.DataFrame]] = {}
 
-if BAREME_DISPONIBLE:
-    print("7. Pré-calcul données MODELE_ANSTAT par année...")
+if BAREME_DISPONIBLE and M2_ACTIVE and len(base_gv_m2) > 0:
+    print("7. Pré-calcul données MODELE_ANSTAT par année (M2 — montant_brut_total)...")
+    # Source : conformes Statut_Total (M2), variable montant_brut_total
+    # Cohérence : les feuilles MODELE_ANSTAT sont des indicateurs secteur/barème
+    #             → même population et variable que les feuilles REVENU_Total_Bareme
+
+    # S'assurer que ANNEE est disponible dans base_gv_m2
+    if "ANNEE" not in base_gv_m2.columns and "mois_annee" in base_gv_m2.columns:
+        base_gv_m2 = base_gv_m2.with_columns(
+            pl.col("mois_annee").str.slice(2, 4).cast(pl.Int32, strict=False).alias("ANNEE")
+        )
+
     for annee in [2024, 2025]:
-        if annee not in ANNEES_ANALYSE:
+        if "ANNEE" in base_gv_m2.columns and annee not in base_gv_m2["ANNEE"].drop_nulls().unique().to_list():
             print(f"   ⚠️  Année {annee} absente de la période — ignorée")
             continue
 
-        base_gv_b_annee = base_gv.filter(
+        base_gv_b_annee = base_gv_m2.filter(
             (pl.col("ANNEE") == annee)
             & pl.col("bareme_detail").is_not_null()
-            & pl.col("montant_brut_bareme").is_not_null()
-            & (pl.col("montant_brut_bareme") > 0)
-        )
+            & pl.col("montant_brut_total").is_not_null()
+            & (pl.col("montant_brut_total") > 0)
+        ) if "bareme_detail" in base_gv_m2.columns else pl.DataFrame()
 
         if len(base_gv_b_annee) == 0:
-            print(f"   ⚠️  Aucune donnée barème pour {annee} — feuille ignorée")
+            print(f"   ⚠️  Aucune donnée barème M2 pour {annee} — feuille ignorée")
             continue
 
         global_brut_annee = base_gv_b_annee.select([
-            pl.col("montant_brut_bareme").min().round(0).alias("salaire_brut_min"),
-            pl.col("montant_brut_bareme").mean().round(0).alias("salaire_brut_moyen"),
-            pl.col("montant_brut_bareme").max().round(0).alias("salaire_brut_max"),
-            pl.col("montant_brut_bareme").median().round(0).alias("salaire_brut_mediane"),
+            pl.col("montant_brut_total").min().round(0).alias("salaire_brut_min"),
+            pl.col("montant_brut_total").mean().round(0).alias("salaire_brut_moyen"),
+            pl.col("montant_brut_total").max().round(0).alias("salaire_brut_max"),
+            pl.col("montant_brut_total").median().round(0).alias("salaire_brut_mediane"),
         ]).row(0, named=True)
 
         stats_annee = (
             base_gv_b_annee.group_by("bareme_detail")
             .agg([
-                pl.col("montant_brut_bareme").min().round(0).alias("salaire_brut_min"),
-                pl.col("montant_brut_bareme").mean().round(0).alias("salaire_brut_moyen"),
-                pl.col("montant_brut_bareme").max().round(0).alias("salaire_brut_max"),
-                pl.col("montant_brut_bareme").median().round(0).alias("salaire_brut_mediane"),
+                pl.col("montant_brut_total").min().round(0).alias("salaire_brut_min"),
+                pl.col("montant_brut_total").mean().round(0).alias("salaire_brut_moyen"),
+                pl.col("montant_brut_total").max().round(0).alias("salaire_brut_max"),
+                pl.col("montant_brut_total").median().round(0).alias("salaire_brut_mediane"),
                 pl.len().alias("nb_obs"),
             ])
             .sort("bareme_detail")
@@ -803,16 +1003,19 @@ ecrire_feuille(wb, "REVENU_Grade_Detail",      indic_grade)
 ecrire_feuille(wb, "REVENU_Grade_Sexe",         indic_grade_sexe)
 if len(indic_citp) > 0:
     ecrire_feuille(wb, "REVENU_CITP_Detail",    indic_citp)
-ecrire_feuille(wb, "montant_brut_bareme_Moyen",  brut_moyen_wide)
-ecrire_feuille(wb, "montant_brut_bareme_Median", brut_median_wide)
+ecrire_feuille(wb, "Sal_Bareme_Moyen",   brut_moyen_wide)   # montant_brut_sans_ind_sans_alloc moyen (pivot grade)
+ecrire_feuille(wb, "Sal_Bareme_Median",  brut_median_wide)  # montant_brut_sans_ind_sans_alloc médian (pivot grade)
 ecrire_feuille(wb, "MULTI_Par_Grade_NbPostes",  multi_effectif)
 ecrire_feuille(wb, "MULTI_Distribution",        distrib_postes)
 
-# --- Feuilles barème (si disponibles) ---
-if BAREME_DISPONIBLE:
-    ecrire_feuille(wb, "REVENU_Bareme_Detail",  indic_bareme)
-    ecrire_feuille(wb, "REVENU_Bareme_Grade",   indic_bareme_grade)
-    ecrire_feuille(wb, "REVENU_Bareme_Sexe",    indic_bareme_sexe)
+# --- Feuilles barème M2 (conformes Statut_Total, montant_brut_total) ---
+if BAREME_DISPONIBLE and M2_ACTIVE:
+    if len(indic_bareme_m2) > 0:
+        ecrire_feuille(wb, "REVENU_Total_Bareme",    indic_bareme_m2)
+    if len(indic_bareme_grade_m2) > 0:
+        ecrire_feuille(wb, "REVENU_Total_Bar_Grade", indic_bareme_grade_m2)
+    if len(indic_bareme_sexe_m2) > 0:
+        ecrire_feuille(wb, "REVENU_Total_Bar_Sexe",  indic_bareme_sexe_m2)
 
     for annee in [2024, 2025]:
         if annee not in anstat_data_par_annee:
@@ -827,7 +1030,22 @@ if BAREME_DISPONIBLE:
             stats_bareme_detail=stats_annee,
         )
 
-# Feuille RESUME_STATUT (distribution Statut de la base d'entrée)
+# Feuille EFFECTIFS_UNIQUES_PERIODE
+# Table de référence pour le sommaire : nb agents uniques par groupe sur la période
+if len(effectifs_uniques_periode) > 0:
+    eff_export = effectifs_uniques_periode.select(
+        ["groupe_type", "groupe_valeur", "nb_agents_uniques"]
+    ).sort(["groupe_type", "groupe_valeur"])
+    ecrire_feuille(wb, "EFFECTIFS_UNIQUES_PERIODE", eff_export)
+    # Ajouter aussi le total global comme métadonnée
+    ws_eff = wb["EFFECTIFS_UNIQUES_PERIODE"]
+    ws_eff.cell(row=len(eff_export) + 3, column=1, value="TOTAL_GLOBAL")
+    ws_eff.cell(row=len(eff_export) + 3, column=2, value="Tous groupes")
+    ws_eff.cell(row=len(eff_export) + 3, column=3, value=total_agents_uniques)
+
+# Note : feuilles barème M2 déjà écrites dans le bloc BAREME_DISPONIBLE ci-dessus
+
+# Feuille RESUME_STATUT (distribution Statut M1 de la base d'entrée)
 if "Statut" in base_avec_statut.columns:
     total = len(base_avec_statut)
     resume_statut = (
@@ -840,6 +1058,20 @@ if "Statut" in base_avec_statut.columns:
         .sort("Statut")
     )
     ecrire_feuille(wb, "RESUME_STATUT", resume_statut)
+
+# Feuille RESUME_STATUT_TOTAL (distribution Statut_Total M2)
+if "Statut_Total" in base_avec_statut.columns:
+    total = len(base_avec_statut)
+    resume_statut_total = (
+        base_avec_statut
+        .group_by("Statut_Total")
+        .agg(pl.len().alias("Effectif"))
+        .with_columns(
+            (pl.col("Effectif") * 100 / total).round(2).alias("Pourcentage (%)")
+        )
+        .sort("Statut_Total")
+    )
+    ecrire_feuille(wb, "RESUME_STATUT_TOTAL", resume_statut_total)
 
 # ── Vérification : au moins une feuille doit contenir des données ──
 feuilles_visibles  = [ws for ws in wb.worksheets if ws.sheet_state == "visible"]

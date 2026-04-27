@@ -1,13 +1,28 @@
 # ============================================================
-# PANEL ADMIN — ÉTAPE 7 : CALCUL DU STATUT BARÈME
+# PANEL ADMIN — ÉTAPE 7 : CALCUL DES STATUTS BARÈME
 # ============================================================
-# Calcule le statut barème (Conforme / Inférieur / Supérieur /
-# Cluster non déterminé) pour chaque agent fonctionnaire à partir
-# des fichiers Gold panel et du référentiel anstat_2025.
+# Calcule deux statuts de conformité au barème pour chaque agent
+# fonctionnaire à partir du Gold panel et du référentiel anstat_2025.
+#
+# Méthodo 1 — Statut (variable : montant_brut_sans_ind_sans_alloc)
+#   Salaire sans indemnités et sans allocation familiale
+#   (codes postes 124 + 228 + 271 + 425)
+#   Référence anstat_2025 : Salaire de Base + Résidence + Logement + Transport
+#   → montant_brut_sans_indemnites_sans_alloc
+#
+# Méthodo 2 — Statut_Total (variable : montant_brut_total)
+#   Salaire brut total Feuille 1, tous codes postes confondus
+#   Référence anstat_2025 : colonne "montant brut"
+#   → montant_brut_total_ref
+#
+# Pour chaque méthodo :
+#   - Calcul min/max par cluster (secteur × grade) depuis anstat_2025
+#   - Jointure sur le Gold panel
+#   - Classification : Conforme / Inférieur / Supérieur / Cluster non déterminé
+#   - Récupération ±5% : agents légèrement hors-barème reclassés Conforme
+#   - Distribution et tranches d'écart affichées avant et après récupération
 #
 # Prérequis : 06_compiler_panel.py doit avoir été exécuté.
-# Les colonnes GRADE et GRADE_SOURCE sont lues directement depuis
-# le Gold panel.
 #
 # Paramètres configurables :
 #   MODE_SALAIRE_BRUT : True  = agrégation par cle_unique (salaire brut)
@@ -18,11 +33,12 @@
 #                       False = salaire strictement > 0
 #
 # Sortie  : s3://gold/panel_admin/base_avec_statut.parquet
+#           (contient Statut + Statut_Total + min/max bornes des deux méthodos)
 #
 # Pipeline :
-#   07  (ce script)   → Calcul Statut barème → base_avec_statut.parquet
-#   07a               → Imputation hors-barème → base_avec_statut_corrigee.parquet
-#   07b               → Indicateurs salaires (conformes + imputés)
+#   07  (ce script) → Statut (M1) + Statut_Total (M2)  → base_avec_statut.parquet
+#   07a             → Imputation hors-barème M1 + M2   → base_avec_statut_corrigee.parquet
+#   07b             → Indicateurs salaires M1 + M2     → indicateurs_*.xlsx
 #
 # Dépendances :
 #   pip install polars boto3 python-dotenv openpyxl
@@ -96,11 +112,11 @@ GRADES_VALIDES = (
     [f"D{i}" for i in range(1, 4)]
 )
 
-# Composantes du salaire brut (codes F2, suffixe _F2 dans le Gold)
-COMPOSANTES_SALAIRE_NOMS = {"124_F2", "228_F2", "271_F2", "421_F2", "425_F2"}
+# Composantes du montant_brut_sans_ind_sans_alloc (codes F2, sans 421 allocation familiale)
+COMPOSANTES_SALAIRE_NOMS = {"124_F2", "228_F2", "271_F2", "425_F2"}
 
-# Codes poste éligibles pour le calcul du revenu (filtrage individus)
-CODES_POSTE_ELIGIBLES = {"124", "228", "271", "421", "425"}
+# Codes poste éligibles pour montant_brut_sans_ind_sans_alloc (sans 421 allocation familiale)
+CODES_POSTE_ELIGIBLES = {"124", "228", "271", "425"}
 
 # Code organisme à exclure de tous les traitements
 CODE_ORGANISME_EXCLUS = "59"
@@ -303,8 +319,10 @@ def grade_order_value(grade: str) -> int:
 def charger_anstat_2025() -> pl.DataFrame | None:
     """
     Charge le fichier anstat_2025.txt.xlsx depuis staging/referentiel/,
-    crée la colonne montant_brut_sans_indemnites =
-        salaire_de_base + résidence + logement + transport + allocation_familiale.
+    crée la colonne montant_brut_sans_indemnites_sans_alloc =
+        Salaire de Base + Résidence + Logement + Transport
+    Cohérence exacte avec montant_brut_sans_ind_sans_alloc côté Gold
+    (codes 124+228+271+425, sans allocation familiale code 421).
     Retourne None si le fichier est absent.
     """
     with tempfile.NamedTemporaryFile(suffix=".xlsx", delete=False) as tmp:
@@ -320,21 +338,14 @@ def charger_anstat_2025() -> pl.DataFrame | None:
     finally:
         os.unlink(tmp_path)
 
-    # Renommage de la colonne allocation
-    col_alloc = next((c for c in df.columns if "alloc" in c.lower()), None)
-    if col_alloc and col_alloc != "allocation_familiale":
-        df = df.rename({col_alloc: "allocation_familiale"})
-        print(f"     Renommage : '{col_alloc}' → 'allocation_familiale'")
-
-    # Mapping flexible des colonnes de composantes de salaire
+    # Composantes du salaire de référence = codes Gold 124+228+271+425
+    # allocation_familiale (code 421) exclue — branche No_allocation_Familiale
     patterns_composantes = {
-        "salaire_base":       [r"salaire.*base", r"base.*salaire", r"traitement.*base",
-                               r"^salaire$", r"^base$"],
-        "residence":          [r"r[eé]sidence", r"indem.*r[eé]s"],
-        "logement":           [r"logement", r"indem.*log"],
-        "transport":          [r"transport", r"indem.*transp"],
-        "allocation_famille": [r"alloc.*fam", r"fam.*alloc", r"allocation.*familiale",
-                               r"fam.*charge"],
+        "Salaire de Base": [r"salaire.*base", r"base.*salaire", r"traitement.*base",
+                            r"^salaire$", r"^base$"],
+        "Résidence":       [r"r[eé]sidence", r"indem.*r[eé]s"],
+        "Logement":        [r"logement", r"indem.*log"],
+        "Transport":       [r"transport", r"indem.*transp"],
     }
 
     def trouver_colonne(cols: list[str], patterns: list[str]) -> str | None:
@@ -356,7 +367,7 @@ def charger_anstat_2025() -> pl.DataFrame | None:
             print(f"     ⚠️  Composante '{nom}' non trouvée dans le fichier")
 
     if not composantes_trouvees:
-        print("   ⚠️  Aucune composante de salaire identifiée")
+        print("   ⚠️  Aucune composante de salaire identifiée dans anstat_2025")
         return None
 
     df = df.with_columns([
@@ -365,20 +376,47 @@ def charger_anstat_2025() -> pl.DataFrame | None:
     ])
     df = df.with_columns(
         pl.sum_horizontal([pl.col(c) for c in composantes_trouvees.values()])
-        .alias("montant_brut_sans_indemnites")
+        .alias("montant_brut_sans_indemnites_sans_alloc")
     )
 
-    n_non_null = int(df["montant_brut_sans_indemnites"].is_not_null().sum())
-    print(f"   montant_brut_sans_indemnites : {n_non_null:,} valeurs non nulles")
+    n_non_null = int(df["montant_brut_sans_indemnites_sans_alloc"].is_not_null().sum())
+    composantes_label = " + ".join(composantes_trouvees.keys())
+    print(f"   montant_brut_sans_indemnites_sans_alloc ({composantes_label}) : {n_non_null:,} valeurs")
+
+    # Montant brut TOTAL (tous codes postes) pour Méthodo 2
+    # Correspond à la colonne "Montant brut" du fichier anstat_2025
+    patterns_brut_total = [r"montant.*brut$", r"^brut$", r"salaire.*brut$", r"brut.*total"]
+    col_brut_total = trouver_colonne(df.columns, patterns_brut_total)
+    if col_brut_total and col_brut_total != "montant_brut_sans_indemnites_sans_alloc":
+        df = df.with_columns(
+            pl.col(col_brut_total).cast(pl.Float64, strict=False).alias("montant_brut_total_ref")
+        )
+        n_bt = int(df["montant_brut_total_ref"].is_not_null().sum())
+        print(f"   montant_brut_total_ref (Méthodo 2, col='{col_brut_total}') : {n_bt:,} valeurs")
+    else:
+        print(f"   ⚠️  Colonne 'Montant brut total' non trouvée dans anstat_2025 "
+              f"— Statut_Total ne sera pas calculé")
     return df
 
 
-def calculer_indicateurs_cluster(df_ref: pl.DataFrame) -> pl.DataFrame | None:
+def calculer_indicateurs_cluster(
+    df_ref: pl.DataFrame,
+    value_col: str = "montant_brut_sans_indemnites_sans_alloc",
+    prefix: str = "bareme",
+) -> pl.DataFrame | None:
     """
-    Calcule min, max, moyenne, médiane de montant_brut_sans_indemnites
-    par cluster (secteur, grade) dans le fichier de référence.
+    Calcule min et max de `value_col` par cluster (secteur × grade)
+    dans le fichier de référence anstat_2025.
+
+    Parameters
+    ----------
+    value_col : colonne de référence à utiliser (montant_brut_sans_indemnites_sans_alloc
+                pour Méthodo 1 / montant_brut_total_ref pour Méthodo 2)
+    prefix    : préfixe des colonnes de sortie min/max
+                → "bareme" produit min_bareme / max_bareme (compat 07a)
+                → "total"  produit min_total  / max_total
     """
-    if "montant_brut_sans_indemnites" not in df_ref.columns:
+    if value_col not in df_ref.columns:
         return None
 
     cols_ref = df_ref.columns
@@ -415,14 +453,13 @@ def calculer_indicateurs_cluster(df_ref: pl.DataFrame) -> pl.DataFrame | None:
 
     indic = (
         df_ref
-        .filter(pl.col("montant_brut_sans_indemnites").is_not_null()
-                & (pl.col("montant_brut_sans_indemnites") > 0))
+        .filter(pl.col(value_col).is_not_null() & (pl.col(value_col) > 0))
         .group_by(cluster_cols)
         .agg([
-            pl.col("montant_brut_sans_indemnites").min().round(0).alias("min_bareme"),
-            pl.col("montant_brut_sans_indemnites").max().round(0).alias("max_bareme"),
-            pl.col("montant_brut_sans_indemnites").mean().round(0).alias("moy_bareme"),
-            pl.col("montant_brut_sans_indemnites").median().round(0).alias("med_bareme"),
+            pl.col(value_col).min().round(0).alias(f"min_{prefix}"),
+            pl.col(value_col).max().round(0).alias(f"max_{prefix}"),
+            pl.col(value_col).mean().round(0).alias(f"moy_{prefix}"),
+            pl.col(value_col).median().round(0).alias(f"med_{prefix}"),
             pl.len().alias("nb_obs_ref"),
         ])
         .sort(cluster_cols)
@@ -438,6 +475,70 @@ def calculer_indicateurs_cluster(df_ref: pl.DataFrame) -> pl.DataFrame | None:
 
     print(f"   Indicateurs par cluster : {len(indic):,} lignes")
     return indic, col_secteur, col_grade
+
+
+def _print_tranches(
+    df: "pl.DataFrame",
+    statut_col: str,
+    value_col: str,
+    min_col: str,
+    max_col: str,
+    avant_recuperation: bool = True,
+) -> None:
+    """
+    Affiche les stats d'écart par tranches pour les agents hors-barème.
+    - avant_recuperation=True  → note "← seront récupérés" sur la tranche < 5%
+    - avant_recuperation=False → la tranche < 5% est vide (déjà récupérés)
+    """
+    STATUTS_HORS  = ["Inférieur au minimum du barème", "Supérieur au maximum du barème"]
+    ORDRE_TRANCHES = ["< 5%", "5% – 10%", "10% – 25%", "25% – 50%", "≥ 50%"]
+
+    cols_ok = {value_col, min_col, max_col, statut_col}.issubset(set(df.columns))
+    if not cols_ok:
+        return
+
+    hors = df.filter(pl.col(statut_col).is_in(STATUTS_HORS))
+    if len(hors) == 0:
+        print(f"   → Aucun agent hors-barème")
+        return
+
+    for statut_label, borne_col in [
+        ("Inférieur au minimum du barème", min_col),
+        ("Supérieur au maximum du barème", max_col),
+    ]:
+        sous = hors.filter(pl.col(statut_col) == statut_label)
+        n_sous = len(sous)
+        if n_sous == 0:
+            continue
+        if statut_label == "Inférieur au minimum du barème":
+            ecart_expr = (pl.col(borne_col) - pl.col(value_col)) / pl.col(borne_col) * 100
+        else:
+            ecart_expr = (pl.col(value_col) - pl.col(borne_col)) / pl.col(borne_col) * 100
+        sous = (
+            sous
+            .with_columns(ecart_expr.alias("_ecart_pct"))
+            .with_columns(
+                pl.when(pl.col("_ecart_pct") < 5) .then(pl.lit("< 5%"))
+                .when(pl.col("_ecart_pct") < 10)  .then(pl.lit("5% – 10%"))
+                .when(pl.col("_ecart_pct") < 25)  .then(pl.lit("10% – 25%"))
+                .when(pl.col("_ecart_pct") < 50)  .then(pl.lit("25% – 50%"))
+                .otherwise(pl.lit("≥ 50%"))
+                .alias("_tranche")
+            )
+        )
+        counts = {
+            row["_tranche"]: row["count"]
+            for row in sous["_tranche"].value_counts().iter_rows(named=True)
+        }
+        print(f"     Tranches d'écart — {statut_label} ({n_sous:,} agents) :")
+        for t in ORDRE_TRANCHES:
+            n_t = counts.get(t, 0)
+            pct = 100 * n_t / n_sous if n_sous > 0 else 0.0
+            if t == "< 5%" and n_t > 0:
+                note = "  ← seront récupérés (règle ±5%)" if avant_recuperation else "  ← vide (déjà récupérés)"
+            else:
+                note = ""
+            print(f"       {t:<12} : {n_t:>10,}  ({pct:.1f}%){note}")
 
 
 # ============================================================
@@ -528,28 +629,28 @@ base = base.with_columns(
 )
 
 # ============================================================
-# 4. VÉRIFICATION montant_brut_bareme
+# 4. VÉRIFICATION montant_brut_sans_ind_sans_alloc
 # ============================================================
 
-print("4. Vérification montant_brut_bareme (pré-calculé en étape 06)...")
+print("4. Vérification montant_brut_sans_ind_sans_alloc (pré-calculé en étape 06)...")
 
-if "montant_brut_bareme" not in base.columns:
+if "montant_brut_sans_ind_sans_alloc" not in base.columns:
     raise RuntimeError(
-        "Colonne montant_brut_bareme absente du Gold panel.\n"
+        "Colonne montant_brut_sans_ind_sans_alloc absente du Gold panel.\n"
         "Vérifiez que l'étape 06_compiler_panel.py a été exécutée avec les colonnes F2."
     )
 
 # Cast en Float64 sur place (la colonne peut arriver en Int64 depuis le parquet)
 base = base.with_columns(
-    pl.col("montant_brut_bareme").cast(pl.Float64, strict=False)
+    pl.col("montant_brut_sans_ind_sans_alloc").cast(pl.Float64, strict=False)
 )
 
 n_total  = len(base)
-n_pos    = int((base["montant_brut_bareme"] > 0).sum())
-n_nul    = int(base["montant_brut_bareme"].is_null().sum())
-n_zero   = int((base["montant_brut_bareme"] == 0).sum())
-n_neg    = int((base["montant_brut_bareme"] < 0).sum())
-print(f"   Source : montant_brut_bareme (postes 124/228/271/421/425, pré-agrégé en 06)")
+n_pos    = int((base["montant_brut_sans_ind_sans_alloc"] > 0).sum())
+n_nul    = int(base["montant_brut_sans_ind_sans_alloc"].is_null().sum())
+n_zero   = int((base["montant_brut_sans_ind_sans_alloc"] == 0).sum())
+n_neg    = int((base["montant_brut_sans_ind_sans_alloc"] < 0).sum())
+print(f"   Source : montant_brut_sans_ind_sans_alloc (postes 124+228+271+425, sans allocation familiale 421, pré-agrégé en 06)")
 print(f"   Salaires > 0  : {n_pos:,} ({100*n_pos/n_total:.1f}%)")
 print(f"   Nuls (null)   : {n_nul:,} ({100*n_nul/n_total:.1f}%)")
 print(f"   Zéros (= 0)   : {n_zero:,} ({100*n_zero/n_total:.1f}%)")
@@ -630,7 +731,7 @@ if INCLURE_ZEROS:
     base_gv = base.filter(pl.col("GRADE").is_in(GRADES_VALIDES))
 else:
     base_gv = base.filter(
-        pl.col("GRADE").is_in(GRADES_VALIDES) & (pl.col("montant_brut_bareme") > 0)
+        pl.col("GRADE").is_in(GRADES_VALIDES) & (pl.col("montant_brut_sans_ind_sans_alloc") > 0)
     )
 
 n_gv = len(base_gv)
@@ -673,55 +774,61 @@ if "bareme" in base_gv.columns:
     base_gv = base_gv.filter(pl.col("bareme") != "police")
     print(f"   Exclusion police (NF) : {n_police:,} agents retirés")
 
-# --- Exclusion montant_brut_bareme = 0 ou null ---
-if "montant_brut_bareme" in base_gv.columns:
+# --- Exclusion montant_brut_sans_ind_sans_alloc = 0 ou null ---
+if "montant_brut_sans_ind_sans_alloc" in base_gv.columns:
     n_zero = int(
-        (base_gv["montant_brut_bareme"].is_null() | (base_gv["montant_brut_bareme"] == 0)).sum()
+        (base_gv["montant_brut_sans_ind_sans_alloc"].is_null() | (base_gv["montant_brut_sans_ind_sans_alloc"] == 0)).sum()
     )
     base_gv = base_gv.filter(
-        pl.col("montant_brut_bareme").is_not_null() & (pl.col("montant_brut_bareme") != 0)
+        pl.col("montant_brut_sans_ind_sans_alloc").is_not_null() & (pl.col("montant_brut_sans_ind_sans_alloc") != 0)
     )
-    print(f"   Exclusion sans salaire (montant_brut_bareme ≤ 0) : {n_zero:,} agents retirés")
+    print(f"   Exclusion sans salaire (montant_brut_sans_ind_sans_alloc ≤ 0) : {n_zero:,} agents retirés")
 
 print(f"   Base après exclusions : {len(base_gv):,} agents")
 print()
 
 # ============================================================
-# 7c. STATUT BARÈME
+# 7c. STATUT BARÈME — MÉTHODO 1
 # ============================================================
 
-print("7c. Calcul Statut barème...")
+print("7c. Statut (Méthodo 1)")
+print("   Objectif  : vérifier si le salaire de base de l'agent (sans indemnités ni")
+print("               allocation familiale) est conforme au barème de son grade et secteur.")
+print("   Gold      : montant_brut_sans_ind_sans_alloc  (codes postes 124+228+271+425)")
+print("   Référence : montant_brut_sans_indemnites_sans_alloc  (Salaire de Base + Résidence")
+print("               + Logement + Transport  —  source anstat_2025)")
 print()
 
-print("  7c-1. Chargement référentiel anstat_2025.txt.xlsx...")
+print("  7c-1. Chargement du référentiel anstat_2025...")
 df_anstat_ref   = charger_anstat_2025()
 indic_cluster   = None
 col_secteur_ref = None
 col_grade_ref   = None
 
-if df_anstat_ref is not None and "montant_brut_sans_indemnites" in df_anstat_ref.columns:
-    print("  7c-2. Calcul indicateurs par cluster (secteur, grade)...")
-    result_cluster = calculer_indicateurs_cluster(df_anstat_ref)
+if df_anstat_ref is not None and "montant_brut_sans_indemnites_sans_alloc" in df_anstat_ref.columns:
+    print("  7c-2. Calcul des bornes de conformité par cluster (secteur × grade) depuis anstat_2025...")
+    result_cluster = calculer_indicateurs_cluster(
+        df_anstat_ref, value_col="montant_brut_sans_indemnites_sans_alloc", prefix="bareme"
+    )
     if result_cluster is not None:
         indic_cluster, col_secteur_ref, col_grade_ref = result_cluster
 
 base_avec_statut = pl.DataFrame()
+# Initialisations — utilisées en 7c-3 ET en 7d (Statut_Total)
+col_secteur_main = next(
+    (c for c in ["bareme", "organisme", "CODE_ORGANISME"] if c in base_gv.columns), None
+)
+col_grade_main = next(
+    (c for c in ["GRADE", "CODE_GRADE", "grade"] if c in base_gv.columns), None
+)
 
-if indic_cluster is not None and "montant_brut_bareme" in base_gv.columns:
-    print("  7c-3. Création variable Statut sur base_gv (montant_brut_bareme)...")
+if indic_cluster is not None and "montant_brut_sans_ind_sans_alloc" in base_gv.columns:
+    print("  7c-3. Attribution du Statut à chaque agent — comparaison au barème de son cluster (secteur × grade)...")
 
     MAPPING_BAREME_ANSTAT = {
         "Cadre-Sup-Santé Generaliste & Specialiste" : "Cadre-Sup-Santé",
     }
-
-    col_secteur_main = next(
-        (c for c in ["bareme", "organisme", "CODE_ORGANISME"] if c in base_gv.columns),
-        None,
-    )
-    col_grade_main = next(
-        (c for c in ["GRADE", "CODE_GRADE", "grade"] if c in base_gv.columns),
-        None,
-    )
+    # col_secteur_main et col_grade_main initialisés avant le bloc (réutilisés en 7d)
 
     if col_secteur_main and col_secteur_main in base_gv.columns:
         base_gv = base_gv.with_columns(
@@ -747,7 +854,7 @@ if indic_cluster is not None and "montant_brut_bareme" in base_gv.columns:
         left_on  = [pair[1] for pair in cle_join_cluster]
         right_on = [pair[0] for pair in cle_join_cluster]
 
-        print(f"   Clés jointure — Gold : {left_on}  |  Référentiel : {right_on}")
+        print(f"   Clés de jointure Gold ↔ Référentiel : {left_on} ↔ {right_on}")
 
         for l, r in zip(left_on, right_on):
             set_gold = set(base_gv[l].drop_nulls().unique().to_list())
@@ -793,9 +900,9 @@ if indic_cluster is not None and "montant_brut_bareme" in base_gv.columns:
         base_gv = base_gv.with_columns(
             pl.when(pl.col("min_bareme").is_null() | pl.col("max_bareme").is_null())
             .then(pl.lit("Cluster non déterminé"))
-            .when(pl.col("montant_brut_bareme") < pl.col("min_bareme"))
+            .when(pl.col("montant_brut_sans_ind_sans_alloc") < pl.col("min_bareme"))
             .then(pl.lit("Inférieur au minimum du barème"))
-            .when(pl.col("montant_brut_bareme") > pl.col("max_bareme"))
+            .when(pl.col("montant_brut_sans_ind_sans_alloc") > pl.col("max_bareme"))
             .then(pl.lit("Supérieur au maximum du barème"))
             .otherwise(pl.lit("Conforme au barème"))
             .alias("Statut")
@@ -803,7 +910,11 @@ if indic_cluster is not None and "montant_brut_bareme" in base_gv.columns:
         base_avec_statut = base_gv.clone()
     else:
         print("   ⚠️  Jointure cluster impossible — Statut non calculé")
-        base_gv = base_gv.with_columns(pl.lit("Cluster non déterminé").alias("Statut"))
+        base_gv = base_gv.with_columns([
+            pl.lit("Cluster non déterminé").alias("Statut"),
+            pl.lit(None).cast(pl.Float64).alias("min_bareme"),
+            pl.lit(None).cast(pl.Float64).alias("max_bareme"),
+        ])
         base_avec_statut = base_gv.clone()
 
     # --- Vérification para-militaires ---
@@ -816,117 +927,220 @@ if indic_cluster is not None and "montant_brut_bareme" in base_gv.columns:
 
     n_statut  = base_gv["Statut"].value_counts().sort("Statut")
     n_total_s = n_statut["count"].sum()
-    print(f"   Distribution Statut (avant récupération) :")
+    print(f"\n   ── Statut M1 · avant repêchage ±5% ──────────────────────────────────")
+    print(f"   (salaire sans ind. ni alloc. vs barème anstat_2025 par secteur × grade)")
     for row in n_statut.iter_rows(named=True):
         pct = 100 * row["count"] / n_total_s if n_total_s > 0 else 0.0
         print(f"     {row['Statut']:<40} : {row['count']:>10,}  ({pct:.1f}%)")
+    _print_tranches(
+        base_gv, "Statut", "montant_brut_sans_ind_sans_alloc",
+        "min_bareme", "max_bareme", avant_recuperation=True
+    )
 
     # --- Récupération agents hors-barème à moins de 5% des bornes ---
-    cols_ok = {"montant_brut_bareme", "min_bareme", "max_bareme"}.issubset(set(base_gv.columns))
+    cols_ok = {"montant_brut_sans_ind_sans_alloc", "min_bareme", "max_bareme"}.issubset(set(base_gv.columns))
     if cols_ok:
         n_rec_inf = int(
             base_gv.filter(
                 (pl.col("Statut") == "Inférieur au minimum du barème") &
-                ((pl.col("min_bareme") - pl.col("montant_brut_bareme")) / pl.col("min_bareme") * 100 < 5)
+                ((pl.col("min_bareme") - pl.col("montant_brut_sans_ind_sans_alloc")) / pl.col("min_bareme") * 100 < 5)
             ).shape[0]
         )
         n_rec_sup = int(
             base_gv.filter(
                 (pl.col("Statut") == "Supérieur au maximum du barème") &
-                ((pl.col("montant_brut_bareme") - pl.col("max_bareme")) / pl.col("max_bareme") * 100 < 5)
+                ((pl.col("montant_brut_sans_ind_sans_alloc") - pl.col("max_bareme")) / pl.col("max_bareme") * 100 < 5)
             ).shape[0]
         )
         base_gv = base_gv.with_columns(
             pl.when(
                 (pl.col("Statut") == "Inférieur au minimum du barème") &
-                ((pl.col("min_bareme") - pl.col("montant_brut_bareme")) / pl.col("min_bareme") * 100 < 5)
+                ((pl.col("min_bareme") - pl.col("montant_brut_sans_ind_sans_alloc")) / pl.col("min_bareme") * 100 < 5)
             ).then(pl.lit("Conforme au barème"))
             .when(
                 (pl.col("Statut") == "Supérieur au maximum du barème") &
-                ((pl.col("montant_brut_bareme") - pl.col("max_bareme")) / pl.col("max_bareme") * 100 < 5)
+                ((pl.col("montant_brut_sans_ind_sans_alloc") - pl.col("max_bareme")) / pl.col("max_bareme") * 100 < 5)
             ).then(pl.lit("Conforme au barème"))
             .otherwise(pl.col("Statut"))
             .alias("Statut")
         )
         base_avec_statut = base_gv.clone()
-        print(f"\n   Récupération (écart < 5%) :")
-        print(f"     Inférieur récupérés : {n_rec_inf:,}")
-        print(f"     Supérieur récupérés : {n_rec_sup:,}")
+        print(f"\n   Repêchage des agents légèrement hors-barème (écart < 5% des bornes) :")
+        print(f"     En dessous du minimum repêchés : {n_rec_inf:,}")
+        print(f"     Au-dessus du maximum repêchés  : {n_rec_sup:,}")
 
         n_statut2  = base_gv["Statut"].value_counts().sort("Statut")
         n_total_s2 = n_statut2["count"].sum()
-        print(f"\n   Distribution Statut (après récupération) :")
+        print(f"\n   ── Statut M1 · après repêchage ±5% ──────────────────────────────────")
         for row in n_statut2.iter_rows(named=True):
             pct = 100 * row["count"] / n_total_s2 if n_total_s2 > 0 else 0.0
             print(f"     {row['Statut']:<40} : {row['count']:>10,}  ({pct:.1f}%)")
+        _print_tranches(
+            base_gv, "Statut", "montant_brut_sans_ind_sans_alloc",
+            "min_bareme", "max_bareme", avant_recuperation=False
+        )
+        print(f"   → Les agents encore hors-barème seront imputés à l'étape 07a")
 
-elif "montant_brut_bareme" not in base_gv.columns:
-    print("   ⚠️  montant_brut_bareme absent du Gold — régénérer le Gold avec programme 06")
-    base_gv = base_gv.with_columns(pl.lit("Cluster non déterminé").alias("Statut"))
+elif "montant_brut_sans_ind_sans_alloc" not in base_gv.columns:
+    print("   ⚠️  montant_brut_sans_ind_sans_alloc absent du Gold — régénérer le Gold avec programme 06")
+    base_gv = base_gv.with_columns([
+        pl.lit("Cluster non déterminé").alias("Statut"),
+        pl.lit(None).cast(pl.Float64).alias("min_bareme"),
+        pl.lit(None).cast(pl.Float64).alias("max_bareme"),
+    ])
     base_avec_statut = base_gv.clone()
 else:
-    base_gv = base_gv.with_columns(pl.lit("Cluster non déterminé").alias("Statut"))
+    base_gv = base_gv.with_columns([
+        pl.lit("Cluster non déterminé").alias("Statut"),
+        pl.lit(None).cast(pl.Float64).alias("min_bareme"),
+        pl.lit(None).cast(pl.Float64).alias("max_bareme"),
+    ])
     base_avec_statut = base_gv.clone()
 
 print()
 
 # ============================================================
-# 8. STATS HORS-BARÈME PAR TRANCHES (console)
+# 7d. STATUT_TOTAL — MÉTHODO 2
 # ============================================================
 
-STATUTS_HORS_BAREME = ["Inférieur au minimum du barème", "Supérieur au maximum du barème"]
+print("7d. Statut_Total (Méthodo 2)")
+print("   Objectif  : vérifier si le salaire brut total de l'agent (tous codes postes)")
+print("               est conforme au barème de son grade et secteur.")
+print("   Gold      : montant_brut_total  (Feuille 1 — tous codes postes confondus)")
+print("   Référence : montant brut  (colonne 'montant brut'  —  source anstat_2025)")
 
-if (len(base_avec_statut) > 0 and "Statut" in base_avec_statut.columns
-        and {"montant_brut_bareme", "min_bareme", "max_bareme"}.issubset(
-            set(base_avec_statut.columns))):
-    hors_bareme = base_avec_statut.filter(pl.col("Statut").is_in(STATUTS_HORS_BAREME))
-    total_hors  = len(hors_bareme)
-    if total_hors > 0:
-        ORDRE_TRANCHES = ["< 5%", "5% – 10%", "10% – 25%", "25% – 50%", "≥ 50%"]
-        for statut_label, borne_col in [
-            ("Inférieur au minimum du barème", "min_bareme"),
-            ("Supérieur au maximum du barème", "max_bareme"),
-        ]:
-            sous = hors_bareme.filter(pl.col("Statut") == statut_label)
-            n_sous = len(sous)
-            if n_sous == 0:
-                continue
-            if statut_label == "Inférieur au minimum du barème":
-                ecart_expr = (
-                    (pl.col(borne_col) - pl.col("montant_brut_bareme"))
-                    / pl.col(borne_col) * 100
-                )
-            else:
-                ecart_expr = (
-                    (pl.col("montant_brut_bareme") - pl.col(borne_col))
-                    / pl.col(borne_col) * 100
-                )
-            sous = sous.with_columns(ecart_expr.alias("ecart_pct")).with_columns(
-                pl.when(pl.col("ecart_pct") < 5)  .then(pl.lit("< 5%"))
-                .when(pl.col("ecart_pct") < 10)   .then(pl.lit("5% – 10%"))
-                .when(pl.col("ecart_pct") < 25)   .then(pl.lit("10% – 25%"))
-                .when(pl.col("ecart_pct") < 50)   .then(pl.lit("25% – 50%"))
-                .otherwise(pl.lit("≥ 50%"))
-                .alias("tranche")
+if (df_anstat_ref is not None
+        and "montant_brut_total_ref" in df_anstat_ref.columns
+        and "montant_brut_total" in base_gv.columns):
+
+    result_cluster_total = calculer_indicateurs_cluster(
+        df_anstat_ref, value_col="montant_brut_total_ref", prefix="total"
+    )
+    if result_cluster_total is not None:
+        indic_cluster_total, _, _ = result_cluster_total
+
+        # Jointure des bornes total sur base_gv
+        cle_join_total = []
+        if "secteur_ref" in indic_cluster_total.columns and col_secteur_main:
+            cle_join_total.append(("secteur_ref", col_secteur_main))
+        if "grade_ref" in indic_cluster_total.columns and col_grade_main:
+            cle_join_total.append(("grade_ref", col_grade_main))
+
+        if cle_join_total:
+            left_on_t  = [p[1] for p in cle_join_total]
+            right_on_t = [p[0] for p in cle_join_total]
+            indic_t_join = indic_cluster_total.with_columns(
+                [pl.col(c).cast(pl.Utf8) for c in right_on_t]
             )
-            counts = {
-                row["tranche"]: row["count"]
-                for row in sous["tranche"].value_counts().iter_rows(named=True)
-            }
-            print(f"   Écarts au barème — {statut_label} ({n_sous:,}) :")
-            for t in ORDRE_TRANCHES:
-                n_t = counts.get(t, 0)
-                pct = 100 * n_t / n_sous if n_sous > 0 else 0.0
-                print(f"     {t:<12} : {n_t:>10,}  ({pct:.1f}%)")
-            print()
+            base_avec_statut = base_avec_statut.with_columns(
+                pl.col("montant_brut_total").cast(pl.Float64, strict=False)
+            ).join(
+                indic_t_join.select(right_on_t + ["min_total", "max_total"]),
+                left_on=left_on_t, right_on=right_on_t, how="left",
+            )
+
+            # Calcul Statut_Total (même logique que Statut)
+            base_avec_statut = base_avec_statut.with_columns(
+                pl.when(pl.col("min_total").is_null() | pl.col("max_total").is_null())
+                .then(pl.lit("Cluster non déterminé"))
+                .when(pl.col("montant_brut_total") < pl.col("min_total"))
+                .then(pl.lit("Inférieur au minimum du barème"))
+                .when(pl.col("montant_brut_total") > pl.col("max_total"))
+                .then(pl.lit("Supérieur au maximum du barème"))
+                .otherwise(pl.lit("Conforme au barème"))
+                .alias("Statut_Total")
+            )
+
+            # Distribution Statut_Total AVANT récupération + tranches
+            n_st_av  = base_avec_statut["Statut_Total"].value_counts().sort("Statut_Total")
+            n_tst_av = n_st_av["count"].sum()
+            print(f"\n   ── Statut_Total M2 · avant repêchage ±5% ───────────────────────────")
+            print(f"   (salaire brut total vs colonne 'montant brut' anstat_2025 par secteur × grade)")
+            for row in n_st_av.iter_rows(named=True):
+                pct = 100 * row["count"] / n_tst_av if n_tst_av > 0 else 0.0
+                print(f"     {row['Statut_Total']:<40} : {row['count']:>10,}  ({pct:.1f}%)")
+            _print_tranches(
+                base_avec_statut, "Statut_Total", "montant_brut_total",
+                "min_total", "max_total", avant_recuperation=True
+            )
+
+            # Récupération ±5% pour Statut_Total
+            n_rec_inf_t = int(
+                base_avec_statut.filter(
+                    (pl.col("Statut_Total") == "Inférieur au minimum du barème") &
+                    ((pl.col("min_total") - pl.col("montant_brut_total")) / pl.col("min_total") * 100 < 5)
+                ).shape[0]
+            )
+            n_rec_sup_t = int(
+                base_avec_statut.filter(
+                    (pl.col("Statut_Total") == "Supérieur au maximum du barème") &
+                    ((pl.col("montant_brut_total") - pl.col("max_total")) / pl.col("max_total") * 100 < 5)
+                ).shape[0]
+            )
+            base_avec_statut = base_avec_statut.with_columns(
+                pl.when(
+                    (pl.col("Statut_Total") == "Inférieur au minimum du barème") &
+                    ((pl.col("min_total") - pl.col("montant_brut_total"))
+                     / pl.col("min_total") * 100 < 5)
+                ).then(pl.lit("Conforme au barème"))
+                .when(
+                    (pl.col("Statut_Total") == "Supérieur au maximum du barème") &
+                    ((pl.col("montant_brut_total") - pl.col("max_total"))
+                     / pl.col("max_total") * 100 < 5)
+                ).then(pl.lit("Conforme au barème"))
+                .otherwise(pl.col("Statut_Total"))
+                .alias("Statut_Total")
+            )
+            print(f"\n   Repêchage des agents légèrement hors-barème M2 (écart < 5% des bornes) :")
+            print(f"     En dessous du minimum repêchés : {n_rec_inf_t:,}")
+            print(f"     Au-dessus du maximum repêchés  : {n_rec_sup_t:,}")
+
+            n_st  = base_avec_statut["Statut_Total"].value_counts().sort("Statut_Total")
+            n_tst = n_st["count"].sum()
+            print(f"\n   ── Statut_Total M2 · après repêchage ±5% ───────────────────────────")
+            for row in n_st.iter_rows(named=True):
+                pct = 100 * row["count"] / n_tst if n_tst > 0 else 0.0
+                print(f"     {row['Statut_Total']:<40} : {row['count']:>10,}  ({pct:.1f}%)")
+            _print_tranches(
+                base_avec_statut, "Statut_Total", "montant_brut_total",
+                "min_total", "max_total", avant_recuperation=False
+            )
+        else:
+            print("   ⚠️  Jointure cluster_total impossible — Statut_Total non calculé")
+            base_avec_statut = base_avec_statut.with_columns([
+                pl.lit("Cluster non déterminé").alias("Statut_Total"),
+                pl.lit(None).cast(pl.Float64).alias("min_total"),
+                pl.lit(None).cast(pl.Float64).alias("max_total"),
+            ])
     else:
-        print("   ℹ️  Aucun agent hors-barème détecté")
+        print("   ⚠️  Indicateurs cluster_total non calculés — Statut_Total non calculé")
+        base_avec_statut = base_avec_statut.with_columns([
+            pl.lit("Cluster non déterminé").alias("Statut_Total"),
+            pl.lit(None).cast(pl.Float64).alias("min_total"),
+            pl.lit(None).cast(pl.Float64).alias("max_total"),
+        ])
+else:
+    raison = []
+    if df_anstat_ref is None:
+        raison.append("anstat_2025 absent")
+    elif "montant_brut_total_ref" not in (df_anstat_ref.columns if df_anstat_ref is not None else []):
+        raison.append("colonne montant_brut_total_ref absente d'anstat_2025")
+    if "montant_brut_total" not in base_gv.columns:
+        raison.append("colonne montant_brut_total absente du Gold panel")
+    print(f"   ⚠️  Statut_Total non calculé : {' / '.join(raison)}")
+    base_avec_statut = base_avec_statut.with_columns([
+        pl.lit("Non calculé").alias("Statut_Total"),
+        pl.lit(None).cast(pl.Float64).alias("min_total"),
+        pl.lit(None).cast(pl.Float64).alias("max_total"),
+    ])
+
+print()
 
 # ============================================================
-# 9. SAUVEGARDE base_avec_statut.parquet → Gold
+# 8. SAUVEGARDE base_avec_statut.parquet → Gold
 # ============================================================
 
-print("9. Sauvegarde base_avec_statut.parquet...")
+print("8. Sauvegarde base_avec_statut.parquet...")
 
 if len(base_avec_statut) > 0:
     buf_pq = io.BytesIO()
@@ -940,15 +1154,23 @@ if len(base_avec_statut) > 0:
     print(f"   ✅ s3://{BUCKET_GOLD}/{KEY_BASE_AVEC_STATUT}")
     print(f"   {len(base_avec_statut):,} lignes × {len(base_avec_statut.columns)} colonnes")
 
-    # Résumé final Statut
+    # Résumé final
+    total = len(base_avec_statut)
     if "Statut" in base_avec_statut.columns:
-        total = len(base_avec_statut)
-        print(f"\n   Résumé final Statut :")
+        print(f"\n   ── Résumé final Statut M1 (salaire sans ind. ni alloc.) ─────────────")
         for row in (
             base_avec_statut["Statut"].value_counts().sort("Statut").iter_rows(named=True)
         ):
             pct = 100 * row["count"] / total if total > 0 else 0.0
             print(f"     {row['Statut']:<40} : {row['count']:>10,}  ({pct:.1f}%)")
+
+    if "Statut_Total" in base_avec_statut.columns:
+        print(f"\n   ── Résumé final Statut_Total M2 (salaire brut total) ────────────────")
+        for row in (
+            base_avec_statut["Statut_Total"].value_counts().sort("Statut_Total").iter_rows(named=True)
+        ):
+            pct = 100 * row["count"] / total if total > 0 else 0.0
+            print(f"     {row['Statut_Total']:<40} : {row['count']:>10,}  ({pct:.1f}%)")
 else:
     print("   ⚠️  base_avec_statut vide — fichier non sauvegardé")
 
