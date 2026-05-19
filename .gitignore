@@ -1,20 +1,35 @@
-**/*.xlsx
-*.xlsx
-**/*.xls
-*.xls  
-**/*.csv
-*.csv
-**/*.tsv
-*.tsv
-**/*.ods
-*.ods
-**/*.parquet
-*.parquet
-*.txt
+# --- Sécurité ---
+.env
+**/.env
+cle_secrete_anstat.txt
 **/*.txt
-*.env
-**/*.env
+
+# --- Données et Résultats ---
 data/
 logs/
 output/
 results/
+**/*.xlsx
+**/*.xls
+**/*.csv
+**/*.tsv
+**/*.ods
+**/*.parquet
+**/*.pdf
+**/*.png
+**/*.jpg
+
+# --- Python ---
+__pycache__/
+**/*.pyc
+.pytest_cache/
+.venv/
+env/
+venv/
+
+# --- IDE ---
+.vscode/
+.idea/
+.claude/
+.ipynb_checkpoints/
+**/.ipynb_checkpoints/
