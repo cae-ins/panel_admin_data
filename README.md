@@ -1,4 +1,4 @@
-# PANEL ADMIN - Consolidation et Analyse de la Masse Salariale (2015-2025)
+# PANEL ADMIN - Consolidation & Estimations des salaires moyens dans l'administration publique
 
 Ce projet implémente un pipeline ETL (Extract, Transform, Load) complet pour le traitement des données de paie administratives sur la période 2015-2025. L'objectif principal est de normaliser les données issues de sources disparates pour permettre une présentation fiable des salaires moyens dans le secteur public en Côte d'Ivoire.
 
