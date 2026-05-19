@@ -339,7 +339,7 @@ def charger_anstat_2025() -> pl.DataFrame | None:
         os.unlink(tmp_path)
 
     # Composantes du salaire de référence = codes Gold 124+228+271+425
-    # allocation_familiale (code 421) exclue — branche No_allocation_Familiale
+    # (Allocation familiale code 421 exclue pour l'audit de conformité)
     patterns_composantes = {
         "Salaire de Base": [r"salaire.*base", r"base.*salaire", r"traitement.*base",
                             r"^salaire$", r"^base$"],

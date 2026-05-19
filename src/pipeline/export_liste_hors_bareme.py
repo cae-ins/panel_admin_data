@@ -1,0 +1,227 @@
+# ============================================================
+# PANEL ADMIN — EXPORT LISTE DES AGENTS HORS BARÈME
+# ============================================================
+# Lit panel_gold.parquet (colonne Statut déjà calculée par
+# 07_calcul_indicateur.py) et exporte la liste nominale des
+# agents hors barème.
+#
+# Source  : s3://gold/panel_admin/panel_gold.parquet
+# Sorties :
+#   s3://gold/panel_admin/liste_hors_bareme.parquet
+#   s3://staging/panel_admin/exports_gold/liste_hors_bareme.xlsx
+# ============================================================
+
+import io
+import os
+from dotenv import load_dotenv
+import boto3
+from botocore.client import Config
+import polars as pl
+from openpyxl import Workbook
+from openpyxl.styles import PatternFill, Font, Alignment
+
+load_dotenv(".env")
+
+# ============================================================
+# CONFIGURATION
+# ============================================================
+
+MINIO_ENDPOINT   = os.getenv("MINIO_ENDPOINT",   "http://192.168.1.230:30137")
+MINIO_ACCESS_KEY = os.getenv("MINIO_ACCESS_KEY", "datalab-team")
+MINIO_SECRET_KEY = os.getenv("MINIO_SECRET_KEY", "minio-datalabteam123")
+
+BUCKET_GOLD    = os.getenv("BUCKET_GOLD",    "gold")
+BUCKET_STAGING = os.getenv("BUCKET_STAGING", "staging")
+
+KEY_PANEL_GOLD = "panel_admin/panel_gold.parquet"
+OUTPUT_PQ      = "panel_admin/liste_hors_bareme.parquet"
+OUTPUT_XLSX    = "panel_admin/exports_gold/liste_hors_bareme.xlsx"
+
+STATUTS_HORS_BAREME = [
+    "Inférieur au minimum du barème",
+    "Supérieur au maximum du barème",
+]
+
+# ============================================================
+# CLIENT S3
+# ============================================================
+
+s3 = boto3.client(
+    "s3",
+    endpoint_url          = MINIO_ENDPOINT,
+    aws_access_key_id     = MINIO_ACCESS_KEY,
+    aws_secret_access_key = MINIO_SECRET_KEY,
+    config                = Config(
+        signature_version = "s3v4",
+        retries           = {"max_attempts": 5, "mode": "adaptive"},
+        connect_timeout   = 30,
+        read_timeout      = 120,
+    ),
+    region_name = "us-east-1",
+    verify      = False,
+)
+
+print("=" * 70)
+print("EXPORT LISTE AGENTS HORS BARÈME")
+print("=" * 70)
+print()
+
+# ============================================================
+# 1. CHARGEMENT
+# ============================================================
+
+print(f"1. Chargement de s3://{BUCKET_GOLD}/{KEY_PANEL_GOLD}...")
+
+buf = io.BytesIO()
+s3.download_fileobj(BUCKET_GOLD, KEY_PANEL_GOLD, buf)
+buf.seek(0)
+panel = pl.read_parquet(buf)
+
+print(f"   ✓ {len(panel):,} lignes × {len(panel.columns)} colonnes")
+
+if "Statut" not in panel.columns:
+    raise RuntimeError(
+        "Colonne 'Statut' absente de panel_gold.parquet. "
+        "Exécutez d'abord 07_calcul_indicateur.py puis 07b_analyse_hors_bareme.py."
+    )
+
+print()
+
+# ============================================================
+# 2. FILTRAGE
+# ============================================================
+
+print("2. Filtrage des agents hors barème...")
+
+hors_bareme = panel.filter(pl.col("Statut").is_in(STATUTS_HORS_BAREME))
+n_total = len(panel)
+n_hors  = len(hors_bareme)
+
+print(f"   ✓ {n_hors:,} agents hors barème / {n_total:,} total ({100*n_hors/n_total:.1f}%)")
+n_inf = int((hors_bareme["Statut"] == "Inférieur au minimum du barème").sum())
+n_sup = int((hors_bareme["Statut"] == "Supérieur au maximum du barème").sum())
+print(f"     Inférieur au minimum : {n_inf:,}")
+print(f"     Supérieur au maximum : {n_sup:,}")
+
+if n_hors == 0:
+    print("\n⚠️  Aucun agent hors barème — arrêt.")
+    exit(0)
+
+print()
+
+# ============================================================
+# 3. EXPORT PARQUET → GOLD
+# ============================================================
+
+print("3. Export Parquet → Gold...")
+
+buf_pq = io.BytesIO()
+hors_bareme.write_parquet(buf_pq, compression="snappy")
+buf_pq.seek(0)
+s3.put_object(Bucket=BUCKET_GOLD, Key=OUTPUT_PQ, Body=buf_pq.getvalue())
+print(f"   ✓ s3://{BUCKET_GOLD}/{OUTPUT_PQ}  ({len(hors_bareme):,} lignes)")
+print()
+
+# ============================================================
+# 4. EXPORT EXCEL → STAGING
+# ============================================================
+
+print("4. Export Excel → Staging...")
+
+wb = Workbook()
+wb.remove(wb.active)
+
+fill_header = PatternFill("solid", fgColor="2C3E50")
+fill_inf    = PatternFill("solid", fgColor="FADBD8")   # rouge clair — inférieur au min
+fill_sup    = PatternFill("solid", fgColor="FDEBD0")   # orange clair — supérieur au max
+font_header = Font(color="FFFFFF", bold=True, size=10)
+font_normal = Font(size=10)
+al_centre   = Alignment(horizontal="center", vertical="center")
+al_gauche   = Alignment(horizontal="left",   vertical="center")
+
+
+def ecrire_feuille(wb: Workbook, nom: str, df: pl.DataFrame, colorier: bool = False) -> None:
+    if len(df) == 0:
+        return
+    ws = wb.create_sheet(title=nom)
+    for j, col in enumerate(df.columns, start=1):
+        c = ws.cell(row=1, column=j, value=col)
+        c.fill      = fill_header
+        c.font      = font_header
+        c.alignment = al_centre
+    for i, row in enumerate(df.iter_rows(named=True), start=2):
+        fill_ligne = None
+        if colorier and "Statut" in df.columns:
+            statut = row.get("Statut", "")
+            if "Inférieur" in str(statut):
+                fill_ligne = fill_inf
+            elif "Supérieur" in str(statut):
+                fill_ligne = fill_sup
+        for j, col in enumerate(df.columns, start=1):
+            c           = ws.cell(row=i, column=j, value=row[col])
+            c.font      = font_normal
+            c.alignment = al_gauche
+            if fill_ligne:
+                c.fill = fill_ligne
+    ws.freeze_panes = "A2"
+    print(f"   ✓ {nom} ({len(df):,} lignes)")
+
+
+# Feuille 1 : liste complète
+MAX_EXCEL = 50_000
+df_excel = hors_bareme.head(MAX_EXCEL)
+if len(hors_bareme) > MAX_EXCEL:
+    print(f"   ⚠️  Excel tronqué à {MAX_EXCEL:,} lignes (total dans Parquet : {n_hors:,})")
+ecrire_feuille(wb, "LISTE_HORS_BAREME", df_excel, colorier=True)
+
+# Feuille 2 : récap par Statut × Grade
+col_grade = next((c for c in ["GRADE", "grade"] if c in hors_bareme.columns), None)
+col_sal   = next((c for c in ["montant_brut_bareme", "montant_brut_total"] if c in hors_bareme.columns), None)
+if col_grade and col_sal:
+    recap_grade = (
+        hors_bareme
+        .group_by(["Statut", col_grade])
+        .agg([
+            pl.len().alias("Effectif"),
+            pl.col(col_sal).mean().round(0).alias("Salaire_moyen"),
+            pl.col(col_sal).min().round(0).alias("Salaire_min"),
+            pl.col(col_sal).max().round(0).alias("Salaire_max"),
+        ])
+        .sort(["Statut", col_grade])
+    )
+    ecrire_feuille(wb, "RECAP_Grade", recap_grade)
+
+# Feuille 3 : récap par Statut × Organisme
+col_org = next((c for c in ["organisme", "CODE_ORGANISME"] if c in hors_bareme.columns), None)
+if col_org:
+    recap_org = (
+        hors_bareme
+        .group_by(["Statut", col_org])
+        .agg([pl.len().alias("Effectif")])
+        .sort(["Statut", col_org])
+    )
+    ecrire_feuille(wb, "RECAP_Organisme", recap_org)
+
+buf_xlsx = io.BytesIO()
+wb.save(buf_xlsx)
+buf_xlsx.seek(0)
+s3.put_object(
+    Bucket=BUCKET_STAGING,
+    Key=OUTPUT_XLSX,
+    Body=buf_xlsx.getvalue(),
+    ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+)
+print(f"\n   ✓ s3://{BUCKET_STAGING}/{OUTPUT_XLSX}  ({len(buf_xlsx.getvalue()) / 1024:.1f} KB)")
+
+# ============================================================
+# RÉSUMÉ
+# ============================================================
+
+print()
+print("=" * 70)
+print("✓ EXPORT TERMINÉ")
+print("=" * 70)
+print(f"  {n_hors:,} agents hors barème  "
+      f"({n_inf:,} inférieurs au min  |  {n_sup:,} supérieurs au max)")
+print(f"  Parquet : s3://{BUCKET_GOLD}/{OUTPUT_PQ}")
+print(f"  Excel   : s3://{BUCKET_STAGING}/{OUTPUT_XLSX}")

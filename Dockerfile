@@ -1,18 +1,24 @@
-FROM python:3.11-slim
+FROM python:3.12-slim
+
+# Installation des dépendances système (nécessaires pour psycopg2)
+RUN apt-get update && apt-get install -y \
+    libpq-dev \
+    gcc \
+    && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 
-# Dépendances système minimales pour psycopg2
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    libpq-dev gcc \
- && rm -rf /var/lib/apt/lists/*
-
-# Dépendances Python
-COPY src/version_python_dp_etoile/requirements.txt .
+# Copie et installation des requirements
+COPY src/pipeline/requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Scripts du pipeline
-COPY src/version_python_dp_etoile/0[0-9]*.py   .
-COPY src/version_python_dp_etoile/0[0-9][a-z]*.py .
+# Copie du pipeline industrialisé
+COPY src/pipeline/*.py   src/pipeline/
+COPY src/pipeline/*.sh   src/pipeline/
+COPY orchestrateur.py .
 
-CMD ["python"]
+# Configuration par défaut
+ENV PYTHONUNBUFFERED=1
+
+# L'orchestrateur est le point d'entrée par défaut
+ENTRYPOINT ["python", "orchestrateur.py"]

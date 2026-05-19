@@ -66,7 +66,7 @@ PREFIX_PANEL   = "panel_admin"
 # Noms des colonnes F2 (composantes barème issues de la Feuille 2 du fichier source)
 # Recherche insensible à la casse : 124_F2 ou 124_f2 selon la normalisation Bronze
 #
-# BRANCHE No_allocation_Familiale :
+# MÉTHODOLOGIE :
 #   Code 421 = Allocation familiale → retirée de montant_brut_sans_ind_sans_alloc
 #   montant_brut_sans_ind_sans_alloc = 124 + 228 + 271 + 425 (sans allocation familiale)
 #   → utilisé pour les indicateurs par CITP, GRADE, sexe

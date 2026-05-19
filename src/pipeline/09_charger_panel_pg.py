@@ -14,7 +14,7 @@
 #   4. Vérifie le nombre de lignes chargées
 #
 # Après cette étape :
-#   bash src/version_python_dp_etoile/10_refresh_superset.sh
+#   bash src/pipeline/10_refresh_superset.sh
 #
 # Variables d'environnement requises (.env) :
 #   MINIO_ENDPOINT, MINIO_ACCESS_KEY, MINIO_SECRET_KEY, BUCKET_GOLD
@@ -182,5 +182,5 @@ print(f"  Lignes chargées : {nb_lignes:,}")
 if periode:
     print(f"  Période         : {periode[0]} → {periode[1]}")
 print()
-print("Prochaine étape : bash src/version_python_dp_etoile/10_refresh_superset.sh")
+print("Prochaine étape : bash src/pipeline/10_refresh_superset.sh")
 print()
