@@ -26,18 +26,11 @@ import os
 import re
 import tempfile
 import unicodedata
-from dotenv import load_dotenv
-import boto3
-from botocore.client import Config
+from common.s3_client import create_s3_client
+from common.logging_config import setup_pipeline_logging
 import polars as pl
 
-load_dotenv(".env")
-
 # --- CONFIGURATION ---
-
-MINIO_ENDPOINT   = os.getenv("MINIO_ENDPOINT",   "http://192.168.1.230:30137")
-MINIO_ACCESS_KEY = os.getenv("MINIO_ACCESS_KEY", "datalab-team")
-MINIO_SECRET_KEY = os.getenv("MINIO_SECRET_KEY", "minio-datalabteam123")
 
 BUCKET_STAGING = os.getenv("BUCKET_STAGING", "staging")
 BUCKET_BRONZE  = os.getenv("BUCKET_BRONZE",  "bronze")
@@ -55,20 +48,8 @@ CODES_A_SURVEILLER = ["CODE_ORGANISME", "CODE_GRADE", "CODE_EMPLOI"]
 COMPOSANTES_F2 = ["124_f2", "228_f2", "271_f2", "421_f2", "425_f2"]
 
 # --- CLIENT S3 (MinIO) ---
-s3 = boto3.client(
-    "s3",
-    endpoint_url          = MINIO_ENDPOINT,
-    aws_access_key_id     = MINIO_ACCESS_KEY,
-    aws_secret_access_key = MINIO_SECRET_KEY,
-    config                = Config(
-        signature_version = "s3v4",
-        retries           = {"max_attempts": 5, "mode": "adaptive"},
-        connect_timeout   = 30,
-        read_timeout      = 120,
-    ),
-    region_name = "us-east-1",
-    verify      = False,
-)
+s3 = create_s3_client()
+logger, _ = setup_pipeline_logging("03_bronze_to_silver")
 
 # ============================================================
 # FONCTIONS UTILITAIRES
@@ -87,7 +68,7 @@ def ecrire_parquet_s3(df: pl.DataFrame, bucket: str, key: str) -> None:
     buf.seek(0)
     taille = len(buf.getvalue()) / 1024**2
     s3.put_object(Bucket=bucket, Key=key, Body=buf.getvalue())
-    print(f"  ✓ s3://{bucket}/{key}  ({len(df):,} lignes × {len(df.columns)} cols  {taille:.1f} MB)")
+    logger.info(f"  ✓ s3://{bucket}/{key}  ({len(df):,} lignes × {len(df.columns)} cols  {taille:.1f} MB)")
 
 
 def sauvegarder_csv_staging(df: pl.DataFrame, nom_fichier: str) -> None:
@@ -97,7 +78,7 @@ def sauvegarder_csv_staging(df: pl.DataFrame, nom_fichier: str) -> None:
         Key=f"{PREFIX_VALID}/{nom_fichier}",
         Body=csv_bytes,
     )
-    print(f"  ✓ Rapport sauvegardé : {nom_fichier}")
+    logger.info(f"  ✓ Rapport sauvegardé : {nom_fichier}")
 
 
 def normaliser_pour_matching(texte) -> str | None:
@@ -108,7 +89,7 @@ def normaliser_pour_matching(texte) -> str | None:
         return None
     texte = re.sub(r"[-]", " ", texte)
     texte = re.sub(r"[.,;:()\[\]/]", " ", texte)
-    texte = re.sub("[''\u2019]", " ", texte)
+    texte = re.sub("[''’]", " ", texte)
     texte = texte.upper()
     texte = unicodedata.normalize("NFKD", texte)
     texte = "".join(c for c in texte if not unicodedata.combining(c))
@@ -197,10 +178,9 @@ def normaliser_situation(situation) -> str:
 # CHARGEMENT DES TABLES ANSTAT
 # ============================================================
 
-print("=" * 70)
-print("CHARGEMENT : Tables de codes ANSTAT (depuis staging)")
-print("=" * 70)
-print()
+logger.info("=" * 70)
+logger.info("CHARGEMENT : Tables de codes ANSTAT (depuis staging)")
+logger.info("=" * 70)
 
 paginator = s3.get_paginator("list_objects_v2")
 pages     = paginator.paginate(Bucket=BUCKET_STAGING, Prefix=PREFIX_REFS)
@@ -218,7 +198,7 @@ if fichier_anstat_key is None:
 with tempfile.NamedTemporaryFile(suffix=".xlsx", delete=False) as tmp:
     tmp_anstat = tmp.name
 s3.download_file(BUCKET_STAGING, fichier_anstat_key, tmp_anstat)
-print(f"✓ Fichier ANSTAT téléchargé : {os.path.basename(fichier_anstat_key)}\n")
+logger.info(f"✓ Fichier ANSTAT téléchargé : {os.path.basename(fichier_anstat_key)}")
 
 
 def charger_table_codes(
@@ -308,7 +288,7 @@ for nom_code, cfg in dictionnaires_codes.items():
     extras = [c for c in cfg["table"].columns
               if c not in (cfg["col_code"], "libelle", "libelle_norm")]
     detail = f" + {extras}" if extras else ""
-    print(f"  {nom_code:<25} : {nb:>4} codes{detail}")
+    logger.info(f"  {nom_code:<25} : {nb:>4} codes{detail}")
 
 os.unlink(tmp_anstat)
 
@@ -316,11 +296,9 @@ os.unlink(tmp_anstat)
 # LISTER LES FICHIERS BRONZE (un par mois/période)
 # ============================================================
 
-print()
-print("=" * 70)
-print("LECTURE BRONZE")
-print("=" * 70)
-print()
+logger.info("=" * 70)
+logger.info("LECTURE BRONZE")
+logger.info("=" * 70)
 
 pages_bronze = s3.get_paginator("list_objects_v2").paginate(
     Bucket=BUCKET_BRONZE, Prefix=PREFIX_BRONZE
@@ -332,7 +310,7 @@ cles_bronze = sorted([
     if obj["Key"].endswith(".parquet")
 ])
 
-print(f"Fichiers Parquet Bronze trouvés : {len(cles_bronze)}\n")
+logger.info(f"Fichiers Parquet Bronze trouvés : {len(cles_bronze)}")
 
 # ============================================================
 # TRAITEMENT MOIS PAR MOIS + REGROUPEMENT PAR ANNÉE
@@ -349,11 +327,9 @@ for cle in cles_bronze:
     m = re.search(r"20\d{2}", periode)
     annee = m.group() if m else periode[:4]
 
-    print(f"  [{periode}] Lecture... ", end="", flush=True)
-
     try:
         df = lire_parquet_s3(BUCKET_BRONZE, cle)
-        print(f"✓  {len(df):,} lignes", flush=True)
+        logger.info(f"  [{periode}] ✓ {len(df):,} lignes")
 
         # --- Mapping colonnes ---
         correspondance = mapper_colonnes(list(df.columns))
@@ -386,7 +362,7 @@ for cle in cles_bronze:
             )
 
         if len(df) == 0:
-            print(f"    ⚠️  Aucune ligne conservée après filtrage situations")
+            logger.warning(f"    [{periode}] ⚠️  Aucune ligne conservée après filtrage situations")
             continue
 
         # --- Enrichissement ANSTAT ---
@@ -436,7 +412,7 @@ for cle in cles_bronze:
             row_stats[f"{nom_code}_taux"] = round(taux, 1)
 
             if nom_code in CODES_A_SURVEILLER:
-                print(f"      {nom_code} : {taux:.1f}%", flush=True)
+                logger.info(f"      [{periode}] {nom_code} : {taux:.1f}%")
 
         stats_matching_par_periode.append(row_stats)
 
@@ -465,7 +441,7 @@ for cle in cles_bronze:
             )
         else:
             df = df.with_columns(pl.lit(None).cast(pl.Float64).alias("salaire_brut_f2"))
-            print(f"    ⚠️  Composantes F2 absentes pour {periode} — salaire_brut_f2 = null")
+            logger.warning(f"    [{periode}] ⚠️  Composantes F2 absentes — salaire_brut_f2 = null")
 
         # Accumulation par année
         if annee not in frames_par_annee:
@@ -474,7 +450,7 @@ for cle in cles_bronze:
         nb_ok += 1
 
     except Exception as e:
-        print(f"✗ ERREUR : {e}")
+        logger.error(f"  [{periode}] ✗ ERREUR : {e}")
         nb_err += 1
 
     gc.collect()
@@ -483,11 +459,9 @@ for cle in cles_bronze:
 # ÉCRITURE SILVER (un fichier par année)
 # ============================================================
 
-print()
-print("=" * 70)
-print("ÉCRITURE SILVER (par année)")
-print("=" * 70)
-print()
+logger.info("=" * 70)
+logger.info("ÉCRITURE SILVER (par année)")
+logger.info("=" * 70)
 
 for annee, frames in sorted(frames_par_annee.items()):
     df_annee = pl.concat(frames, how="diagonal")
@@ -500,11 +474,9 @@ for annee, frames in sorted(frames_par_annee.items()):
 # RAPPORT MATCHING ANSTAT PAR PÉRIODE
 # ============================================================
 
-print()
-print("=" * 70)
-print("RAPPORT : Taux de matching ANSTAT par période")
-print("=" * 70)
-print()
+logger.info("=" * 70)
+logger.info("RAPPORT : Taux de matching ANSTAT par période")
+logger.info("=" * 70)
 
 if stats_matching_par_periode:
     df_stats = pl.DataFrame(stats_matching_par_periode)
@@ -514,9 +486,9 @@ if stats_matching_par_periode:
         if col in df_stats.columns:
             taux_vals = df_stats[col].drop_nulls()
             if len(taux_vals) > 0:
-                print(f"  {code} — min: {taux_vals.min():.1f}%  "
-                      f"max: {taux_vals.max():.1f}%  "
-                      f"moy: {taux_vals.mean():.1f}%")
+                logger.info(f"  {code} — min: {taux_vals.min():.1f}%  "
+                            f"max: {taux_vals.max():.1f}%  "
+                            f"moy: {taux_vals.mean():.1f}%")
 
     sauvegarder_csv_staging(df_stats, "taux_matching_anstat_par_periode.csv")
 
@@ -524,15 +496,13 @@ if stats_matching_par_periode:
 # RÉSUMÉ FINAL
 # ============================================================
 
-print()
-print("=" * 70)
-print("RÉSUMÉ")
-print("=" * 70)
-print()
-print(f"Périodes traitées avec succès : {nb_ok}")
-print(f"Erreurs                       : {nb_err}")
-print(f"Années Silver produites       : {len(frames_par_annee)}")
-print(f"\nFichiers Silver disponibles dans : s3://{BUCKET_SILVER}/{PREFIX_SILVER}/")
-print(f"Rapport matching : s3://{BUCKET_STAGING}/{PREFIX_VALID}/taux_matching_anstat_par_periode.csv")
-print("\n✓ SILVER TERMINÉ")
-print("Prochaine étape : exécuter 04_validation_silver.py")
+logger.info("=" * 70)
+logger.info("RÉSUMÉ")
+logger.info("=" * 70)
+logger.info(f"Périodes traitées avec succès : {nb_ok}")
+logger.info(f"Erreurs                       : {nb_err}")
+logger.info(f"Années Silver produites       : {len(frames_par_annee)}")
+logger.info(f"Fichiers Silver disponibles dans : s3://{BUCKET_SILVER}/{PREFIX_SILVER}/")
+logger.info(f"Rapport matching : s3://{BUCKET_STAGING}/{PREFIX_VALID}/taux_matching_anstat_par_periode.csv")
+logger.info("✓ SILVER TERMINÉ")
+logger.info("Prochaine étape : exécuter 04_validation_silver.py")

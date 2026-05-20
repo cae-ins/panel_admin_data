@@ -39,20 +39,13 @@ import gc
 import io
 import os
 import re
-from dotenv import load_dotenv
-import boto3
-from botocore.client import Config
+from common.s3_client import create_s3_client
+from common.logging_config import setup_pipeline_logging
 import polars as pl
-
-load_dotenv(".env")
 
 # ============================================================
 # CONFIGURATION
 # ============================================================
-
-MINIO_ENDPOINT   = os.getenv("MINIO_ENDPOINT",   "http://192.168.1.230:30137")
-MINIO_ACCESS_KEY = os.getenv("MINIO_ACCESS_KEY", "datalab-team")
-MINIO_SECRET_KEY = os.getenv("MINIO_SECRET_KEY", "minio-datalabteam123")
 
 BUCKET_SILVER = os.getenv("BUCKET_SILVER", "silver")
 PREFIX_SILVER = "panel_admin"
@@ -80,20 +73,8 @@ COLS_SALAIRE = ["montant_brut", "montant_net"]
 # CLIENT S3
 # ============================================================
 
-s3 = boto3.client(
-    "s3",
-    endpoint_url          = MINIO_ENDPOINT,
-    aws_access_key_id     = MINIO_ACCESS_KEY,
-    aws_secret_access_key = MINIO_SECRET_KEY,
-    config                = Config(
-        signature_version = "s3v4",
-        retries           = {"max_attempts": 5, "mode": "adaptive"},
-        connect_timeout   = 30,
-        read_timeout      = 120,
-    ),
-    region_name = "us-east-1",
-    verify      = False,
-)
+s3 = create_s3_client()
+logger, _ = setup_pipeline_logging("03c_imputer_salaires_silver")
 
 # ============================================================
 # FONCTIONS UTILITAIRES
@@ -112,7 +93,7 @@ def ecrire_parquet_s3(df: pl.DataFrame, bucket: str, key: str) -> None:
     buf.seek(0)
     taille = len(buf.getvalue()) / 1024**2
     s3.put_object(Bucket=bucket, Key=key, Body=buf.getvalue())
-    print(f"  ✓ s3://{bucket}/{key}  ({len(df):,} lignes × {len(df.columns)} cols  {taille:.1f} MB)")
+    logger.info(f"  ✓ s3://{bucket}/{key}  ({len(df):,} lignes × {len(df.columns)} cols  {taille:.1f} MB)")
 
 
 def annee_depuis_cle(cle: str) -> str:
@@ -129,10 +110,9 @@ def periode_sort(col_mois_annee: pl.Expr) -> pl.Expr:
 # ÉTAPE 0 : LISTER LES FICHIERS SILVER
 # ============================================================
 
-print("=" * 70)
-print("IMPUTATION DES SALAIRES — Silver")
-print("=" * 70)
-print()
+logger.info("=" * 70)
+logger.info("IMPUTATION DES SALAIRES — Silver")
+logger.info("=" * 70)
 
 pages = s3.get_paginator("list_objects_v2").paginate(
     Bucket=BUCKET_SILVER, Prefix=PREFIX_SILVER
@@ -147,10 +127,9 @@ cles_silver = sorted([
 if not cles_silver:
     raise RuntimeError(f"Aucun fichier .parquet trouvé sous s3://{BUCKET_SILVER}/{PREFIX_SILVER}")
 
-print(f"Fichiers Silver trouvés : {len(cles_silver)}")
+logger.info(f"Fichiers Silver trouvés : {len(cles_silver)}")
 for cle in cles_silver:
-    print(f"   {cle}")
-print()
+    logger.info(f"   {cle}")
 
 # Détecter les colonnes disponibles depuis le premier fichier
 _df_probe = lire_parquet_s3(BUCKET_SILVER, cles_silver[0])
@@ -161,7 +140,7 @@ if locf_key not in COLS_DISPO:
 del _df_probe
 gc.collect()
 
-print(f"Clé LOCF utilisée : {locf_key}\n")
+logger.info(f"Clé LOCF utilisée : {locf_key}")
 
 # ============================================================
 # PHASE 1 : CALCUL DES MÉDIANES (streaming fichier par fichier)
@@ -169,10 +148,9 @@ print(f"Clé LOCF utilisée : {locf_key}\n")
 # On ne charge que les colonnes nécessaires (cluster + salaire).
 # Les DataFrames partiels sont légers : aucune colonne inutile.
 
-print("─" * 70)
-print("PHASE 1 — Calcul des médianes (streaming par fichier)")
-print("─" * 70)
-print()
+logger.info("─" * 70)
+logger.info("PHASE 1 — Calcul des médianes (streaming par fichier)")
+logger.info("─" * 70)
 
 # Accumulateurs : dict[col][niveau] → liste de DataFrames partiels
 acc: dict[str, dict[str, list[pl.DataFrame]]] = {
@@ -182,9 +160,8 @@ acc: dict[str, dict[str, list[pl.DataFrame]]] = {
 
 for cle in cles_silver:
     annee = annee_depuis_cle(cle)
-    print(f"   [{annee}] lecture partielle...", end=" ", flush=True)
-
     df = lire_parquet_s3(BUCKET_SILVER, cle)
+    logger.info(f"   [{annee}] lecture partielle ✓")
 
     for col in COLS_SALAIRE:
         if col not in df.columns:
@@ -199,10 +176,8 @@ for cle in cles_silver:
 
     del df
     gc.collect()
-    print("✓")
 
-print()
-print("   Consolidation des médianes...")
+logger.info("   Consolidation des médianes...")
 
 mediane_tables: dict[str, dict[str, pl.DataFrame]] = {
     col: {} for col in COLS_SALAIRE
@@ -233,7 +208,7 @@ for col in COLS_SALAIRE:
             .drop("_n")
         )
         mediane_tables[col][niveau] = med
-        print(f"   {col:<15} {niveau} : {len(med):,} cellules (seuil={seuil})")
+        logger.info(f"   {col:<15} {niveau} : {len(med):,} cellules (seuil={seuil})")
 
         del combined, frames
         acc[col][niveau] = []
@@ -241,7 +216,6 @@ for col in COLS_SALAIRE:
 
 del acc
 gc.collect()
-print()
 
 # ============================================================
 # PHASE 2 : CONSTRUCTION DE L'INDEX LOCF
@@ -253,28 +227,26 @@ print()
 # Backward fill : remonte aux mois AVANT le premier salaire connu
 #                 (nouvel entrant sans historique antérieur).
 
-print("─" * 70)
-print("PHASE 2 — Construction de l'index LOCF")
-print("─" * 70)
-print()
+logger.info("─" * 70)
+logger.info("PHASE 2 — Construction de l'index LOCF")
+logger.info("─" * 70)
 
 COLS_LOCF_LOAD = [locf_key, "mois_annee"] + COLS_SALAIRE
 
 frames_locf = []
 for cle in cles_silver:
     annee = annee_depuis_cle(cle)
-    print(f"   [{annee}] colonnes LOCF...", end=" ", flush=True)
     df = lire_parquet_s3(BUCKET_SILVER, cle)
     cols_dispo = [c for c in COLS_LOCF_LOAD if c in df.columns]
     frames_locf.append(df.select(cols_dispo))
     del df
     gc.collect()
-    print("✓")
+    logger.info(f"   [{annee}] colonnes LOCF ✓")
 
 index_locf = pl.concat(frames_locf, how="diagonal")
 del frames_locf
 gc.collect()
-print(f"\n   Index brut : {len(index_locf):,} lignes")
+logger.info(f"   Index brut : {len(index_locf):,} lignes")
 
 # Tri chronologique
 index_locf = (
@@ -313,22 +285,22 @@ locf_cols_keep = (
 lookup_locf = index_locf.select(locf_cols_keep)
 del index_locf
 gc.collect()
-print(f"   Index LOCF final : {len(lookup_locf):,} lignes × {len(lookup_locf.columns)} cols\n")
+logger.info(f"   Index LOCF final : {len(lookup_locf):,} lignes × {len(lookup_locf.columns)} cols")
 
 # ============================================================
 # PHASE 3 : IMPUTATION + RÉÉCRITURE FICHIER PAR FICHIER
 # ============================================================
 
-print("─" * 70)
-print("PHASE 3 — Imputation et réécriture par année")
-print("─" * 70)
+logger.info("─" * 70)
+logger.info("PHASE 3 — Imputation et réécriture par année")
+logger.info("─" * 70)
 
 bilan_global: dict[str, dict[str, int]] = {col: {} for col in COLS_SALAIRE}
 sort_cols_base = ["matricule", "mois_annee"]
 
 for cle in cles_silver:
     annee = annee_depuis_cle(cle)
-    print(f"\n   ┌─ [{annee}] ─────────────────────────────")
+    logger.info(f"   ┌─ [{annee}] ─────────────────────────────")
 
     df = lire_parquet_s3(BUCKET_SILVER, cle)
     n_annee = len(df)
@@ -402,7 +374,7 @@ for cle in cles_silver:
 
         n_fwd = int(df[flag_fwd].sum()) if flag_fwd in df.columns else 0
         n_bwd = int(df[flag_bwd].sum()) if flag_bwd in df.columns else 0
-        print(f"   │  {col:<15} LOCF_FWD : {n_fwd:,}   LOCF_BWD : {n_bwd:,}")
+        logger.info(f"   │  {col:<15} LOCF_FWD : {n_fwd:,}   LOCF_BWD : {n_bwd:,}")
 
     # Drop colonnes LOCF temporaires
     df = df.drop([c for c in df.columns if c.startswith("_locf_")])
@@ -455,7 +427,7 @@ for cle in cles_silver:
             df = df.drop(["_med", "_mask_imp_bool"])
 
             if n_imp > 0:
-                print(f"   │  {col:<15} {niveau}       : {n_imp:,}")
+                logger.info(f"   │  {col:<15} {niveau}       : {n_imp:,}")
 
     # ── Colonnes SOURCE ────────────────────────────────────
     for col in COLS_SALAIRE:
@@ -522,19 +494,19 @@ for cle in cles_silver:
             .value_counts()
             .sort("count", descending=True)
         )
-        print(f"   │  {col} SOURCE :")
+        logger.info(f"   │  {col} SOURCE :")
         for row in counts.iter_rows(named=True):
             src = row[src_col]
             n   = row["count"]
-            print(f"   │    {src:<18} : {n:,}  ({100*n/n_annee:.1f}%)")
+            logger.info(f"   │    {src:<18} : {n:,}  ({100*n/n_annee:.1f}%)")
             bilan_global[col][src] = bilan_global[col].get(src, 0) + n
 
     # ── Écriture ──────────────────────────────────────────
     sort_cols = [c for c in sort_cols_base if c in df.columns]
     df = df.sort(sort_cols, nulls_last=True)
-    print(f"   │")
+    logger.info(f"   │")
     ecrire_parquet_s3(df, BUCKET_SILVER, cle)
-    print(f"   └─────────────────────────────────────────")
+    logger.info(f"   └─────────────────────────────────────────")
 
     del df
     gc.collect()
@@ -546,11 +518,9 @@ gc.collect()
 # RÉSUMÉ FINAL
 # ============================================================
 
-print()
-print("=" * 70)
-print("BILAN GLOBAL IMPUTATION SALAIRES")
-print("=" * 70)
-print()
+logger.info("=" * 70)
+logger.info("BILAN GLOBAL IMPUTATION SALAIRES")
+logger.info("=" * 70)
 
 ORDRE_SOURCE = ["OBSERVE", "LOCF_FWD", "LOCF_BWD",
                 "IMPUTE_L1", "IMPUTE_L2", "IMPUTE_L3", "IMPUTE_L4",
@@ -560,20 +530,16 @@ for col in COLS_SALAIRE:
     if not bilan_global[col]:
         continue
     n_tot = sum(bilan_global[col].values())
-    print(f"  {col} (total : {n_tot:,}) :")
+    logger.info(f"  {col} (total : {n_tot:,}) :")
     for src in ORDRE_SOURCE:
         n = bilan_global[col].get(src, 0)
         if n > 0:
-            print(f"    {src:<18} : {n:,}  ({100*n/n_tot:.1f}%)")
-print()
+            logger.info(f"    {src:<18} : {n:,}  ({100*n/n_tot:.1f}%)")
 
-print("=" * 70)
-print("✓ IMPUTATION SALAIRES SILVER TERMINÉE")
-print("=" * 70)
-print()
-print("Colonnes ajoutées dans tous les fichiers Silver :")
-print("  montant_brut_SOURCE — OBSERVE | LOCF_FWD | LOCF_BWD |")
-print("                        IMPUTE_L1..L4 | NON_IMPUTABLE")
-print("  montant_net_SOURCE  — idem")
-print()
-print("Prochaine étape : exécuter 04_validation_silver.py")
+logger.info("=" * 70)
+logger.info("✓ IMPUTATION SALAIRES SILVER TERMINÉE")
+logger.info("=" * 70)
+logger.info("Colonnes ajoutées dans tous les fichiers Silver :")
+logger.info("  montant_brut_SOURCE — OBSERVE | LOCF_FWD | LOCF_BWD | IMPUTE_L1..L4 | NON_IMPUTABLE")
+logger.info("  montant_net_SOURCE  — idem")
+logger.info("Prochaine étape : exécuter 04_validation_silver.py")

@@ -28,84 +28,69 @@ import io
 import os
 import sys
 import csv
-from dotenv import load_dotenv
-import boto3
-from botocore.client import Config
+from common.s3_client import create_s3_client, get_required_env, load_pipeline_env
+from common.logging_config import setup_pipeline_logging
 import polars as pl
 import psycopg2
 
-load_dotenv(".env")
+load_pipeline_env()
 
 # ============================================================
 # CONFIGURATION
 # ============================================================
 
-MINIO_ENDPOINT   = os.getenv("MINIO_ENDPOINT")
-MINIO_ACCESS_KEY = os.getenv("MINIO_ACCESS_KEY")
-MINIO_SECRET_KEY = os.getenv("MINIO_SECRET_KEY")
 BUCKET_GOLD      = os.getenv("BUCKET_GOLD", "gold")
 
-PG_HOST     = os.getenv("PG_HOST")
+PG_HOST     = get_required_env("PG_HOST")
 PG_PORT     = os.getenv("PG_PORT", "5432")
-PG_DB       = os.getenv("PG_DB")
-PG_USER     = os.getenv("PG_USER")
-PG_PASSWORD = os.getenv("PG_PASSWORD")
+PG_DB       = get_required_env("PG_DB")
+PG_USER     = get_required_env("PG_USER")
+PG_PASSWORD = get_required_env("PG_PASSWORD")
 
 # Vérification que les variables critiques sont bien définies
 _manquantes = [k for k, v in {
-    "MINIO_ENDPOINT": MINIO_ENDPOINT, "MINIO_ACCESS_KEY": MINIO_ACCESS_KEY,
-    "MINIO_SECRET_KEY": MINIO_SECRET_KEY, "PG_HOST": PG_HOST,
-    "PG_DB": PG_DB, "PG_USER": PG_USER, "PG_PASSWORD": PG_PASSWORD,
+    "PG_HOST": PG_HOST, "PG_DB": PG_DB, "PG_USER": PG_USER, "PG_PASSWORD": PG_PASSWORD,
 }.items() if not v]
+
+# ============================================================
+# CLIENT S3
+# ============================================================
+
+s3 = create_s3_client()
+logger, _ = setup_pipeline_logging("09_charger_panel_pg")
+
 if _manquantes:
-    print(f"✗ Variables d'environnement manquantes : {_manquantes}")
-    print("  → Vérifier le fichier .env")
+    logger.error(f"Variables d'environnement manquantes : {_manquantes} — vérifier le fichier .env")
     sys.exit(1)
 
 KEY_PANEL_COMPLET = "panel_admin/panel_complet.parquet"
 PG_TABLE          = "panel"
 
 # ============================================================
-# CLIENT S3
-# ============================================================
-
-s3 = boto3.client(
-    "s3",
-    endpoint_url          = MINIO_ENDPOINT,
-    aws_access_key_id     = MINIO_ACCESS_KEY,
-    aws_secret_access_key = MINIO_SECRET_KEY,
-    config                = Config(signature_version="s3v4"),
-    region_name           = "us-east-1",
-    verify                = False,
-)
-
-# ============================================================
 # CHARGEMENT
 # ============================================================
 
-print("=" * 70)
-print("CHARGEMENT PANEL → POSTGRESQL")
-print("=" * 70)
-print()
-print(f"Source  : s3://{BUCKET_GOLD}/{KEY_PANEL_COMPLET}")
-print(f"Cible   : {PG_HOST}:{PG_PORT}/{PG_DB}.{PG_TABLE}")
-print()
+logger.info("=" * 70)
+logger.info("CHARGEMENT PANEL → POSTGRESQL")
+logger.info("=" * 70)
+logger.info(f"Source  : s3://{BUCKET_GOLD}/{KEY_PANEL_COMPLET}")
+logger.info(f"Cible   : {PG_HOST}:{PG_PORT}/{PG_DB}.{PG_TABLE}")
 
 # --- Étape 1 : téléchargement depuis MinIO ---
-print("[1/4] Téléchargement depuis MinIO...")
+logger.info("[1/4] Téléchargement depuis MinIO...")
 buf = io.BytesIO()
 s3.download_fileobj(BUCKET_GOLD, KEY_PANEL_COMPLET, buf)
 buf.seek(0)
 taille_mb = len(buf.getvalue()) / 1024**2
-print(f"      ✓  {taille_mb:.1f} MB téléchargés")
+logger.info(f"      ✓  {taille_mb:.1f} MB téléchargés")
 
 # --- Étape 2 : lecture Polars ---
-print("[2/4] Lecture Polars...")
+logger.info("[2/4] Lecture Polars...")
 df = pl.read_parquet(buf)
-print(f"      ✓  {len(df):,} lignes × {len(df.columns)} colonnes")
+logger.info(f"      ✓  {len(df):,} lignes × {len(df.columns)} colonnes")
 
 # --- Étape 3 : chargement PostgreSQL ---
-print("[3/4] Connexion à PostgreSQL...")
+logger.info("[3/4] Connexion à PostgreSQL...")
 try:
     conn = psycopg2.connect(
         host     = PG_HOST,
@@ -116,12 +101,12 @@ try:
     )
     conn.autocommit = False
     cur = conn.cursor()
-    print("      ✓")
+    logger.info("      ✓ Connexion établie")
 except Exception as e:
-    print(f"      ✗ Impossible de se connecter à PostgreSQL : {e}")
+    logger.error(f"      ✗ Impossible de se connecter à PostgreSQL : {e}")
     sys.exit(1)
 
-print(f"[4/4] Chargement dans {PG_TABLE} (DROP + CREATE + COPY)...")
+logger.info(f"[4/4] Chargement dans {PG_TABLE} (DROP + CREATE + COPY)...")
 try:
     # Mapping types Polars → PostgreSQL
     TYPE_MAP = {
@@ -151,11 +136,11 @@ try:
     )
 
     conn.commit()
-    print("      ✓")
+    logger.info("      ✓ Chargement réussi")
 
 except Exception as e:
     conn.rollback()
-    print(f"      ✗ Erreur lors du chargement : {e}")
+    logger.error(f"      ✗ Erreur lors du chargement : {e}")
     cur.close()
     conn.close()
     sys.exit(1)
@@ -174,13 +159,10 @@ periode = cur.fetchone()
 cur.close()
 conn.close()
 
-print()
-print("=" * 70)
-print("✓ CHARGEMENT TERMINÉ")
-print("=" * 70)
-print(f"  Lignes chargées : {nb_lignes:,}")
+logger.info("=" * 70)
+logger.info("✓ CHARGEMENT TERMINÉ")
+logger.info("=" * 70)
+logger.info(f"  Lignes chargées : {nb_lignes:,}")
 if periode:
-    print(f"  Période         : {periode[0]} → {periode[1]}")
-print()
-print("Prochaine étape : bash src/pipeline/10_refresh_superset.sh")
-print()
+    logger.info(f"  Période         : {periode[0]} → {periode[1]}")
+logger.info("Prochaine étape : bash src/pipeline/10_refresh_superset.sh")

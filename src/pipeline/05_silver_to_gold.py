@@ -28,19 +28,11 @@ import gc
 import io
 import os
 import re
-from dotenv import load_dotenv
-import boto3
-from botocore.client import Config
+from common.s3_client import create_s3_client
+from common.logging_config import setup_pipeline_logging
 import polars as pl
 
-load_dotenv(".env")
-
 # --- CONFIGURATION ---
-
-# LORSQU'ON TRAVAILLE DEPUIS SA MACHINE LOCAL
-MINIO_ENDPOINT   = os.getenv("MINIO_ENDPOINT",   "http://192.168.1.230:30137")
-MINIO_ACCESS_KEY = os.getenv("MINIO_ACCESS_KEY", "datalab-team")
-MINIO_SECRET_KEY = os.getenv("MINIO_SECRET_KEY", "minio-datalabteam123")
 
 BUCKET_SILVER  = os.getenv("BUCKET_SILVER",  "silver")
 BUCKET_GOLD    = os.getenv("BUCKET_GOLD",    "gold")
@@ -52,20 +44,8 @@ PREFIX_EXPORTS = "panel_admin/exports_gold"
 
 
 # --- CLIENT S3 (MinIO) ---
-s3 = boto3.client(
-    "s3",
-    endpoint_url          = MINIO_ENDPOINT,
-    aws_access_key_id     = MINIO_ACCESS_KEY,
-    aws_secret_access_key = MINIO_SECRET_KEY,
-    config                = Config(
-        signature_version = "s3v4",
-        retries           = {"max_attempts": 5, "mode": "adaptive"},
-        connect_timeout   = 30,
-        read_timeout      = 120,
-    ),
-    region_name = "us-east-1",
-    verify      = False,
-)
+s3 = create_s3_client()
+logger, _ = setup_pipeline_logging("05_silver_to_gold")
 
 
 def lire_parquet_s3(bucket: str, key: str) -> pl.DataFrame:
@@ -81,7 +61,7 @@ def ecrire_parquet_s3(df: pl.DataFrame, bucket: str, key: str) -> None:
     buf.seek(0)
     taille = len(buf.getvalue()) / 1024**2
     s3.put_object(Bucket=bucket, Key=key, Body=buf.getvalue())
-    print(f"  ✓ s3://{bucket}/{key}  ({len(df):,} lignes  {taille:.1f} MB)")
+    logger.info(f"✓ s3://{bucket}/{key}  ({len(df):,} lignes  {taille:.1f} MB)")
 
 
 def exporter_csv_staging(df: pl.DataFrame, nom_fichier: str) -> None:
@@ -91,17 +71,16 @@ def exporter_csv_staging(df: pl.DataFrame, nom_fichier: str) -> None:
         Key=f"{PREFIX_EXPORTS}/{nom_fichier}",
         Body=csv_bytes,
     )
-    print(f"  ✓ {nom_fichier}  ({len(df):,} lignes)")
+    logger.info(f"✓ {nom_fichier}  ({len(df):,} lignes)")
 
 
 # ============================================================
 # LISTER LES FICHIERS SILVER
 # ============================================================
 
-print("=" * 70)
-print("SILVER → GOLD : Panel Administratif")
-print("=" * 70)
-print()
+logger.info("=" * 70)
+logger.info("SILVER → GOLD : Panel Administratif")
+logger.info("=" * 70)
 
 pages_silver = s3.get_paginator("list_objects_v2").paginate(
     Bucket=BUCKET_SILVER, Prefix=PREFIX_SILVER
@@ -113,7 +92,7 @@ cles_silver = sorted([
     if obj["Key"].endswith(".parquet")
 ])
 
-print(f"Fichiers Silver trouvés : {len(cles_silver)}\n")
+logger.info(f"Fichiers Silver trouvés : {len(cles_silver)}")
 
 # ============================================================
 # BOUCLE PAR ANNÉE : agrégations Gold
@@ -128,9 +107,8 @@ for cle in cles_silver:
     annee = re.search(r"20\d{2}", os.path.basename(cle))
     annee = annee.group() if annee else os.path.splitext(os.path.basename(cle))[0]
 
-    print(f"[{annee}] Lecture...", end=" ", flush=True)
     df = lire_parquet_s3(BUCKET_SILVER, cle)
-    print(f"✓  {len(df):,} lignes", flush=True)
+    logger.info(f"[{annee}] ✓ {len(df):,} lignes")
 
     # --- GOLD 1 : Masse salariale ---
     # Les nulls résiduels (NON_IMPUTABLE) sont ignorés nativement
@@ -162,7 +140,7 @@ for cle in cles_silver:
             .sort(["mois_annee", "organisme"])
         )
         frames_ms.append(ms)
-        print(f"  Masse salariale : {len(ms):,} lignes agrégées", flush=True)
+        logger.info(f"  Masse salariale : {len(ms):,} lignes agrégées")
 
     # --- GOLD 2 : Effectifs ---
     eff = (
@@ -185,7 +163,7 @@ for cle in cles_silver:
         .sort(["mois_annee", "situation_normalisee"])
     )
     frames_eff.append(eff)
-    print(f"  Effectifs       : {len(eff):,} lignes agrégées", flush=True)
+    logger.info(f"  Effectifs       : {len(eff):,} lignes agrégées")
 
     del df
     gc.collect()
@@ -194,11 +172,9 @@ for cle in cles_silver:
 # CONCAT FINAL ET ÉCRITURE GOLD
 # ============================================================
 
-print()
-print("=" * 70)
-print("ÉCRITURE GOLD")
-print("=" * 70)
-print()
+logger.info("=" * 70)
+logger.info("ÉCRITURE GOLD")
+logger.info("=" * 70)
 
 # Masse salariale
 df_masse_salariale = (
@@ -218,11 +194,9 @@ ecrire_parquet_s3(df_effectifs, BUCKET_GOLD, KEY_GOLD_EFF)
 # EXPORT CSV VERS STAGING
 # ============================================================
 
-print()
-print("=" * 70)
-print("EXPORT CSV vers staging")
-print("=" * 70)
-print()
+logger.info("=" * 70)
+logger.info("EXPORT CSV vers staging")
+logger.info("=" * 70)
 
 exporter_csv_staging(df_masse_salariale, "masse_salariale_par_periode_organisme.csv")
 exporter_csv_staging(df_effectifs,       "effectifs_par_periode.csv")
@@ -231,20 +205,17 @@ exporter_csv_staging(df_effectifs,       "effectifs_par_periode.csv")
 # RÉSUMÉ
 # ============================================================
 
-print()
-print("=" * 70)
-print("RÉSUMÉ GOLD")
-print("=" * 70)
-print()
-print(f"Années traitées          : {len(cles_silver)}")
-print(f"Masse salariale          : {len(df_masse_salariale):,} lignes")
-print(f"Effectifs                : {len(df_effectifs):,} lignes")
-print(f"\nExports CSV : s3://{BUCKET_STAGING}/{PREFIX_EXPORTS}/")
-print()
-print("=" * 70)
-print("✓ PIPELINE PANEL ADMIN COMPLET")
-print("=" * 70)
-print("\nTables Gold disponibles :")
-print(f"  s3://{BUCKET_GOLD}/{KEY_GOLD_MS}")
-print(f"  s3://{BUCKET_GOLD}/{KEY_GOLD_EFF}")
-print("\nProchaine étape : exécuter 06_compiler_panel.py")
+logger.info("=" * 70)
+logger.info("RÉSUMÉ GOLD")
+logger.info("=" * 70)
+logger.info(f"Années traitées          : {len(cles_silver)}")
+logger.info(f"Masse salariale          : {len(df_masse_salariale):,} lignes")
+logger.info(f"Effectifs                : {len(df_effectifs):,} lignes")
+logger.info(f"Exports CSV : s3://{BUCKET_STAGING}/{PREFIX_EXPORTS}/")
+logger.info("=" * 70)
+logger.info("✓ PIPELINE PANEL ADMIN COMPLET")
+logger.info("=" * 70)
+logger.info(f"Tables Gold disponibles :")
+logger.info(f"  s3://{BUCKET_GOLD}/{KEY_GOLD_MS}")
+logger.info(f"  s3://{BUCKET_GOLD}/{KEY_GOLD_EFF}")
+logger.info("Prochaine étape : exécuter 06_compiler_panel.py")

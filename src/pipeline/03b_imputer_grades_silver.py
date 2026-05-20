@@ -32,19 +32,11 @@ import gc
 import io
 import os
 import re
-from dotenv import load_dotenv
-import boto3
-from botocore.client import Config
+from common.s3_client import create_s3_client
+from common.logging_config import setup_pipeline_logging
 import polars as pl
 
-load_dotenv(".env")
-
 # --- CONFIGURATION ---
-
-# LORSQU'ON TRAVAILLE DEPUIS SA MACHINE LOCAL
-MINIO_ENDPOINT   = os.getenv("MINIO_ENDPOINT",   "http://192.168.1.230:30137")
-MINIO_ACCESS_KEY = os.getenv("MINIO_ACCESS_KEY", "datalab-team")
-MINIO_SECRET_KEY = os.getenv("MINIO_SECRET_KEY", "minio-datalabteam123")
 
 BUCKET_SILVER = os.getenv("BUCKET_SILVER", "silver")
 PREFIX_SILVER = "panel_admin"
@@ -58,20 +50,8 @@ GRADES_VALIDES = (
 GRADES_INVALIDES = ["B7", "C7", "D7", "A", "B", "C", "D"]
 
 # --- CLIENT S3 ---
-s3 = boto3.client(
-    "s3",
-    endpoint_url          = MINIO_ENDPOINT,
-    aws_access_key_id     = MINIO_ACCESS_KEY,
-    aws_secret_access_key = MINIO_SECRET_KEY,
-    config                = Config(
-        signature_version = "s3v4",
-        retries           = {"max_attempts": 5, "mode": "adaptive"},
-        connect_timeout   = 30,
-        read_timeout      = 120,
-    ),
-    region_name = "us-east-1",
-    verify      = False,
-)
+s3 = create_s3_client()
+logger, _ = setup_pipeline_logging("03b_imputer_grades_silver")
 
 # ============================================================
 # FONCTIONS UTILITAIRES
@@ -90,7 +70,7 @@ def ecrire_parquet_s3(df: pl.DataFrame, bucket: str, key: str) -> None:
     buf.seek(0)
     taille = len(buf.getvalue()) / 1024**2
     s3.put_object(Bucket=bucket, Key=key, Body=buf.getvalue())
-    print(f"  ✓ s3://{bucket}/{key}  ({len(df):,} lignes × {len(df.columns)} cols  {taille:.1f} MB)")
+    logger.info(f"  ✓ s3://{bucket}/{key}  ({len(df):,} lignes × {len(df.columns)} cols  {taille:.1f} MB)")
 
 
 def extraire_grade(statut: str | None) -> str:
@@ -149,10 +129,9 @@ def construire_lookup_forward_fill(
 # ÉTAPE 1 : LISTER LES FICHIERS SILVER
 # ============================================================
 
-print("=" * 70)
-print("IMPUTATION DES GRADES — Silver")
-print("=" * 70)
-print()
+logger.info("=" * 70)
+logger.info("IMPUTATION DES GRADES — Silver")
+logger.info("=" * 70)
 
 pages_silver = s3.get_paginator("list_objects_v2").paginate(
     Bucket=BUCKET_SILVER, Prefix=PREFIX_SILVER
@@ -164,7 +143,7 @@ cles_silver = sorted([
     if obj["Key"].endswith(".parquet")
 ])
 
-print(f"Fichiers Silver trouvés : {len(cles_silver)}\n")
+logger.info(f"Fichiers Silver trouvés : {len(cles_silver)}")
 
 # ============================================================
 # ÉTAPE 2 : CHARGEMENT COMPLET POUR CONSTRUIRE LES LOOKUPS
@@ -174,33 +153,32 @@ print(f"Fichiers Silver trouvés : {len(cles_silver)}\n")
 # On charge tout le Silver en mémoire, puis on libère avant la
 # boucle d'écriture.
 
-print("1. Chargement complet du Silver pour construction des lookups...")
+logger.info("1. Chargement complet du Silver pour construction des lookups...")
 
 frames_all = []
 for cle in cles_silver:
     annee = re.search(r"20\d{2}", os.path.basename(cle))
     annee = annee.group() if annee else os.path.basename(cle)
-    print(f"   [{annee}] Lecture...", end=" ", flush=True)
     df = lire_parquet_s3(BUCKET_SILVER, cle)
     cols_needed = ["statut_fonctionnaire", "cle_unique", "emploi", "code_organisme", "mois_annee"]
     cols_present = [c for c in cols_needed if c in df.columns]
     frames_all.append(df.select(cols_present))
-    print(f"✓ {len(df):,} lignes")
+    logger.info(f"   [{annee}] ✓ {len(df):,} lignes")
     del df
 
 panel_all = pl.concat(frames_all, how="diagonal")
 del frames_all
 gc.collect()
-print(f"   ✓ Total : {len(panel_all):,} lignes\n")
+logger.info(f"   ✓ Total : {len(panel_all):,} lignes")
 
 # ============================================================
 # ÉTAPE 3 : EXTRACTION DU GRADE BRUT ET STATS INITIALES
 # ============================================================
 
-print("2. Extraction du grade depuis statut_fonctionnaire...")
+logger.info("2. Extraction du grade depuis statut_fonctionnaire...")
 
 if "statut_fonctionnaire" not in panel_all.columns:
-    print("   ⚠️  Colonne statut_fonctionnaire absente — aucune imputation possible")
+    logger.warning("   ⚠️  Colonne statut_fonctionnaire absente — aucune imputation possible")
     lk_forward = None
 else:
     panel_all = panel_all.with_columns(
@@ -214,9 +192,9 @@ else:
     n_invalides = int(panel_all["GRADE"].is_in(GRADES_INVALIDES).sum())
     n_nf        = int((panel_all["GRADE"] == "NF").sum())
 
-    print(f"   Grades valides     : {n_valides:,}  ({100*n_valides/n_total:.1f}%)")
-    print(f"   Grades invalides   : {n_invalides:,}  ({100*n_invalides/n_total:.1f}%)")
-    print(f"   Non fonctionnaires : {n_nf:,}  ({100*n_nf/n_total:.1f}%)\n")
+    logger.info(f"   Grades valides     : {n_valides:,}  ({100*n_valides/n_total:.1f}%)")
+    logger.info(f"   Grades invalides   : {n_invalides:,}  ({100*n_invalides/n_total:.1f}%)")
+    logger.info(f"   Non fonctionnaires : {n_nf:,}  ({100*n_nf/n_total:.1f}%)")
 
     # ============================================================
     # ÉTAPE 4 : CONSTRUCTION DU LOOKUP FORWARD-FILL
@@ -231,7 +209,7 @@ else:
     lk_forward = None
 
     if n_invalides > 0 and has_cle_unique and has_emploi:
-        print("3. Construction du lookup forward-fill (grade futur par individu)...")
+        logger.info("3. Construction du lookup forward-fill (grade futur par individu)...")
 
         panel_all = panel_all.with_columns([
             pl.col("mois_annee").str.slice(2, 4).cast(pl.Int32, strict=False).alias("_annee"),
@@ -240,7 +218,7 @@ else:
         base_valides = panel_all.filter(pl.col("GRADE").is_in(GRADES_VALIDES))
 
         max_annee = int(base_valides["_annee"].max())
-        print(f"   Année max avec grades valides : {max_annee}")
+        logger.info(f"   Année max avec grades valides : {max_annee}")
 
         lk_forward = (
             base_valides
@@ -255,25 +233,23 @@ else:
                 .alias("_annee_source"),
             )
         )
-        print(f"   ✓ Lookup forward-fill : {len(lk_forward):,} individus\n")
+        logger.info(f"   ✓ Lookup forward-fill : {len(lk_forward):,} individus")
 
         del base_valides
 
     elif n_invalides > 0 and (not has_cle_unique or not has_emploi):
-        print("3. ⚠️  Colonnes cle_unique/emploi absentes — forward-fill impossible")
+        logger.warning("3. ⚠️  Colonnes cle_unique/emploi absentes — forward-fill impossible")
     else:
-        print("3. ✓ Aucun grade invalide détecté — lookup non nécessaire")
+        logger.info("3. ✓ Aucun grade invalide détecté — lookup non nécessaire")
 
 del panel_all
 gc.collect()
-print()
 
 # ============================================================
 # ÉTAPE 5 : APPLICATION ANNÉE PAR ANNÉE + RÉÉCRITURE SILVER
 # ============================================================
 
-print("4. Application de l'imputation et réécriture Silver...")
-print()
+logger.info("4. Application de l'imputation et réécriture Silver...")
 
 stats_globales = {"OBSERVE": 0, "IMPUTE": 0, "NF_NON_IMPUTABLE": 0}
 
@@ -281,9 +257,8 @@ for cle in cles_silver:
     annee = re.search(r"20\d{2}", os.path.basename(cle))
     annee = annee.group() if annee else os.path.basename(cle)
 
-    print(f"  [{annee}] Lecture...", end=" ", flush=True)
     df = lire_parquet_s3(BUCKET_SILVER, cle)
-    print(f"✓ {len(df):,} lignes")
+    logger.info(f"  [{annee}] ✓ {len(df):,} lignes")
 
     df = df.select([c for c in df.columns if c not in ("GRADE", "GRADE_SOURCE")])
 
@@ -320,7 +295,7 @@ for cle in cles_silver:
             pl.col("_grade_invalide") & pl.col("_GRADE_FUTUR").is_not_null()
         ).select(pl.len()).item())
         if n_ff > 0:
-            print(f"    Forward-fill appliqué : {n_ff:,} grades")
+            logger.info(f"    [{annee}] Forward-fill appliqué : {n_ff:,} grades")
 
         df = df.drop(["_GRADE_FUTUR", "_annee_source"])
 
@@ -346,7 +321,7 @@ for cle in cles_silver:
     stats_globales["OBSERVE"]          += n_obs
     stats_globales["IMPUTE"]           += n_imp
     stats_globales["NF_NON_IMPUTABLE"] += n_nfi
-    print(f"    OBSERVE={n_obs:,}  IMPUTE={n_imp:,}  NF_NON_IMPUTABLE={n_nfi:,}")
+    logger.info(f"    [{annee}] OBSERVE={n_obs:,}  IMPUTE={n_imp:,}  NF_NON_IMPUTABLE={n_nfi:,}")
 
     ecrire_parquet_s3(df, BUCKET_SILVER, cle)
     del df
@@ -357,21 +332,16 @@ for cle in cles_silver:
 # ============================================================
 
 n_tot = sum(stats_globales.values())
-print()
-print("=" * 70)
-print("RÉSUMÉ IMPUTATION GRADES — Silver")
-print("=" * 70)
-print()
+logger.info("=" * 70)
+logger.info("RÉSUMÉ IMPUTATION GRADES — Silver")
+logger.info("=" * 70)
 for src, n in stats_globales.items():
     pct = 100 * n / n_tot if n_tot > 0 else 0
-    print(f"  {src:<20} : {n:,}  ({pct:.1f}%)")
-print()
-print("=" * 70)
-print("✓ IMPUTATION GRADES SILVER TERMINÉE")
-print("=" * 70)
-print()
-print("Colonnes ajoutées dans tous les fichiers Silver :")
-print("  GRADE        — grade final (valide ou imputé)")
-print("  GRADE_SOURCE — OBSERVE | IMPUTE | NF_NON_IMPUTABLE")
-print()
-print("Prochaine étape : exécuter 03c_imputer_salaires_silver.py")
+    logger.info(f"  {src:<20} : {n:,}  ({pct:.1f}%)")
+logger.info("=" * 70)
+logger.info("✓ IMPUTATION GRADES SILVER TERMINÉE")
+logger.info("=" * 70)
+logger.info("Colonnes ajoutées dans tous les fichiers Silver :")
+logger.info("  GRADE        — grade final (valide ou imputé)")
+logger.info("  GRADE_SOURCE — OBSERVE | IMPUTE | NF_NON_IMPUTABLE")
+logger.info("Prochaine étape : exécuter 03c_imputer_salaires_silver.py")

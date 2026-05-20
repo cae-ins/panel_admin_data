@@ -17,34 +17,19 @@
 import os
 import io
 import tempfile
-from dotenv import load_dotenv
-import boto3
-from botocore.client import Config
+from common.s3_client import create_s3_client
+from common.logging_config import setup_pipeline_logging
 import polars as pl
 
-load_dotenv(".env")
-
 # --- CONFIGURATION ---
-
-# LORSQU'ON TRAVAILLE DEPUIS SA MACHINE LOCAL
-MINIO_ENDPOINT   = os.getenv("MINIO_ENDPOINT",   "http://192.168.1.230:30137")
-MINIO_ACCESS_KEY = os.getenv("MINIO_ACCESS_KEY", "datalab-team")
-MINIO_SECRET_KEY = os.getenv("MINIO_SECRET_KEY", "minio-datalabteam123")
 
 BUCKET          = os.getenv("BUCKET_STAGING", "staging")
 PREFIX_MENSUELS = "panel_admin/fichiers_mensuels"
 PREFIX_SORTIE   = "panel_admin/pre_analyse"
 
 # --- CLIENT S3 (MinIO) ---
-s3 = boto3.client(
-    "s3",
-    endpoint_url          = MINIO_ENDPOINT,
-    aws_access_key_id     = MINIO_ACCESS_KEY,
-    aws_secret_access_key = MINIO_SECRET_KEY,
-    config                = Config(signature_version="s3v4"),
-    region_name           = "us-east-1",
-    verify                = False,
-)
+s3 = create_s3_client()
+logger, _ = setup_pipeline_logging("01_pre_analyse")
 
 
 def sauvegarder_rapport(df: pl.DataFrame, nom_fichier: str) -> None:
@@ -54,13 +39,12 @@ def sauvegarder_rapport(df: pl.DataFrame, nom_fichier: str) -> None:
         Key=f"{PREFIX_SORTIE}/{nom_fichier}",
         Body=csv_bytes,
     )
-    print(f"✓ {nom_fichier}")
+    logger.info(f"✓ {nom_fichier}")
 
 
-print("=" * 70)
-print("PRÉ-ANALYSE : COLONNES 2015-2025 (depuis MinIO staging)")
-print("=" * 70)
-print()
+logger.info("=" * 70)
+logger.info("PRÉ-ANALYSE : COLONNES 2015-2025 (depuis MinIO staging)")
+logger.info("=" * 70)
 
 # --- LISTER LES FICHIERS DANS STAGING ---
 paginator = s3.get_paginator("list_objects_v2")
@@ -73,17 +57,16 @@ fichiers_minio = sorted([
     if obj["Key"].lower().endswith(".xlsx")
 ])
 
-print(f"✓ {len(fichiers_minio)} fichiers trouvés dans staging\n")
+logger.info(f"✓ {len(fichiers_minio)} fichiers trouvés dans staging")
 
 # --- EXTRACTION DES NOMS DE COLONNES ---
-print("Extraction des noms de colonnes...\n")
+logger.info("Extraction des noms de colonnes...")
 
 colonnes_par_periode: dict = {}
 erreurs: list = []
 
 for chemin_objet in fichiers_minio:
     periode = os.path.splitext(os.path.basename(chemin_objet))[0]
-    print(f"  {periode}... ", end="", flush=True)
 
     tmp_path = None
     try:
@@ -106,20 +89,20 @@ for chemin_objet in fichiers_minio:
             "nb_f2":       len(f2.columns),
             "nb_codes_f2": len(codes_num_f2),
         }
-        print(f"✓  F1:{len(f1.columns)} cols  F2:{len(f2.columns)} cols  "
-              f"(dont {len(codes_num_f2)} codes numériques)")
+        logger.info(f"{periode} ✓  F1:{len(f1.columns)} cols  F2:{len(f2.columns)} cols  "
+                    f"(dont {len(codes_num_f2)} codes numériques)")
         os.unlink(tmp_path)
 
     except Exception as e:
-        print(f"✗ ERREUR : {e}")
+        logger.error(f"{periode} ✗ ERREUR : {e}")
         erreurs.append(periode)
         if tmp_path and os.path.exists(tmp_path):
             os.unlink(tmp_path)
 
-msg = f"\n✓ {len(colonnes_par_periode)} fichiers analysés"
+msg = f"✓ {len(colonnes_par_periode)} fichiers analysés"
 if erreurs:
     msg += f" | ⚠️  {len(erreurs)} erreur(s) : {', '.join(erreurs)}"
-print(msg + "\n")
+logger.info(msg)
 
 periodes = list(colonnes_par_periode.keys())
 
@@ -127,10 +110,9 @@ periodes = list(colonnes_par_periode.keys())
 # CHANGEMENTS FEUILLE 1
 # ============================================================
 
-print("=" * 70)
-print("CHANGEMENTS FEUILLE 1 (DONNÉES AGENTS)")
-print("=" * 70)
-print()
+logger.info("=" * 70)
+logger.info("CHANGEMENTS FEUILLE 1 (DONNÉES AGENTS)")
+logger.info("=" * 70)
 
 changements_f1: dict = {}
 
@@ -144,20 +126,19 @@ for i in range(len(periodes) - 1):
     apparues  = cols2 - cols1
 
     if disparues or apparues:
-        print(f"{p1} → {p2} :")
+        logger.info(f"{p1} → {p2} :")
         if disparues:
-            print(f"  ❌ DISPARUES ({len(disparues)}) :")
+            logger.info(f"  ❌ DISPARUES ({len(disparues)}) :")
             for col in sorted(disparues)[:10]:
-                print(f"     • {col}")
+                logger.info(f"     • {col}")
             if len(disparues) > 10:
-                print(f"     ... et {len(disparues) - 10} autres")
+                logger.info(f"     ... et {len(disparues) - 10} autres")
         if apparues:
-            print(f"  ✅ APPARUES ({len(apparues)}) :")
+            logger.info(f"  ✅ APPARUES ({len(apparues)}) :")
             for col in sorted(apparues)[:10]:
-                print(f"     • {col}")
+                logger.info(f"     • {col}")
             if len(apparues) > 10:
-                print(f"     ... et {len(apparues) - 10} autres")
-        print()
+                logger.info(f"     ... et {len(apparues) - 10} autres")
         changements_f1[f"{p1}_{p2}"] = {
             "periode_avant": p1,
             "periode_apres": p2,
@@ -166,16 +147,15 @@ for i in range(len(periodes) - 1):
         }
 
 if not changements_f1:
-    print("✓ Aucun changement détecté\n")
+    logger.info("✓ Aucun changement détecté")
 
 # ============================================================
 # CHANGEMENTS FEUILLE 2 — CODES NUMÉRIQUES
 # ============================================================
 
-print("=" * 70)
-print("CHANGEMENTS FEUILLE 2 (CODES NUMÉRIQUES)")
-print("=" * 70)
-print()
+logger.info("=" * 70)
+logger.info("CHANGEMENTS FEUILLE 2 (CODES NUMÉRIQUES)")
+logger.info("=" * 70)
 
 changements_f2: dict = {}
 
@@ -189,18 +169,17 @@ for i in range(len(periodes) - 1):
     apparues  = codes2 - codes1
 
     if disparues or apparues:
-        print(f"{p1} → {p2} :")
+        logger.info(f"{p1} → {p2} :")
         if disparues:
             disparus_tries = sorted(disparues, key=int)
-            print(f"  ❌ CODES DISPARUS ({len(disparues)}) : "
-                  f"{', '.join(disparus_tries[:20])}"
-                  f"{'...' if len(disparues) > 20 else ''}")
+            logger.info(f"  ❌ CODES DISPARUS ({len(disparues)}) : "
+                        f"{', '.join(disparus_tries[:20])}"
+                        f"{'...' if len(disparues) > 20 else ''}")
         if apparues:
             apparus_tries = sorted(apparues, key=int)
-            print(f"  ✅ CODES APPARUS  ({len(apparues)}) : "
-                  f"{', '.join(apparus_tries[:20])}"
-                  f"{'...' if len(apparues) > 20 else ''}")
-        print()
+            logger.info(f"  ✅ CODES APPARUS  ({len(apparues)}) : "
+                        f"{', '.join(apparus_tries[:20])}"
+                        f"{'...' if len(apparues) > 20 else ''}")
         changements_f2[f"{p1}_{p2}"] = {
             "periode_avant": p1,
             "periode_apres": p2,
@@ -209,16 +188,15 @@ for i in range(len(periodes) - 1):
         }
 
 if not changements_f2:
-    print("✓ Aucun changement majeur détecté\n")
+    logger.info("✓ Aucun changement majeur détecté")
 
 # ============================================================
 # STATISTIQUES GLOBALES
 # ============================================================
 
-print("=" * 70)
-print("STATISTIQUES GLOBALES")
-print("=" * 70)
-print()
+logger.info("=" * 70)
+logger.info("STATISTIQUES GLOBALES")
+logger.info("=" * 70)
 
 toutes_cols_f1  = {c for v in colonnes_par_periode.values() for c in v["f1"]}
 toutes_cols_f2  = {c for v in colonnes_par_periode.values() for c in v["f2"]}
@@ -231,33 +209,31 @@ nb_cols_f1  = [v["nb_f1"]       for v in colonnes_par_periode.values()]
 nb_cols_f2  = [v["nb_f2"]       for v in colonnes_par_periode.values()]
 nb_codes_f2 = [v["nb_codes_f2"] for v in colonnes_par_periode.values()]
 
-print(f"Colonnes F1 uniques (toutes périodes) : {len(toutes_cols_f1)}")
-print(f"Colonnes F2 uniques (toutes périodes) : {len(toutes_cols_f2)}")
-print(f"Codes numériques F2 uniques           : {len(tous_codes_f2)}")
+logger.info(f"Colonnes F1 uniques (toutes périodes) : {len(toutes_cols_f1)}")
+logger.info(f"Colonnes F2 uniques (toutes périodes) : {len(toutes_cols_f2)}")
+logger.info(f"Codes numériques F2 uniques           : {len(tous_codes_f2)}")
 
 if tous_codes_f2:
-    print(f"  Min code F2 : {min(tous_codes_f2, key=int)}")
-    print(f"  Max code F2 : {max(tous_codes_f2, key=int)}")
+    logger.info(f"  Min code F2 : {min(tous_codes_f2, key=int)}")
+    logger.info(f"  Max code F2 : {max(tous_codes_f2, key=int)}")
 
-print(f"\nF1 — colonnes/fichier : "
-      f"min={min(nb_cols_f1)}, max={max(nb_cols_f1)}, "
-      f"moy={sum(nb_cols_f1)/len(nb_cols_f1):.1f}")
-print(f"F2 — colonnes/fichier : "
-      f"min={min(nb_cols_f2)}, max={max(nb_cols_f2)}, "
-      f"moy={sum(nb_cols_f2)/len(nb_cols_f2):.1f}")
-print(f"F2 — codes num/fichier : "
-      f"min={min(nb_codes_f2)}, max={max(nb_codes_f2)}, "
-      f"moy={sum(nb_codes_f2)/len(nb_codes_f2):.1f}")
+logger.info(f"F1 — colonnes/fichier : "
+            f"min={min(nb_cols_f1)}, max={max(nb_cols_f1)}, "
+            f"moy={sum(nb_cols_f1)/len(nb_cols_f1):.1f}")
+logger.info(f"F2 — colonnes/fichier : "
+            f"min={min(nb_cols_f2)}, max={max(nb_cols_f2)}, "
+            f"moy={sum(nb_cols_f2)/len(nb_cols_f2):.1f}")
+logger.info(f"F2 — codes num/fichier : "
+            f"min={min(nb_codes_f2)}, max={max(nb_codes_f2)}, "
+            f"moy={sum(nb_codes_f2)/len(nb_codes_f2):.1f}")
 
 # ============================================================
 # SAUVEGARDE DES RAPPORTS
 # ============================================================
 
-print()
-print("=" * 70)
-print("SAUVEGARDE DES RAPPORTS")
-print("=" * 70)
-print()
+logger.info("=" * 70)
+logger.info("SAUVEGARDE DES RAPPORTS")
+logger.info("=" * 70)
 
 # Rapport 1 : colonnes F1 uniques
 sauvegarder_rapport(
@@ -310,6 +286,6 @@ if changements_f2:
                            "type": "APPARU", "code": code})
     sauvegarder_rapport(pl.DataFrame(lignes), "changements_codes_f2.csv")
 
-print(f"\n✓ PRÉ-ANALYSE TERMINÉE")
-print(f"Rapports disponibles dans : s3://{BUCKET}/{PREFIX_SORTIE}/\n")
-print("Prochaine étape : exécuter 02_staging_to_bronze.py")
+logger.info("✓ PRÉ-ANALYSE TERMINÉE")
+logger.info(f"Rapports disponibles dans : s3://{BUCKET}/{PREFIX_SORTIE}/")
+logger.info("Prochaine étape : exécuter 02_staging_to_bronze.py")

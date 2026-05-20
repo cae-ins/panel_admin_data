@@ -61,7 +61,54 @@ python orchestrateur.py --depuis 06
 
 # Lancement d'étapes ciblées
 python orchestrateur.py --etapes 06 07 08
+
+# Visualiser le plan sans exécuter
+python orchestrateur.py --dry-run
+
+# Reprendre après un échec (saute les étapes déjà complétées)
+python orchestrateur.py --resume
+
+# Forcer la ré-exécution complète (ignore l'état précédent)
+python orchestrateur.py --force
 ```
+
+### Idempotence
+
+Après chaque étape réussie, l'orchestrateur enregistre la progression dans `reports/.pipeline_state.json`. En cas d'échec, relancer avec `--resume` reprend automatiquement à la première étape non complétée sans re-traiter les données déjà produites. Après un run complet sans erreur, ce fichier est supprimé automatiquement.
+
+| Scénario | Commande |
+|----------|----------|
+| Échec à l'étape 07, correction appliquée | `python orchestrateur.py --resume` |
+| Nouvelles données, tout re-traiter | `python orchestrateur.py` ou `--force` |
+| Rejouer seulement certaines étapes | `python orchestrateur.py --etapes 07 08` |
+
+### Rapports de run
+
+À chaque exécution, l'orchestrateur génère automatiquement un rapport Markdown horodaté dans `reports/YYYY-MM/run_YYYYMMDD_HHMMSS.md`. Ce rapport contient le statut et la durée de chaque étape, les paramètres d'exécution et la liste des éventuels échecs.
+
+```
+reports/
+  2025-05/
+    run_20250520_143022.md
+```
+
+Ces rapports constituent la trace d'audit des runs. Il est recommandé de les committer après chaque exécution :
+
+```bash
+git add reports/
+git commit -m "run $(date +%Y-%m-%d) — pipeline complet"
+```
+
+### Observabilité
+
+Tous les scripts du pipeline utilisent un logging structuré (`src/pipeline/common/logging_config.py`) configurable via variables d'environnement :
+
+| Variable | Valeur par défaut | Description |
+|----------|-------------------|-------------|
+| `LOG_LEVEL` | `INFO` | Niveau de log (`DEBUG`, `INFO`, `WARNING`, `ERROR`) |
+| `LOG_FORMAT` | `key-value` | Format de sortie (`key-value` ou `json`) |
+| `LOG_TO_FILE` | `false` | Activer l'écriture des logs dans un fichier |
+| `LOG_DIR` | `logs/` | Répertoire des fichiers de log |
 
 ## Étapes du Pipeline
 
@@ -77,4 +124,4 @@ python orchestrateur.py --etapes 06 07 08
 9. **Chargement Final** : Synchronisation du panel vers le système de stockage cible.
 
 ---
-*Projet maintenu par la Cellule d'Analyses Économiques.*
+Cellule d'Analyses Économiques - ANSTAT

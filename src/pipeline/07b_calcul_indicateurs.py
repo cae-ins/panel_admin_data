@@ -50,14 +50,11 @@ import io
 import os
 import re
 import unicodedata
-from dotenv import load_dotenv
-import boto3
-from botocore.client import Config
+from common.s3_client import create_s3_client
+from common.logging_config import setup_pipeline_logging
 import polars as pl
 from openpyxl import Workbook
 from openpyxl.styles import PatternFill, Font, Alignment
-
-load_dotenv(".env")
 
 # ============================================================
 # PARAMÈTRES DE CONFIGURATION
@@ -80,10 +77,6 @@ SEUIL_WINS        = 0.01
 MIN_OBS_WINS      = 100
 
 # ============================================================
-
-MINIO_ENDPOINT   = os.getenv("MINIO_ENDPOINT",   "http://192.168.1.230:30137")
-MINIO_ACCESS_KEY = os.getenv("MINIO_ACCESS_KEY", "datalab-team")
-MINIO_SECRET_KEY = os.getenv("MINIO_SECRET_KEY", "minio-datalabteam123")
 
 BUCKET_GOLD    = os.getenv("BUCKET_GOLD",    "gold")
 BUCKET_STAGING = os.getenv("BUCKET_STAGING", "staging")
@@ -127,27 +120,16 @@ ORDRE_MODELE_ANSTAT = [
 ]
 
 # --- CLIENT S3 ---
-s3 = boto3.client(
-    "s3",
-    endpoint_url          = MINIO_ENDPOINT,
-    aws_access_key_id     = MINIO_ACCESS_KEY,
-    aws_secret_access_key = MINIO_SECRET_KEY,
-    config                = Config(
-        signature_version = "s3v4",
-        retries           = {"max_attempts": 5, "mode": "adaptive"},
-        connect_timeout   = 30,
-        read_timeout      = 120,
-    ),
-    region_name = "us-east-1",
-    verify      = False,
-)
+s3 = create_s3_client()
+logger, _ = setup_pipeline_logging("07b_calcul_indicateurs")
 
-print("=" * 70)
-print(f"INDICATEURS SALAIRES — Mode : "
-      f"{'Salaire brut (cle_unique)' if MODE_SALAIRE_BRUT else 'Revenu salarial (matricule)'}"
-      f" | Période : {'2024-2025' if PERIODE_RECENTE else '2015 → récent'}")
-print("=" * 70)
-print()
+logger.info("=" * 70)
+logger.info(
+    f"INDICATEURS SALAIRES — Mode : "
+    f"{'Salaire brut (cle_unique)' if MODE_SALAIRE_BRUT else 'Revenu salarial (matricule)'}"
+    f" | Période : {'2024-2025' if PERIODE_RECENTE else '2015 → récent'}"
+)
+logger.info("=" * 70)
 
 # ============================================================
 # FONCTIONS UTILITAIRES
@@ -298,7 +280,7 @@ def construire_feuille_anstat(
     for col_letter in ["B", "C", "D"]:
         ws.column_dimensions[col_letter].width = 22
     ws.freeze_panes = "A3"
-    print(f"   ✓ {sheet_name} ({row_cur - 3} lignes)")
+    logger.info(f"   ✓ {sheet_name} ({row_cur - 3} lignes)")
 
 
 def appliquer_style_entete(ws, n_cols: int) -> None:
@@ -323,14 +305,14 @@ def ecrire_feuille(wb: Workbook, nom: str, df: pl.DataFrame) -> None:
             ws.cell(row=i, column=j, value=row[col])
     appliquer_style_entete(ws, len(df.columns))
     ws.freeze_panes = "A2"
-    print(f"   ✓ {nom} ({len(df):,} lignes)")
+    logger.info(f"   ✓ {nom} ({len(df):,} lignes)")
 
 
 # ============================================================
 # 1. CHARGEMENT base_avec_statut_corrigee.parquet
 # ============================================================
 
-print("1. Chargement base_avec_statut_corrigee.parquet...")
+logger.info("1. Chargement base_avec_statut_corrigee.parquet...")
 
 # Essayer la base corrigée d'abord, repli sur la base sans imputation
 try:
@@ -338,50 +320,49 @@ try:
     s3.download_fileobj(BUCKET_GOLD, KEY_BASE_CORRIGEE, buf)
     buf.seek(0)
     base_avec_statut = pl.read_parquet(buf)
-    print(f"   Source : base_avec_statut_corrigee.parquet (avec imputation)")
+    logger.info(f"   Source : base_avec_statut_corrigee.parquet (avec imputation)")
 except Exception:
-    print(f"   ⚠️  base_avec_statut_corrigee.parquet absent — repli sur base_avec_statut.parquet")
+    logger.warning(f"   ⚠️  base_avec_statut_corrigee.parquet absent — repli sur base_avec_statut.parquet")
     buf = io.BytesIO()
     s3.download_fileobj(BUCKET_GOLD, KEY_BASE_AVEC_STATUT, buf)
     buf.seek(0)
     base_avec_statut = pl.read_parquet(buf)
-    print(f"   Source : base_avec_statut.parquet (sans imputation)")
+    logger.info(f"   Source : base_avec_statut.parquet (sans imputation)")
 
-print(f"   {len(base_avec_statut):,} lignes × {len(base_avec_statut.columns)} colonnes")
-print(f"   Agents uniques : {base_avec_statut.select('matricule').n_unique():,}")
+logger.info(f"   {len(base_avec_statut):,} lignes × {len(base_avec_statut.columns)} colonnes")
+logger.info(f"   Agents uniques : {base_avec_statut.select('matricule').n_unique():,}")
 
 # Distribution Statut M1 et M2
 total = len(base_avec_statut)
-print(f"\n   Distribution Statut — Méthodo 1 (montant_brut_sans_ind_sans_alloc) :")
+logger.info(f"\n   Distribution Statut — Méthodo 1 (montant_brut_sans_ind_sans_alloc) :")
 for row in base_avec_statut["Statut"].value_counts().sort("Statut").iter_rows(named=True):
     pct = 100 * row["count"] / total if total > 0 else 0.0
-    print(f"     {row['Statut']:<40} : {row['count']:>10,}  ({pct:.1f}%)")
+    logger.info(f"     {row['Statut']:<40} : {row['count']:>10,}  ({pct:.1f}%)")
 
 if "Statut_Total" in base_avec_statut.columns:
-    print(f"\n   Distribution Statut_Total — Méthodo 2 (montant_brut_total) :")
+    logger.info(f"\n   Distribution Statut_Total — Méthodo 2 (montant_brut_total) :")
     for row in base_avec_statut["Statut_Total"].value_counts().sort("Statut_Total").iter_rows(named=True):
         pct = 100 * row["count"] / total if total > 0 else 0.0
-        print(f"     {row['Statut_Total']:<40} : {row['count']:>10,}  ({pct:.1f}%)")
-print()
+        logger.info(f"     {row['Statut_Total']:<40} : {row['count']:>10,}  ({pct:.1f}%)")
 
 # Flag M2 : actif si Statut_Total ET montant_brut_total sont disponibles
 M2_ACTIVE = (
     "Statut_Total" in base_avec_statut.columns
     and "montant_brut_total" in base_avec_statut.columns
 )
-print(f"   Méthodo 2 (Statut_Total) : {'activée' if M2_ACTIVE else 'non disponible (Statut_Total ou montant_brut_total absent)'}\n")
+logger.info(f"   Méthodo 2 (Statut_Total) : {'activée' if M2_ACTIVE else 'non disponible (Statut_Total ou montant_brut_total absent)'}")
 
 # ============================================================
 # 2. FILTRAGE SUR "Conforme au barème"
 # ============================================================
 
-print("2. Filtrage sur Conforme au barème...")
+logger.info("2. Filtrage sur Conforme au barème...")
 
 n_avant = len(base_avec_statut)
 base_gv = base_avec_statut.filter(pl.col("Statut") == "Conforme au barème")
 n_apres = len(base_gv)
 pct = 100 * n_apres / n_avant if n_avant > 0 else 0.0
-print(f"   {n_apres:,} / {n_avant:,} ({pct:.1f}% retenus pour les indicateurs)")
+logger.info(f"   {n_apres:,} / {n_avant:,} ({pct:.1f}% retenus pour les indicateurs)")
 
 # ── Bilan détaillé des conformes retenus ─────────────────────────────
 n_gv = len(base_gv)
@@ -390,7 +371,7 @@ col_statut_fonct = next(
     (c for c in ["statut_fonctionnaire", "situation_normalisee"] if c in base_gv.columns), None
 )
 if col_statut_fonct:
-    print(f"   Par statut fonctionnaire ({col_statut_fonct}) :")
+    logger.info(f"   Par statut fonctionnaire ({col_statut_fonct}) :")
     statut_counts = (
         base_gv.group_by(col_statut_fonct)
         .agg(pl.len().alias("n"))
@@ -398,13 +379,13 @@ if col_statut_fonct:
     )
     for row in statut_counts.iter_rows(named=True):
         pct = 100 * row["n"] / n_gv if n_gv > 0 else 0.0
-        print(f"     {str(row[col_statut_fonct]):<35} : {row['n']:>10,}  ({pct:.1f}%)")
+        logger.info(f"     {str(row[col_statut_fonct]):<35} : {row['n']:>10,}  ({pct:.1f}%)")
 # 2. Source du grade (GRADE_SOURCE = observé ou imputé par 03b)
 if "GRADE_SOURCE" in base_gv.columns:
-    print(f"   Source du grade (GRADE_SOURCE) :")
+    logger.info(f"   Source du grade (GRADE_SOURCE) :")
     for source, label in [("OBSERVE", "Grade observé"), ("IMPUTE", "Grade imputé")]:
         n = int((base_gv["GRADE_SOURCE"] == source).sum())
-        print(f"     {label:<35} : {n:>10,}  ({100*n/n_gv:.1f}%)")
+        logger.info(f"     {label:<35} : {n:>10,}  ({100*n/n_gv:.1f}%)")
 
 BAREME_DISPONIBLE = ("bareme" in base_gv.columns
                      and base_gv["bareme"].is_not_null().sum() > 0)
@@ -420,10 +401,10 @@ if col_grade_d2:
     base_gv = base_gv.filter(pl.col(col_grade_d2) != "D2")
     n_d2 = n_avant_d2 - len(base_gv)
     if n_d2 > 0:
-        print(f"\n   Exclusion D2 (catégorie en voie de disparition) : {n_d2:,} lignes retirées")
-        print(f"   Base M1 après exclusion D2 : {len(base_gv):,} agents")
+        logger.info(f"\n   Exclusion D2 (catégorie en voie de disparition) : {n_d2:,} lignes retirées")
+        logger.info(f"   Base M1 après exclusion D2 : {len(base_gv):,} agents")
     else:
-        print(f"\n   ✓ Aucun agent D2 dans les conformes M1")
+        logger.info(f"\n   ✓ Aucun agent D2 dans les conformes M1")
 
 # ── Filtrage Méthodo 2 (Statut_Total) ───────────────────────────────
 base_gv_m2 = pl.DataFrame()
@@ -439,8 +420,7 @@ if M2_ACTIVE:
         pl.col("montant_brut_total").cast(pl.Float64, strict=False)
     )
     pct_m2 = 100 * len(base_gv_m2) / n_av_m2 if n_av_m2 > 0 else 0.0
-    print(f"\n   Méthodo 2 — Statut_Total Conforme (sans D2) : {len(base_gv_m2):,} ({pct_m2:.1f}%)")
-print()
+    logger.info(f"\n   Méthodo 2 — Statut_Total Conforme (sans D2) : {len(base_gv_m2):,} ({pct_m2:.1f}%)")
 
 # ── Contrôle intégrité des conformes IMPUTÉS uniquement ─────────────
 # Les agents récupérés par la règle ±5% (OBSERVE) peuvent être
@@ -455,9 +435,9 @@ if cols_borne.issubset(set(base_gv.columns)):
     # 3. Source du salaire (montant_brut_sans_ind_sans_alloc_source)
     #    OBSERVE = valeur lue directement dans le Gold panel
     #    IMPUTE  = valeur imputée par 07a (forward/backward fill, agent hors-barème ≤ 5 mois)
-    print(f"   Source du salaire (montant_brut_sans_ind_sans_alloc_source) :")
-    print(f"     Salaire observé              : {n_observe:>10,}  ({100*n_observe/n_total_conf:.1f}%)")
-    print(f"     Salaire imputé (via 07a)     : {n_impute:>10,}  ({100*n_impute/n_total_conf:.1f}%)")
+    logger.info(f"   Source du salaire (montant_brut_sans_ind_sans_alloc_source) :")
+    logger.info(f"     Salaire observé              : {n_observe:>10,}  ({100*n_observe/n_total_conf:.1f}%)")
+    logger.info(f"     Salaire imputé (via 07a)     : {n_impute:>10,}  ({100*n_impute/n_total_conf:.1f}%)")
 
     # Contrôle strict uniquement sur les imputés
     base_imputes = base_gv.filter(pl.col("montant_brut_sans_ind_sans_alloc_source") == "IMPUTE")
@@ -475,19 +455,19 @@ if cols_borne.issubset(set(base_gv.columns)):
         ).shape[0]
     )
 
-    print(f"\n   Contrôle intégrité des conformes IMPUTÉS ({n_impute:,}) :")
+    logger.info(f"\n   Contrôle intégrité des conformes IMPUTÉS ({n_impute:,}) :")
     if n_sous_min == 0:
-        print(f"     ✅ Aucun imputé avec montant_brut_sans_ind_sans_alloc < min_bareme")
+        logger.info(f"     ✅ Aucun imputé avec montant_brut_sans_ind_sans_alloc < min_bareme")
     else:
-        print(f"     ❌ Imputés avec montant_brut_sans_ind_sans_alloc < min_bareme : {n_sous_min:,}  ← ANOMALIE")
+        logger.warning(f"     ❌ Imputés avec montant_brut_sans_ind_sans_alloc < min_bareme : {n_sous_min:,}  ← ANOMALIE")
 
     if n_sur_max == 0:
-        print(f"     ✅ Aucun imputé avec montant_brut_sans_ind_sans_alloc > max_bareme")
+        logger.info(f"     ✅ Aucun imputé avec montant_brut_sans_ind_sans_alloc > max_bareme")
     else:
-        print(f"     ❌ Imputés avec montant_brut_sans_ind_sans_alloc > max_bareme : {n_sur_max:,}  ← ANOMALIE")
+        logger.warning(f"     ❌ Imputés avec montant_brut_sans_ind_sans_alloc > max_bareme : {n_sur_max:,}  ← ANOMALIE")
 
     if n_impute > 0 and n_sous_min == 0 and n_sur_max == 0:
-        print(f"     ✅ Tous les imputés sont dans [min_bareme, max_bareme]")
+        logger.info(f"     ✅ Tous les imputés sont dans [min_bareme, max_bareme]")
 
     if n_sous_min > 0 or n_sur_max > 0:
         raise ValueError(
@@ -496,9 +476,9 @@ if cols_borne.issubset(set(base_gv.columns)):
             "Vérifiez l'étape 07a_imputer_hors_bareme.py."
         )
 elif {"montant_brut_sans_ind_sans_alloc", "min_bareme", "max_bareme"}.issubset(set(base_gv.columns)):
-    print("   ℹ️  Contrôle imputés ignoré (colonne montant_brut_sans_ind_sans_alloc_source absente)")
+    logger.info("   ℹ️  Contrôle imputés ignoré (colonne montant_brut_sans_ind_sans_alloc_source absente)")
 else:
-    print("   ℹ️  Contrôle intégrité ignoré (colonnes min/max_bareme absentes)")
+    logger.info("   ℹ️  Contrôle intégrité ignoré (colonnes min/max_bareme absentes)")
 
 # ── Diagnostic : conformes avec montant_brut_sans_ind_sans_alloc anormalement bas ─
 # Seuil = minimum théorique absolu du référentiel (D1 min = ~201 000 FCFA)
@@ -513,10 +493,12 @@ if cols_diag.issubset(set(base_gv.columns)):
     n_suspects = len(suspects)
 
     if n_suspects == 0:
-        print(f"\n   ✅ Aucun conforme avec montant_brut_sans_ind_sans_alloc < {SEUIL_DIAGNOSTIC:,} FCFA")
+        logger.info(f"\n   ✅ Aucun conforme avec montant_brut_sans_ind_sans_alloc < {SEUIL_DIAGNOSTIC:,} FCFA")
     else:
-        print(f"\n   ⚠️  DIAGNOSTIC — Conformes avec montant_brut_sans_ind_sans_alloc < "
-              f"{SEUIL_DIAGNOSTIC:,} FCFA : {n_suspects:,} observations")
+        logger.warning(
+            f"\n   ⚠️  DIAGNOSTIC — Conformes avec montant_brut_sans_ind_sans_alloc < "
+            f"{SEUIL_DIAGNOSTIC:,} FCFA : {n_suspects:,} observations"
+        )
 
         # Résumé par GRADE × bareme × min_bareme
         cols_id = [c for c in ["matricule", "mois_annee", "GRADE", "bareme",
@@ -528,8 +510,8 @@ if cols_diag.issubset(set(base_gv.columns)):
             .select(cols_id)
             .sort(["montant_brut_sans_ind_sans_alloc"])
         )
-        print(f"   Détail (jusqu'à 20 lignes) :")
-        print(apercu.head(20))
+        logger.info(f"   Détail (jusqu'à 20 lignes) :")
+        logger.info(str(apercu.head(20)))
 
         # Résumé groupé : GRADE × bareme × min_bareme
         resume = (
@@ -542,12 +524,11 @@ if cols_diag.issubset(set(base_gv.columns)):
             ])
             .sort("nb_obs", descending=True)
         )
-        print(f"\n   Résumé par GRADE × barème × min_bareme :")
-        print(resume)
-        print()
-        print("   ℹ️  Ces cas peuvent indiquer un conflit de colonnes dans le join")
-        print("      (min_bareme résiduel d'un run précédent) ou une anomalie source.")
-        print("      Vérifier base_avec_statut.parquet → colonnes min_bareme/max_bareme.")
+        logger.info(f"\n   Résumé par GRADE × barème × min_bareme :")
+        logger.info(str(resume))
+        logger.info("   ℹ️  Ces cas peuvent indiquer un conflit de colonnes dans le join")
+        logger.info("      (min_bareme résiduel d'un run précédent) ou une anomalie source.")
+        logger.info("      Vérifier base_avec_statut.parquet → colonnes min_bareme/max_bareme.")
 
 # Dériver ANNEES_ANALYSE depuis les données
 if "ANNEE" not in base_gv.columns:
@@ -559,8 +540,7 @@ if "ANNEE" not in base_gv.columns:
         raise RuntimeError("Colonne ANNEE absente — régénérer base_avec_statut.parquet")
 
 ANNEES_ANALYSE = sorted(base_gv["ANNEE"].drop_nulls().unique().to_list())
-print(f"   Années disponibles : {ANNEES_ANALYSE}")
-print()
+logger.info(f"   Années disponibles : {ANNEES_ANALYSE}")
 
 # ============================================================
 # 3. AGRÉGATION → REVENU TOTAL
@@ -569,7 +549,7 @@ print()
 agg_col   = "cle_unique" if MODE_SALAIRE_BRUT else "matricule"
 if agg_col not in base_gv.columns:
     agg_col = "matricule"
-print(f"3. Agrégation par {agg_col} → montant_brut_sans_ind_sans_alloc...")
+logger.info(f"3. Agrégation par {agg_col} → montant_brut_sans_ind_sans_alloc...")
 
 # montant_brut_sans_ind_sans_alloc est la référence directe — pas d'alias intermédiaire
 
@@ -627,7 +607,7 @@ if not INCLURE_ZEROS:
     base_agrege = base_agrege.filter(pl.col("montant_brut_sans_ind_sans_alloc") > 0)
 base_agrege = base_agrege.filter(pl.col("montant_brut_sans_ind_sans_alloc").is_not_null())
 
-print(f"   M1 : {len(base_agrege):,} observations agrégées (matricule × période)")
+logger.info(f"   M1 : {len(base_agrege):,} observations agrégées (matricule × période)")
 
 # ── Agrégation M2 ────────────────────────────────────────────────────
 if M2_ACTIVE and len(base_gv_m2) > 0:
@@ -664,9 +644,7 @@ if M2_ACTIVE and len(base_gv_m2) > 0:
     base_agrege_m2 = base_agrege_m2.filter(pl.col("montant_brut_total").is_not_null())
     if not INCLURE_ZEROS:
         base_agrege_m2 = base_agrege_m2.filter(pl.col("montant_brut_total") > 0)
-    print(f"   M2 : {len(base_agrege_m2):,} observations agrégées (matricule × période)")
-
-print()
+    logger.info(f"   M2 : {len(base_agrege_m2):,} observations agrégées (matricule × période)")
 
 # ============================================================
 # 3b. WINSORISATION SUR MONTANT_BRUT_TOTAL
@@ -682,11 +660,13 @@ if SEUIL_WINS is not None and M2_ACTIVE and len(base_agrege_m2) > 0 \
                      if c in base_agrege_m2.columns]
     wins_fallback = [c for c in ["ANNEE", "MOIS_NUM", "GRADE_PRINCIPAL"]
                      if c in base_agrege_m2.columns]
-    print(f"3b. Winsorisation MONTANT_BRUT_TOTAL sur M2 "
-          f"(P{int(SEUIL_WINS*100)}/P{int((1-SEUIL_WINS)*100)}) "
-          f"— seuil groupe : {MIN_OBS_WINS} obs...")
-    print(f"   Population  : conformes Statut_Total (M2) — {len(base_agrege_m2):,} obs")
-    print(f"   Clusters    : ANNEE × MOIS × GRADE × CITP  |  repli : ANNEE × MOIS × GRADE")
+    logger.info(
+        f"3b. Winsorisation MONTANT_BRUT_TOTAL sur M2 "
+        f"(P{int(SEUIL_WINS*100)}/P{int((1-SEUIL_WINS)*100)}) "
+        f"— seuil groupe : {MIN_OBS_WINS} obs..."
+    )
+    logger.info(f"   Population  : conformes Statut_Total (M2) — {len(base_agrege_m2):,} obs")
+    logger.info(f"   Clusters    : ANNEE × MOIS × GRADE × CITP  |  repli : ANNEE × MOIS × GRADE")
 
     base_agrege_m2 = base_agrege_m2.with_columns([
         pl.len().over(wins_full).alias("_n_citp"),
@@ -717,13 +697,15 @@ if SEUIL_WINS is not None and M2_ACTIVE and len(base_agrege_m2) > 0 \
     n_modif = int((base_agrege_m2["montant_brut_total_W"] != base_agrege_m2["montant_brut_total"]).sum())
     n_total_m2 = len(base_agrege_m2)
     pct_modif = (100 * n_modif / n_total_m2) if n_total_m2 > 0 else 0.0
-    print(f"   Groupe ANNEE × MOIS × GRADE × CITP (≥{MIN_OBS_WINS} obs) : {n_obs_citp:,} obs")
-    print(f"   Repli  ANNEE × MOIS × GRADE         (<{MIN_OBS_WINS} obs) : {n_obs_grade:,} obs")
-    print(f"   Observations écrêtées : {n_modif:,}  ({pct_modif:.2f}%)")
-    print(f"   → montant_brut_total_W disponible dans base_agrege_m2 pour usage futur\n")
+    logger.info(f"   Groupe ANNEE × MOIS × GRADE × CITP (≥{MIN_OBS_WINS} obs) : {n_obs_citp:,} obs")
+    logger.info(f"   Repli  ANNEE × MOIS × GRADE         (<{MIN_OBS_WINS} obs) : {n_obs_grade:,} obs")
+    logger.info(f"   Observations écrêtées : {n_modif:,}  ({pct_modif:.2f}%)")
+    logger.info(f"   → montant_brut_total_W disponible dans base_agrege_m2 pour usage futur")
 elif SEUIL_WINS is not None:
-    print(f"3b. Winsorisation ignorée "
-          f"({'M2 inactif' if not M2_ACTIVE else 'base_agrege_m2 vide ou montant_brut_total absent'})\n")
+    logger.info(
+        f"3b. Winsorisation ignorée "
+        f"({'M2 inactif' if not M2_ACTIVE else 'base_agrege_m2 vide ou montant_brut_total absent'})"
+    )
 
 # ============================================================
 # 3c. EFFECTIFS UNIQUES PAR GROUPE SUR LA PÉRIODE COMPLÈTE
@@ -732,7 +714,7 @@ elif SEUIL_WINS is not None:
 # de la période, pas la somme des effectifs mensuels.
 # Un agent présent 24 mois compte pour 1, pas pour 24.
 
-print("3c. Calcul effectifs uniques par groupe (période complète)...")
+logger.info("3c. Calcul effectifs uniques par groupe (période complète)...")
 
 col_id = "matricule" if "matricule" in base_gv.columns else agg_col
 
@@ -782,14 +764,14 @@ else:
 
 # Total global unique
 total_agents_uniques = int(base_gv[col_id].n_unique()) if col_id in base_gv.columns else 0
-print(f"   Total agents uniques sur la période : {total_agents_uniques:,}")
-print(f"   Lignes table effectifs uniques : {len(effectifs_uniques_periode):,}\n")
+logger.info(f"   Total agents uniques sur la période : {total_agents_uniques:,}")
+logger.info(f"   Lignes table effectifs uniques : {len(effectifs_uniques_periode):,}")
 
 # ============================================================
 # 4. INDICATEURS SUR montant_brut_sans_ind_sans_alloc
 # ============================================================
 
-print("4. Calcul indicateurs montant_brut_sans_ind_sans_alloc...")
+logger.info("4. Calcul indicateurs montant_brut_sans_ind_sans_alloc...")
 
 indic_grade = compute_indicators(
     base_agrege, ["ANNEE", "MOIS_NUM", "MOIS", "GRADE_PRINCIPAL"], value_col_indic
@@ -813,10 +795,10 @@ else:
 # Population M1 (Statut conforme) → grade / CITP / sexe uniquement
 
 total_indic = len(indic_grade) + len(indic_grade_sexe) + len(indic_citp)
-print(f"   M1 — Grade            : {len(indic_grade):,} lignes")
-print(f"   M1 — Grade × Sexe     : {len(indic_grade_sexe):,} lignes")
-print(f"   M1 — CITP             : {len(indic_citp):,} lignes")
-print(f"   M1 — Total            : {total_indic:,} lignes")
+logger.info(f"   M1 — Grade            : {len(indic_grade):,} lignes")
+logger.info(f"   M1 — Grade × Sexe     : {len(indic_grade_sexe):,} lignes")
+logger.info(f"   M1 — CITP             : {len(indic_citp):,} lignes")
+logger.info(f"   M1 — Total            : {total_indic:,} lignes")
 
 # ── Indicateurs Méthodo 2 — barème / secteur uniquement ──────────────────
 # Population : conformes Statut_Total (M2)
@@ -828,8 +810,10 @@ indic_bareme_grade_m2 = pl.DataFrame()
 indic_bareme_sexe_m2 = pl.DataFrame()
 
 if M2_ACTIVE and len(base_agrege_m2) > 0 and BAREME_DISPONIBLE:
-    print(f"\n4b. Calcul indicateurs barème — Méthodo 2"
-          f" (montant_brut_total, conformes Statut_Total)...")
+    logger.info(
+        f"\n4b. Calcul indicateurs barème — Méthodo 2"
+        f" (montant_brut_total, conformes Statut_Total)..."
+    )
     if "bareme" in base_agrege_m2.columns:
         base_b_m2 = base_agrege_m2.filter(
             pl.col("bareme").is_not_null() & pl.col("montant_brut_total").is_not_null()
@@ -843,16 +827,15 @@ if M2_ACTIVE and len(base_agrege_m2) > 0 and BAREME_DISPONIBLE:
         indic_bareme_sexe_m2 = compute_indicators(
             base_b_m2, ["ANNEE", "MOIS_NUM", "MOIS", "bareme", "SEXE_STD"], "montant_brut_total"
         )
-        print(f"   M2 — Barème           : {len(indic_bareme_m2):,} lignes")
-        print(f"   M2 — Barème × Grade   : {len(indic_bareme_grade_m2):,} lignes")
-        print(f"   M2 — Barème × Sexe    : {len(indic_bareme_sexe_m2):,} lignes")
-print()
+        logger.info(f"   M2 — Barème           : {len(indic_bareme_m2):,} lignes")
+        logger.info(f"   M2 — Barème × Grade   : {len(indic_bareme_grade_m2):,} lignes")
+        logger.info(f"   M2 — Barème × Sexe    : {len(indic_bareme_sexe_m2):,} lignes")
 
 # ============================================================
 # 5. INDICATEURS SALAIRE BRUT (pivot grade)
 # ============================================================
 
-print("5. Calcul indicateurs montant_brut_sans_ind_sans_alloc (pivot grade)...")
+logger.info("5. Calcul indicateurs montant_brut_sans_ind_sans_alloc (pivot grade)...")
 
 brut_moyen = (
     base_gv
@@ -879,16 +862,15 @@ brut_median_wide = brut_median.pivot(
     on="GRADE"
 ).sort(["ANNEE", "MOIS_NUM"])
 
-print(f"   M1 — Moyen  : {len(brut_moyen_wide)} lignes × {len(brut_moyen_wide.columns)} cols")
-print(f"   M1 — Médian : {len(brut_median_wide)} lignes × {len(brut_median_wide.columns)} cols")
+logger.info(f"   M1 — Moyen  : {len(brut_moyen_wide)} lignes × {len(brut_moyen_wide.columns)} cols")
+logger.info(f"   M1 — Médian : {len(brut_median_wide)} lignes × {len(brut_median_wide.columns)} cols")
 # Note : pas de pivot M2 par grade — les indicateurs grade sont M1 uniquement
-print()
 
 # ============================================================
 # 6. MULTI-POSTES
 # ============================================================
 
-print("6. Création feuilles multi-postes...")
+logger.info("6. Création feuilles multi-postes...")
 
 multi_detail = (
     base_agrege
@@ -929,8 +911,8 @@ distrib_postes = (
     .sort("NB_POSTES")
 )
 
-print(f"   Multi-postes détail  : {len(multi_effectif)} lignes")
-print(f"   Distribution globale : {len(distrib_postes)} lignes\n")
+logger.info(f"   Multi-postes détail  : {len(multi_effectif)} lignes")
+logger.info(f"   Distribution globale : {len(distrib_postes)} lignes")
 
 # ============================================================
 # 7. PRÉ-CALCUL DONNÉES MODELE_ANSTAT PAR ANNÉE
@@ -939,7 +921,7 @@ print(f"   Distribution globale : {len(distrib_postes)} lignes\n")
 anstat_data_par_annee: dict[int, tuple[dict, pl.DataFrame]] = {}
 
 if BAREME_DISPONIBLE and M2_ACTIVE and len(base_gv_m2) > 0:
-    print("7. Pré-calcul données MODELE_ANSTAT par année (M2 — montant_brut_total)...")
+    logger.info("7. Pré-calcul données MODELE_ANSTAT par année (M2 — montant_brut_total)...")
     # Source : conformes Statut_Total (M2), variable montant_brut_total
     # Cohérence : les feuilles MODELE_ANSTAT sont des indicateurs secteur/barème
     #             → même population et variable que les feuilles REVENU_Total_Bareme
@@ -952,7 +934,7 @@ if BAREME_DISPONIBLE and M2_ACTIVE and len(base_gv_m2) > 0:
 
     for annee in [2024, 2025]:
         if "ANNEE" in base_gv_m2.columns and annee not in base_gv_m2["ANNEE"].drop_nulls().unique().to_list():
-            print(f"   ⚠️  Année {annee} absente de la période — ignorée")
+            logger.warning(f"   ⚠️  Année {annee} absente de la période — ignorée")
             continue
 
         base_gv_b_annee = base_gv_m2.filter(
@@ -963,7 +945,7 @@ if BAREME_DISPONIBLE and M2_ACTIVE and len(base_gv_m2) > 0:
         ) if "bareme_detail" in base_gv_m2.columns else pl.DataFrame()
 
         if len(base_gv_b_annee) == 0:
-            print(f"   ⚠️  Aucune donnée barème M2 pour {annee} — feuille ignorée")
+            logger.warning(f"   ⚠️  Aucune donnée barème M2 pour {annee} — feuille ignorée")
             continue
 
         global_brut_annee = base_gv_b_annee.select([
@@ -986,15 +968,16 @@ if BAREME_DISPONIBLE and M2_ACTIVE and len(base_gv_m2) > 0:
         )
 
         anstat_data_par_annee[annee] = (global_brut_annee, stats_annee)
-        print(f"   ✓ {annee} : {len(stats_annee)} barèmes, "
-              f"{len(base_gv_b_annee):,} observations")
-    print()
+        logger.info(
+            f"   ✓ {annee} : {len(stats_annee)} barèmes, "
+            f"{len(base_gv_b_annee):,} observations"
+        )
 
 # ============================================================
 # 8. EXPORT EXCEL
 # ============================================================
 
-print("8. Export Excel...")
+logger.info("8. Export Excel...")
 
 wb = Workbook()
 wb.remove(wb.active)
@@ -1019,7 +1002,7 @@ if BAREME_DISPONIBLE and M2_ACTIVE:
 
     for annee in [2024, 2025]:
         if annee not in anstat_data_par_annee:
-            print(f"   ⚠️  MODELE_ANSTAT_{annee} ignorée (données absentes)")
+            logger.warning(f"   ⚠️  MODELE_ANSTAT_{annee} ignorée (données absentes)")
             continue
         global_brut_annee, stats_annee = anstat_data_par_annee[annee]
         construire_feuille_anstat(
@@ -1096,14 +1079,12 @@ s3.put_object(
 )
 
 taille_kb = len(xlsx_bytes) / 1024
-print(f"\n✅ Fichier créé : s3://{BUCKET_STAGING}/{OUTPUT_KEY}")
-print(f"   Taille   : {taille_kb:.1f} KB")
-print(f"   Feuilles : {len(wb.sheetnames)}")
+logger.info(f"\n✅ Fichier créé : s3://{BUCKET_STAGING}/{OUTPUT_KEY}")
+logger.info(f"   Taille   : {taille_kb:.1f} KB")
+logger.info(f"   Feuilles : {len(wb.sheetnames)}")
 
 gc.collect()
-print()
-print("=" * 70)
-print("✓ CALCUL INDICATEURS TERMINÉ")
-print("=" * 70)
-print()
-print("Prochaine étape : exécuter 08_creation_fichier_excel_avec_sommaire.py")
+logger.info("=" * 70)
+logger.info("✓ CALCUL INDICATEURS TERMINÉ")
+logger.info("=" * 70)
+logger.info("Prochaine étape : exécuter 08_creation_fichier_excel_avec_sommaire.py")

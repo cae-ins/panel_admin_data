@@ -30,17 +30,21 @@
 # ============================================================
 
 import argparse
+import json
 import subprocess
 import sys
 import time
 import os
 from datetime import datetime, timedelta
+from pathlib import Path
+
+sys.path.append(str(Path(__file__).resolve().parent / "src" / "pipeline"))
+from common.logging_config import setup_pipeline_logging
 
 # ============================================================
 # DÉFINITION DES ÉTAPES
 # ============================================================
 
-# Dossier contenant les scripts du pipeline
 PIPELINE_DIR = "src/pipeline"
 
 ETAPES = [
@@ -146,6 +150,8 @@ ETAPES = [
 
 IDS_ETAPES = [e["id"] for e in ETAPES]
 
+STATE_FILE = Path("reports") / ".pipeline_state.json"
+
 # ============================================================
 # UTILITAIRES
 # ============================================================
@@ -158,8 +164,6 @@ def fmt_duree(secondes: float) -> str:
     if m > 0: return f"{m}m{s:02d}s"
     return f"{s}s"
 
-def separateur(char: str = "=", largeur: int = 70) -> str:
-    return char * largeur
 
 def verifier_scripts(repertoire: str) -> list[str]:
     manquants = []
@@ -169,11 +173,117 @@ def verifier_scripts(repertoire: str) -> list[str]:
             manquants.append(e["script"])
     return manquants
 
+
+def charger_etat() -> set[str]:
+    """Retourne les IDs d'étapes complétées lors du run précédent."""
+    if not STATE_FILE.exists():
+        return set()
+    try:
+        data = json.loads(STATE_FILE.read_text(encoding="utf-8"))
+        return set(data.get("completed", []))
+    except Exception:
+        return set()
+
+
+def sauvegarder_etat(completed: set[str]) -> None:
+    STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
+    STATE_FILE.write_text(
+        json.dumps({"date": datetime.now().isoformat(), "completed": sorted(completed)}, indent=2),
+        encoding="utf-8",
+    )
+
+
+def effacer_etat() -> None:
+    if STATE_FILE.exists():
+        STATE_FILE.unlink()
+
+
+def generer_rapport_md(
+    resultats: list[dict],
+    duree_totale: float,
+    debut_dt: datetime,
+    args,
+    log_file,
+    pipeline_dir: str,
+) -> Path:
+    """Écrit un rapport horodaté dans reports/YYYY-MM/run_YYYYMMDD_HHMMSS.md."""
+    ts   = debut_dt.strftime("%Y%m%d_%H%M%S")
+    mois = debut_dt.strftime("%Y-%m")
+
+    rapport_dir = Path("reports") / mois
+    rapport_dir.mkdir(parents=True, exist_ok=True)
+    rapport_path = rapport_dir / f"run_{ts}.md"
+
+    echecs = [r for r in resultats if r["statut"] == "ERREUR"]
+    if not echecs:
+        statut_global = "SUCCES COMPLET"
+    elif len(echecs) < sum(1 for r in resultats if r["statut"] != "SKIP"):
+        statut_global = f"PARTIEL ({len(echecs)} echec(s))"
+    else:
+        statut_global = "ECHEC"
+
+    if getattr(args, "force", False):
+        mode = "`--force`"
+    elif getattr(args, "resume", False):
+        mode = "`--resume`"
+    elif args.etapes:
+        mode = f"`--etapes {' '.join(args.etapes)}`"
+    elif args.depuis:
+        mode = f"`--depuis {args.depuis}`"
+    else:
+        mode = "complet"
+
+    lines = [
+        "# Panel Admin — Rapport de run",
+        "",
+        f"**Date** : {debut_dt.strftime('%Y-%m-%d %H:%M:%S')}  ",
+        f"**Duree totale** : {fmt_duree(duree_totale)}  ",
+        f"**Statut** : {statut_global}",
+        "",
+        "## Etapes executees",
+        "",
+        "| ID    | Etape                               | Statut  | Duree    |",
+        "|-------|-------------------------------------|---------|----------|",
+    ]
+
+    for r in resultats:
+        statut = r["statut"]  # OK | SKIP | ERREUR
+        duree_str = "-" if statut == "SKIP" else fmt_duree(r["duree"])
+        lines.append(
+            f"| {r['id']:<5} | {r['nom']:<35} | {statut:<7} | {duree_str:>8} |"
+        )
+
+    lines += [
+        "",
+        "## Parametres",
+        "",
+        f"- Pipeline : `{pipeline_dir}`",
+        f"- Mode : {mode}",
+    ]
+
+    if log_file:
+        lines.append(f"- Log : `{log_file}`")
+
+    if echecs:
+        lines += [
+            "",
+            "## Echecs",
+            "",
+        ]
+        for r in echecs:
+            lines.append(f"- **[{r['id']}] {r['nom']}** — duree : {fmt_duree(r['duree'])}")
+
+    rapport_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    return rapport_path
+
+
 # ============================================================
 # EXÉCUTION
 # ============================================================
 
 if __name__ == "__main__":
+    logger, log_file = setup_pipeline_logging("orchestrateur")
+
     parser = argparse.ArgumentParser(
         description="Orchestrateur Industrialisé du Pipeline Panel Admin 2015-2025",
         formatter_class=argparse.RawDescriptionHelpFormatter
@@ -181,6 +291,8 @@ if __name__ == "__main__":
     parser.add_argument("--depuis", help="Reprendre à partir d'un ID d'étape.")
     parser.add_argument("--etapes", nargs="+", help="Lancer uniquement ces étapes.")
     parser.add_argument("--dry-run", action="store_true", help="Afficher le plan sans exécuter.")
+    parser.add_argument("--resume", action="store_true", help="Sauter les étapes déjà complétées lors du run précédent.")
+    parser.add_argument("--force", action="store_true", help="Effacer l'état précédent et tout re-exécuter.")
     args = parser.parse_args()
 
     # Sélection des étapes
@@ -189,68 +301,136 @@ if __name__ == "__main__":
         selection.sort(key=lambda e: IDS_ETAPES.index(e["id"]))
     elif args.depuis:
         if args.depuis not in IDS_ETAPES:
-            print(f"❌ ID d'étape inconnu : {args.depuis}")
+            logger.error("ID d'étape inconnu", extra={"step_id": args.depuis})
             sys.exit(1)
         idx = IDS_ETAPES.index(args.depuis)
         selection = ETAPES[idx:]
     else:
         selection = ETAPES
 
-    # Vérification
+    # Gestion de l'état idempotent
+    if args.force:
+        effacer_etat()
+        logger.info("--force : état du run précédent effacé")
+
+    etapes_completees = charger_etat() if args.resume else set()
+    if etapes_completees:
+        logger.info(
+            "--resume : étapes déjà complétées",
+            extra={"skipped": ",".join(sorted(etapes_completees))},
+        )
+
+    # Vérification des scripts
     manquants = verifier_scripts(PIPELINE_DIR)
     if manquants:
-        print(f"❌ Scripts manquants dans {PIPELINE_DIR} : {manquants}")
+        logger.error(
+            "Scripts manquants",
+            extra={"pipeline_dir": PIPELINE_DIR, "missing_scripts": ",".join(manquants)},
+        )
         sys.exit(1)
 
-    print()
-    print(separateur())
-    print("  PANEL ADMIN — ORCHESTRATEUR PIPELINE INDUSTRIALISÉ")
-    print(f"  Démarrage : {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
-    print(f"  Pipeline  : {PIPELINE_DIR}")
-    print(separateur())
-    print()
+    logger.info(
+        "Démarrage du pipeline",
+        extra={
+            "pipeline_dir": PIPELINE_DIR,
+            "selected_steps": ",".join(e["id"] for e in selection),
+            "dry_run": args.dry_run,
+            "resume": args.resume,
+            "force": args.force,
+            "log_file": str(log_file) if log_file else None,
+        },
+    )
 
     if args.dry_run:
-        print("📋 PLAN D'EXÉCUTION (DRY-RUN) :")
+        logger.info("Dry-run — plan d'exécution :")
         for e in selection:
-            print(f"  [{e['id']:>3}] {e['nom']}")
+            logger.info(f"  [{e['id']:>3}] {e['nom']}")
+        logger.info("Dry-run terminé", extra={"step_count": len(selection)})
         sys.exit(0)
 
+    debut_dt     = datetime.now()
     debut_global = time.time()
-    resultats = []
+    resultats    = []
 
     for etape in selection:
-        chemin = os.path.join(PIPELINE_DIR, etape["script"])
-        print(separateur("-"))
-        print(f"▶ [{etape['id']:>3}] {etape['nom']}")
-        print(separateur("-"))
-        
+        # Skip si déjà complétée (mode --resume)
+        if etape["id"] in etapes_completees:
+            logger.info(
+                "Étape ignorée (déjà complétée)",
+                extra={"step_id": etape["id"], "step_name": etape["nom"]},
+            )
+            resultats.append({"id": etape["id"], "nom": etape["nom"], "statut": "SKIP", "duree": 0.0})
+            continue
+
+        logger.info(
+            "Début étape",
+            extra={"step_id": etape["id"], "step_name": etape["nom"], "script": etape["script"]},
+        )
         debut = time.time()
         try:
-            # Exécution du script avec le même interpréteur Python
-            res = subprocess.run([sys.executable, etape["script"]], cwd=PIPELINE_DIR)
+            res   = subprocess.run([sys.executable, etape["script"]], cwd=PIPELINE_DIR)
             duree = time.time() - debut
-            
+
             if res.returncode == 0:
-                print(f"\n✅ Succès : {etape['nom']} ({fmt_duree(duree)})")
                 resultats.append({"id": etape["id"], "nom": etape["nom"], "statut": "OK", "duree": duree})
+                etapes_completees.add(etape["id"])
+                sauvegarder_etat(etapes_completees)
+                logger.info(
+                    "Succès étape",
+                    extra={
+                        "step_id": etape["id"],
+                        "step_name": etape["nom"],
+                        "duration_seconds": round(duree, 3),
+                        "return_code": res.returncode,
+                    },
+                )
             else:
-                print(f"\n❌ ÉCHEC : {etape['nom']} (code {res.returncode})")
                 resultats.append({"id": etape["id"], "nom": etape["nom"], "statut": "ERREUR", "duree": duree})
+                logger.error(
+                    "Échec étape",
+                    extra={
+                        "step_id": etape["id"],
+                        "step_name": etape["nom"],
+                        "duration_seconds": round(duree, 3),
+                        "return_code": res.returncode,
+                        "optional": etape["optionnelle"],
+                    },
+                )
                 if not etape["optionnelle"]:
-                    print("\n🛑 Arrêt du pipeline (étape obligatoire).")
+                    logger.error(
+                        "Arrêt du pipeline après échec obligatoire",
+                        extra={"step_id": etape["id"], "step_name": etape["nom"]},
+                    )
                     break
-        except Exception as e:
-            print(f"\n💥 ERREUR CRITIQUE : {e}")
+
+        except Exception:
+            logger.exception(
+                "Erreur critique pendant l'étape",
+                extra={"step_id": etape["id"], "step_name": etape["nom"]},
+            )
             break
 
-    print(f"\n{separateur()}")
-    print("  RÉSUMÉ FINAL")
-    print(separateur())
+    duree_totale = time.time() - debut_global
+
+    # Effacer l'état si le run est complet sans erreur (réinitialisation propre)
+    if not any(r["statut"] == "ERREUR" for r in resultats):
+        effacer_etat()
+
+    logger.info("=" * 70)
+    logger.info("RÉSUMÉ FINAL")
+    logger.info("=" * 70)
     for r in resultats:
-        icone = "✅" if r["statut"] == "OK" else "❌"
-        print(f"  {icone} [{r['id']:>3}] {r['nom']:<35} {fmt_duree(r['duree']):>10}")
-    
-    print(f"\n  Durée totale : {fmt_duree(time.time() - debut_global)}")
-    print(separateur())
-    print()
+        duree_str = "-" if r["statut"] == "SKIP" else fmt_duree(r["duree"])
+        logger.info(f"  [{r['id']:>3}] {r['nom']:<35} {r['statut']:<8} {duree_str:>10}")
+    logger.info(
+        "Fin du pipeline",
+        extra={
+            "duration_seconds": round(duree_totale, 3),
+            "ok_steps":      sum(1 for r in resultats if r["statut"] == "OK"),
+            "skipped_steps": sum(1 for r in resultats if r["statut"] == "SKIP"),
+            "failed_steps":  sum(1 for r in resultats if r["statut"] == "ERREUR"),
+        },
+    )
+
+    rapport = generer_rapport_md(resultats, duree_totale, debut_dt, args, log_file, PIPELINE_DIR)
+    logger.info(f"Rapport généré : {rapport}")

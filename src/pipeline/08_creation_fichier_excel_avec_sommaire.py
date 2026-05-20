@@ -37,15 +37,12 @@
 import io
 import os
 import re
-from dotenv import load_dotenv
-import boto3
-from botocore.client import Config
+from common.s3_client import create_s3_client
+from common.logging_config import setup_pipeline_logging
 import polars as pl
 from openpyxl import load_workbook, Workbook
 from openpyxl.styles import PatternFill, Font, Alignment
 from openpyxl.utils import get_column_letter
-
-load_dotenv(".env")
 
 # ============================================================
 # PARAMÈTRES — doivent correspondre exactement à ceux de
@@ -60,10 +57,6 @@ INCLURE_ZEROS      = True   # True = avec zéros | False = sans zéros
 ANNEES_ANSTAT = [2024, 2025]
 
 # ============================================================
-
-MINIO_ENDPOINT   = os.getenv("MINIO_ENDPOINT",   "http://192.168.1.230:30137")
-MINIO_ACCESS_KEY = os.getenv("MINIO_ACCESS_KEY", "datalab-team")
-MINIO_SECRET_KEY = os.getenv("MINIO_SECRET_KEY", "minio-datalabteam123")
 
 BUCKET_STAGING = os.getenv("BUCKET_STAGING", "staging")
 PREFIX_EXPORTS = "panel_admin/exports_gold"
@@ -90,31 +83,19 @@ CITP_GRANDS_GROUPES = {
 }
 
 # --- CLIENT S3 ---
-s3 = boto3.client(
-    "s3",
-    endpoint_url          = MINIO_ENDPOINT,
-    aws_access_key_id     = MINIO_ACCESS_KEY,
-    aws_secret_access_key = MINIO_SECRET_KEY,
-    config                = Config(
-        signature_version = "s3v4",
-        retries           = {"max_attempts": 5, "mode": "adaptive"},
-        connect_timeout   = 30,
-        read_timeout      = 120,
-    ),
-    region_name = "us-east-1",
-    verify      = False,
-)
+s3 = create_s3_client()
+logger, _ = setup_pipeline_logging("08_creation_fichier_excel_avec_sommaire")
 
-print("\n" + "=" * 70)
-print("CRÉATION FICHIER AVEC SOMMAIRE STRUCTURÉ (5 SECTIONS + ANSTAT)")
-print("=" * 70 + "\n")
+logger.info("=" * 70)
+logger.info("CRÉATION FICHIER AVEC SOMMAIRE STRUCTURÉ (5 SECTIONS + ANSTAT)")
+logger.info("=" * 70)
 
 # ============================================================
 # VÉRIFICATION ET CHARGEMENT
 # ============================================================
 
-print("✓ Chargement du fichier source...")
-print(f"  s3://{BUCKET_STAGING}/{INPUT_KEY}\n")
+logger.info("Chargement du fichier source...")
+logger.info(f"  s3://{BUCKET_STAGING}/{INPUT_KEY}")
 
 buf = io.BytesIO()
 try:
@@ -130,10 +111,9 @@ buf.seek(0)
 # Listing des feuilles disponibles
 wb_source = load_workbook(buf, read_only=True, data_only=True)
 feuilles_existantes = wb_source.sheetnames
-print(f"Feuilles disponibles ({len(feuilles_existantes)}) :")
+logger.info(f"Feuilles disponibles ({len(feuilles_existantes)}) :")
 for f in feuilles_existantes:
-    print(f"  • {f}")
-print()
+    logger.info(f"  • {f}")
 wb_source.close()
 
 # Lecture des données avec Polars
@@ -147,14 +127,14 @@ def lire_feuille(nom: str) -> pl.DataFrame | None:
     buf2 = io.BytesIO(xlsx_bytes_source)
     try:
         df = pl.read_excel(buf2, sheet_name=nom)
-        print(f"  ✓ {nom} : {len(df)} lignes")
+        logger.info(f"  ✓ {nom} : {len(df)} lignes")
         return df
     except Exception as e:
-        print(f"  ✗ {nom} : {e}")
+        logger.error(f"  ✗ {nom} : {e}")
         return None
 
 
-print("📖 Lecture des feuilles...")
+logger.info("Lecture des feuilles...")
 dt_citp         = lire_feuille("REVENU_CITP_Detail")
 dt_grade        = lire_feuille("REVENU_Grade_Detail")
 dt_grade_sexe   = lire_feuille("REVENU_Grade_Sexe")
@@ -172,7 +152,6 @@ for annee in ANNEES_ANSTAT:
 
 BAREME_DISPONIBLE = dt_bareme is not None
 ANSTAT_DISPONIBLE = any(df is not None for df in dt_anstat.values())
-print()
 
 # ============================================================
 # FONCTIONS UTILITAIRES EXCEL
@@ -246,7 +225,7 @@ def ajuster_largeurs(ws, largeurs: dict[int, int]) -> None:
 # PRÉPARATION DES DONNÉES PAR SECTION
 # ============================================================
 
-print("🔨 Préparation des données par section...")
+logger.info("Préparation des données par section...")
 
 
 def get_eff_unique(groupe_type: str, groupe_valeur: str) -> int:
@@ -305,7 +284,7 @@ if dt_citp is not None and "Code_CITP" in dt_citp.columns:
             "effectif_total": eff,
             "nb_metiers":     sub["Code_CITP"].n_unique() if len(sub) > 0 else 0,
         }
-    print(f"  ✓ CITP : {sum(1 for v in stats_citp.values() if v['effectif_total'] > 0)} grands groupes avec données")
+    logger.info(f"  ✓ CITP : {sum(1 for v in stats_citp.values() if v['effectif_total'] > 0)} grands groupes avec données")
 
 # --- Section 2 : Grade ---
 stats_grade: dict[str, dict] = {}
@@ -324,7 +303,7 @@ if dt_grade is not None and "GRADE_PRINCIPAL" in dt_grade.columns:
             "effectif_total":     eff_total,
             "revenu_moyen_ponde": round(rev_pond),
         }
-    print(f"  ✓ Grade : {len(stats_grade)} grades")
+    logger.info(f"  ✓ Grade : {len(stats_grade)} grades")
 
 # --- Section 3 : Sexe ---
 stats_sexe: dict[str, dict] = {}
@@ -343,13 +322,13 @@ if dt_grade_sexe is not None and "SEXE_STD" in dt_grade_sexe.columns:
             "effectif_total":     eff_total,
             "revenu_moyen_ponde": round(rev_pond),
         }
-    print(f"  ✓ Sexe : {len(stats_sexe)} catégories")
+    logger.info(f"  ✓ Sexe : {len(stats_sexe)} catégories")
 
 # --- Section 4 : Multi-postes ---
 grades_multi: list[str] = []
 if dt_multi is not None and "GRADE_PRINCIPAL" in dt_multi.columns:
     grades_multi = sorted(dt_multi["GRADE_PRINCIPAL"].unique().to_list())
-    print(f"  ✓ Multi-postes : {len(grades_multi)} grades")
+    logger.info(f"  ✓ Multi-postes : {len(grades_multi)} grades")
 
 # --- Section 5 : Barème ---
 baremes_liste: list[str] = []
@@ -370,24 +349,22 @@ if BAREME_DISPONIBLE and "bareme" in dt_bareme.columns:
             "effectif_total":     eff,
             "revenu_moyen_ponde": round(rev),
         }
-    print(f"  ✓ Barème : {len(baremes_liste)} grilles salariales")
+    logger.info(f"  ✓ Barème : {len(baremes_liste)} grilles salariales")
 else:
-    print("  ℹ️  Feuilles barème absentes — section 5 ignorée")
+    logger.info("  ℹ️  Feuilles barème absentes — section 5 ignorée")
 
 # --- Annexe ANSTAT ---
 if ANSTAT_DISPONIBLE:
     annees_ok = [a for a in ANNEES_ANSTAT if dt_anstat.get(a) is not None]
-    print(f"  ✓ MODELE_ANSTAT : années disponibles = {annees_ok}")
+    logger.info(f"  ✓ MODELE_ANSTAT : années disponibles = {annees_ok}")
 else:
-    print("  ℹ️  Aucune feuille MODELE_ANSTAT trouvée — annexe ignorée")
-
-print()
+    logger.info("  ℹ️  Aucune feuille MODELE_ANSTAT trouvée — annexe ignorée")
 
 # ============================================================
 # CRÉATION DU WORKBOOK
 # ============================================================
 
-print("📄 Création du workbook...")
+logger.info("Création du workbook...")
 wb = Workbook()
 wb.remove(wb.active)
 
@@ -395,7 +372,7 @@ wb.remove(wb.active)
 # FEUILLE SOMMAIRE
 # ============================================================
 
-print("📋 Création du SOMMAIRE...")
+logger.info("Création du SOMMAIRE...")
 ws_som = wb.create_sheet("SOMMAIRE")
 
 titre_global = (
@@ -415,7 +392,7 @@ current_row = 4
 # SECTION 1 : CITP
 # ────────────────────────────────────────────────────────────
 if dt_citp is not None:
-    merge_titre(ws_som, "📊 SECTION 1 : CLASSIFICATION PAR GRAND GROUPE CITP",
+    merge_titre(ws_som, "SECTION 1 : CLASSIFICATION PAR GRAND GROUPE CITP",
                 row=current_row, n_cols=5, fill=FILL_SUBTITLE, font=FONT_SUBTITLE)
     current_row += 1
     ecrire_entetes(ws_som, ["Code", "Grand Groupe CITP", "Effectif total", "Nb métiers", ""],
@@ -439,7 +416,7 @@ if dt_citp is not None:
 # SECTION 2 : GRADE
 # ────────────────────────────────────────────────────────────
 if dt_grade is not None:
-    merge_titre(ws_som, "📊 SECTION 2 : CLASSIFICATION PAR GRADE",
+    merge_titre(ws_som, "SECTION 2 : CLASSIFICATION PAR GRADE",
                 row=current_row, n_cols=5, fill=FILL_SUBTITLE, font=FONT_SUBTITLE)
     current_row += 1
     ecrire_entetes(ws_som, ["Grade", "Description", "Effectif total", "Revenu moyen", ""],
@@ -466,7 +443,7 @@ if dt_grade is not None:
 # SECTION 3 : SEXE
 # ────────────────────────────────────────────────────────────
 if dt_grade_sexe is not None:
-    merge_titre(ws_som, "📊 SECTION 3 : CLASSIFICATION PAR SEXE",
+    merge_titre(ws_som, "SECTION 3 : CLASSIFICATION PAR SEXE",
                 row=current_row, n_cols=5, fill=FILL_SUBTITLE, font=FONT_SUBTITLE)
     current_row += 1
     ecrire_entetes(ws_som, ["Sexe", "Description", "Effectif total", "Revenu moyen", ""],
@@ -492,7 +469,7 @@ if dt_grade_sexe is not None:
 # SECTION 4 : MULTI-POSTES
 # ────────────────────────────────────────────────────────────
 if dt_multi is not None:
-    merge_titre(ws_som, "📊 SECTION 4 : MULTI-POSTES PAR GRADE",
+    merge_titre(ws_som, "SECTION 4 : MULTI-POSTES PAR GRADE",
                 row=current_row, n_cols=5, fill=FILL_SUBTITLE, font=FONT_SUBTITLE)
     current_row += 1
     ecrire_entetes(ws_som, ["Grade", "Description", "Mono-postes", "Multi-postes", ""],
@@ -525,7 +502,7 @@ if dt_multi is not None:
 # SECTION 5 : BARÈME / GRILLE SALARIALE
 # ────────────────────────────────────────────────────────────
 if BAREME_DISPONIBLE:
-    merge_titre(ws_som, "📊 SECTION 5 : CLASSIFICATION PAR BARÈME / GRILLE SALARIALE",
+    merge_titre(ws_som, "SECTION 5 : CLASSIFICATION PAR BARÈME / GRILLE SALARIALE",
                 row=current_row, n_cols=5, fill=FILL_SUBTITLE, font=FONT_SUBTITLE)
     current_row += 1
     ecrire_entetes(ws_som, ["Barème / Grille salariale", "Effectif total", "Revenu moyen",
@@ -552,7 +529,7 @@ if BAREME_DISPONIBLE:
 # ANNEXE : MODÈLE ANSTAT (une ligne par année)
 # ────────────────────────────────────────────────────────────
 if ANSTAT_DISPONIBLE:
-    merge_titre(ws_som, "📋 ANNEXE : MODÈLE STATISTIQUE ANSTAT — Par année",
+    merge_titre(ws_som, "ANNEXE : MODÈLE STATISTIQUE ANSTAT — Par année",
                 row=current_row, n_cols=5,
                 fill=FILL_ANSTAT, font=FONT_ANSTAT)
     current_row += 1
@@ -572,13 +549,13 @@ if ANSTAT_DISPONIBLE:
 
 # Formatage colonnes sommaire
 ajuster_largeurs(ws_som, {1: 45, 2: 20, 3: 18, 4: 18, 5: 18})
-print("  ✓ SOMMAIRE créé\n")
+logger.info("  ✓ SOMMAIRE créé")
 
 # ============================================================
 # FEUILLES DE DÉTAIL
 # ============================================================
 
-print("📄 Création des feuilles détail...")
+logger.info("Création des feuilles détail...")
 
 # ── Section 1 : CITP par grand groupe ───────────────────────
 if dt_citp is not None:
@@ -592,7 +569,7 @@ if dt_citp is not None:
         ajouter_lien_retour(ws, row=2)
         ecrire_df_dans_feuille(ws, gg_data, start_row=4)
         ajuster_largeurs(ws, {1: 20, 2: 40, 3: 15, 4: 15, 5: 15, 6: 15, 7: 15, 8: 15})
-        print(f"  ✓ {sheet_name}")
+        logger.info(f"  ✓ {sheet_name}")
 
 # ── Section 2 : Grade ────────────────────────────────────────
 if dt_grade is not None:
@@ -604,7 +581,7 @@ if dt_grade is not None:
         ajouter_lien_retour(ws, row=2)
         ecrire_df_dans_feuille(ws, data, start_row=4)
         ajuster_largeurs(ws, {1: 15, 2: 15, 3: 15, 4: 18, 5: 18, 6: 15, 7: 15, 8: 15})
-        print(f"  ✓ {sheet_name}")
+        logger.info(f"  ✓ {sheet_name}")
 
 # ── Section 3 : Sexe ────────────────────────────────────────
 if dt_grade_sexe is not None:
@@ -616,7 +593,7 @@ if dt_grade_sexe is not None:
         ajouter_lien_retour(ws, row=2)
         ecrire_df_dans_feuille(ws, data, start_row=4)
         ajuster_largeurs(ws, {1: 15, 2: 15, 3: 15, 4: 18, 5: 18, 6: 15, 7: 15, 8: 15})
-        print(f"  ✓ {sheet_name}")
+        logger.info(f"  ✓ {sheet_name}")
 
 # ── Section 4 : Multi-postes par grade ──────────────────────
 if dt_multi is not None:
@@ -628,7 +605,7 @@ if dt_multi is not None:
         ajouter_lien_retour(ws, row=2)
         ecrire_df_dans_feuille(ws, data, start_row=4)
         ajuster_largeurs(ws, {1: 15, 2: 15, 3: 15, 4: 15, 5: 12, 6: 12, 7: 12, 8: 12})
-        print(f"  ✓ {sheet_name}")
+        logger.info(f"  ✓ {sheet_name}")
 
 # ── Section 5 : Barème ──────────────────────────────────────
 if BAREME_DISPONIBLE:
@@ -642,7 +619,7 @@ if BAREME_DISPONIBLE:
         ajouter_lien_retour(ws, row=2)
         ecrire_df_dans_feuille(ws, data, start_row=4)
         ajuster_largeurs(ws, {1: 20, 2: 15, 3: 15, 4: 18, 5: 18, 6: 15, 7: 15, 8: 15})
-        print(f"  ✓ {sheet_name}")
+        logger.info(f"  ✓ {sheet_name}")
 
     if dt_bareme_grade is not None:
         for b in baremes_liste:
@@ -655,7 +632,7 @@ if BAREME_DISPONIBLE:
             ajouter_lien_retour(ws, row=2)
             ecrire_df_dans_feuille(ws, data, start_row=4)
             ajuster_largeurs(ws, {1: 20, 2: 15, 3: 15, 4: 15, 5: 18, 6: 18, 7: 15, 8: 15})
-            print(f"  ✓ {sheet_name}")
+            logger.info(f"  ✓ {sheet_name}")
 
     if dt_bareme_sexe is not None:
         for b in baremes_liste:
@@ -668,7 +645,7 @@ if BAREME_DISPONIBLE:
             ajouter_lien_retour(ws, row=2)
             ecrire_df_dans_feuille(ws, data, start_row=4)
             ajuster_largeurs(ws, {1: 20, 2: 15, 3: 15, 4: 15, 5: 18, 6: 18, 7: 15, 8: 15})
-            print(f"  ✓ {sheet_name}")
+            logger.info(f"  ✓ {sheet_name}")
 
 # ── Annexe : MODELE_ANSTAT — une feuille par année ──────────
 # Copie directe des feuilles produites par 07_calcul_indicateur.py
@@ -676,7 +653,7 @@ if ANSTAT_DISPONIBLE:
     for annee in ANNEES_ANSTAT:
         df_anstat = dt_anstat.get(annee)
         if df_anstat is None or len(df_anstat) == 0:
-            print(f"  ⚠️  MODELE_ANSTAT_{annee} ignorée (données absentes)")
+            logger.warning(f"  ⚠️  MODELE_ANSTAT_{annee} ignorée (données absentes)")
             continue
         sheet_name_anstat = f"MODELE_ANSTAT_{annee}"
         ws = wb.create_sheet(sheet_name_anstat)
@@ -691,15 +668,13 @@ if ANSTAT_DISPONIBLE:
         ajouter_lien_retour(ws, row=2)
         ecrire_df_dans_feuille(ws, df_anstat, start_row=4)
         ajuster_largeurs(ws, {1: 55, 2: 22, 3: 22, 4: 22})
-        print(f"  ✓ MODELE_ANSTAT_{annee} ({len(df_anstat)} lignes)")
-
-print()
+        logger.info(f"  ✓ MODELE_ANSTAT_{annee} ({len(df_anstat)} lignes)")
 
 # ============================================================
 # SAUVEGARDE ET UPLOAD
 # ============================================================
 
-print("💾 Sauvegarde...")
+logger.info("Sauvegarde...")
 
 buf_out    = io.BytesIO()
 wb.save(buf_out)
@@ -715,23 +690,23 @@ s3.put_object(
 
 taille_mb = len(xlsx_bytes) / 1024**2
 
-print(f"\n✅ Fichier créé : s3://{BUCKET_STAGING}/{OUTPUT_KEY}")
-print(f"   Taille   : {taille_mb:.1f} MB")
-print(f"   Feuilles : {len(wb.sheetnames)}\n")
+logger.info(f"\n✅ Fichier créé : s3://{BUCKET_STAGING}/{OUTPUT_KEY}")
+logger.info(f"   Taille   : {taille_mb:.1f} MB")
+logger.info(f"   Feuilles : {len(wb.sheetnames)}")
 
-print("=" * 70)
-print("✅ TERMINÉ")
-print("=" * 70 + "\n")
-print("📊 STRUCTURE DU FICHIER :\n")
-print("FEUILLE SOMMAIRE (5 sections + annexe ANSTAT) :")
-print("  • Section 1 : Classification par grand groupe CITP (9 groupes)")
-print("  • Section 2 : Classification par grade (A1-D3)")
-print("  • Section 3 : Classification par sexe (Homme/Femme)")
-print("  • Section 4 : Multi-postes par grade")
-print("  • Section 5 : Barème / Grille salariale")
-print("  • Annexe    : Modèle ANSTAT 2024 | Modèle ANSTAT 2025\n")
-print("💡 UTILISATION :")
-print("  1. Ouvrez le fichier Excel")
-print("  2. La feuille SOMMAIRE s'affiche avec 5 sections + annexe")
-print("  3. Cliquez sur n'importe quel lien bleu pour naviguer")
-print("  4. Utilisez '← Retour au sommaire' pour revenir\n")
+logger.info("=" * 70)
+logger.info("TERMINÉ")
+logger.info("=" * 70)
+logger.info("STRUCTURE DU FICHIER :")
+logger.info("FEUILLE SOMMAIRE (5 sections + annexe ANSTAT) :")
+logger.info("  • Section 1 : Classification par grand groupe CITP (9 groupes)")
+logger.info("  • Section 2 : Classification par grade (A1-D3)")
+logger.info("  • Section 3 : Classification par sexe (Homme/Femme)")
+logger.info("  • Section 4 : Multi-postes par grade")
+logger.info("  • Section 5 : Barème / Grille salariale")
+logger.info("  • Annexe    : Modèle ANSTAT 2024 | Modèle ANSTAT 2025")
+logger.info("UTILISATION :")
+logger.info("  1. Ouvrez le fichier Excel")
+logger.info("  2. La feuille SOMMAIRE s'affiche avec 5 sections + annexe")
+logger.info("  3. Cliquez sur n'importe quel lien bleu pour naviguer")
+logger.info("  4. Utilisez '← Retour au sommaire' pour revenir")

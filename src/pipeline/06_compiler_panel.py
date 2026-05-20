@@ -45,18 +45,11 @@ import io
 import os
 import re
 import tempfile
-from dotenv import load_dotenv
-import boto3
-from botocore.client import Config
+from common.s3_client import create_s3_client
+from common.logging_config import setup_pipeline_logging
 import polars as pl
 
-load_dotenv(".env")
-
 # --- CONFIGURATION ---
-
-MINIO_ENDPOINT   = os.getenv("MINIO_ENDPOINT",   "http://192.168.1.230:30137")
-MINIO_ACCESS_KEY = os.getenv("MINIO_ACCESS_KEY", "datalab-team")
-MINIO_SECRET_KEY = os.getenv("MINIO_SECRET_KEY", "minio-datalabteam123")
 
 BUCKET_SILVER  = os.getenv("BUCKET_SILVER", "silver")
 BUCKET_GOLD    = os.getenv("BUCKET_GOLD",   "gold")
@@ -77,20 +70,8 @@ PREFIX_PANEL   = "panel_admin"
 NOMS_F2_BAREME = {"124_F2", "228_F2", "271_F2", "425_F2"}  # sans 421 allocation familiale
 
 # --- CLIENT S3 (MinIO) ---
-s3 = boto3.client(
-    "s3",
-    endpoint_url          = MINIO_ENDPOINT,
-    aws_access_key_id     = MINIO_ACCESS_KEY,
-    aws_secret_access_key = MINIO_SECRET_KEY,
-    config                = Config(
-        signature_version = "s3v4",
-        retries           = {"max_attempts": 5, "mode": "adaptive"},
-        connect_timeout   = 30,
-        read_timeout      = 120,
-    ),
-    region_name = "us-east-1",
-    verify      = False,
-)
+s3 = create_s3_client()
+logger, _ = setup_pipeline_logging("06_compiler_panel")
 
 # ============================================================
 # COLONNES RETENUES DANS LE PANEL
@@ -172,7 +153,7 @@ def ecrire_parquet_s3(df: pl.DataFrame, bucket: str, key: str) -> None:
     buf.seek(0)
     taille = len(buf.getvalue()) / 1024**2
     s3.put_object(Bucket=bucket, Key=key, Body=buf.getvalue())
-    print(f"  ✓ s3://{bucket}/{key}  ({len(df):,} lignes × {len(df.columns)} cols  {taille:.1f} MB)")
+    logger.info(f"  ✓ s3://{bucket}/{key}  ({len(df):,} lignes × {len(df.columns)} cols  {taille:.1f} MB)")
 
 
 def construire_panel_annee(df: pl.DataFrame) -> pl.DataFrame:
@@ -245,7 +226,7 @@ def construire_panel_annee(df: pl.DataFrame) -> pl.DataFrame:
                     f"Corriger le Silver avant de relancer le programme 06."
                 )
             else:
-                print(f"    ✓ Unicité agent × mois × organisme confirmée", flush=True)
+                logger.info(f"    ✓ Unicité agent × mois × organisme confirmée")
 
         # ── Somme montant_brut sur tous les postes ────────────────────────
         if "montant_brut" in df.columns:
@@ -287,25 +268,20 @@ def construire_panel_annee(df: pl.DataFrame) -> pl.DataFrame:
         )
 
         # Composantes *_F2 = toutes colonnes *_F2 SAUF les colonnes total déclaré
-        # (on exclut aussi toute colonne dont le nom contient "montant_brut"
-        #  pour éviter les doublons si la normalisation a créé un alias)
         cols_f2_composantes = [
             c for c in df.columns
             if c.upper().endswith("_F2")
             and c.lower() not in NOMS_TOTAL_F2
         ]
 
-        print(f"    Colonnes total F2 exclues de la somme : {sorted(NOMS_TOTAL_F2)}",
-              flush=True)
+        logger.info(f"    Colonnes total F2 exclues de la somme : {sorted(NOMS_TOTAL_F2)}")
         if col_total_f2:
-            print(f"    ✅ Total F2 déclaré détecté   : '{col_total_f2}' "
-                  f"(utilisé pour le diagnostic uniquement)", flush=True)
+            logger.info(f"    ✅ Total F2 déclaré détecté   : '{col_total_f2}' "
+                        f"(utilisé pour le diagnostic uniquement)")
         else:
-            print(f"    ⚠️  Aucun total F2 déclaré détecté — Diag 2 (F2 vs F1) impossible",
-                  flush=True)
-        print(f"    Composantes *_F2 détectées : {len(cols_f2_composantes)} colonnes"
-              + (f"  |  Total général déclaré : {col_total_f2}" if col_total_f2 else ""),
-              flush=True)
+            logger.warning(f"    ⚠️  Aucun total F2 déclaré détecté — Diag 2 (F2 vs F1) impossible")
+        logger.info(f"    Composantes *_F2 détectées : {len(cols_f2_composantes)} colonnes"
+                    + (f"  |  Total général déclaré : {col_total_f2}" if col_total_f2 else ""))
 
         if cols_f2_composantes:
             # Toujours sommer les composantes (Option A)
@@ -317,9 +293,6 @@ def construire_panel_annee(df: pl.DataFrame) -> pl.DataFrame:
             )
 
             # ── Diagnostic 1 : sum(composantes F2) vs total déclaré F2 ──────
-            # Vérifie la cohérence INTERNE de la Feuille 2.
-            # Un écart ici signifie que les composantes listées ne couvrent
-            # pas exactement ce que la Feuille 2 déclare comme total.
             if col_total_f2:
                 df_d1 = df_avec_sum.with_columns(
                     pl.col(col_total_f2).cast(pl.Float64, strict=False)
@@ -339,43 +312,34 @@ def construire_panel_annee(df: pl.DataFrame) -> pl.DataFrame:
                 pct_eg1    = 100 * n_eg1  / n_pres1 if n_pres1 > 0 else 0
                 pct_ec1    = 100 * n_ec1  / n_pres1 if n_pres1 > 0 else 0
 
-                print(f"\n    DIAGNOSTIC 1 — Cohérence interne F2 :", flush=True)
-                print(f"      sum(composantes *_F2) vs '{col_total_f2}'", flush=True)
-                print(f"    {'─'*65}", flush=True)
-                print(f"    Lignes totales                       : {n_tot1:>10,}  (100.0%)",
-                      flush=True)
-                print(f"    '{col_total_f2}' absent (null)       : {n_abs1:>10,}  "
-                      f"({pct_abs1:5.1f}%)  → pas de total déclaré F2", flush=True)
-                print(f"    '{col_total_f2}' présent             : {n_pres1:>10,}  "
-                      f"({pct_pres1:5.1f}%)", flush=True)
-                print(f"    {'─'*65}", flush=True)
-                print(f"    Parmi les lignes avec total F2 déclaré :", flush=True)
-                print(f"      ✅ Égalité exacte (écart = 0)      : {n_eg1:>10,}  "
-                      f"({pct_eg1:5.1f}%)", flush=True)
-                print(f"      ⚠️  Avec écart (≠ 0)               : {n_ec1:>10,}  "
-                      f"({pct_ec1:5.1f}%)", flush=True)
+                logger.info(f"    DIAGNOSTIC 1 — Cohérence interne F2 :")
+                logger.info(f"      sum(composantes *_F2) vs '{col_total_f2}'")
+                logger.info(f"    {'─'*65}")
+                logger.info(f"    Lignes totales                       : {n_tot1:>10,}  (100.0%)")
+                logger.info(f"    '{col_total_f2}' absent (null)       : {n_abs1:>10,}  "
+                            f"({pct_abs1:5.1f}%)  → pas de total déclaré F2")
+                logger.info(f"    '{col_total_f2}' présent             : {n_pres1:>10,}  "
+                            f"({pct_pres1:5.1f}%)")
+                logger.info(f"    {'─'*65}")
+                logger.info(f"    Parmi les lignes avec total F2 déclaré :")
+                logger.info(f"      ✅ Égalité exacte (écart = 0)      : {n_eg1:>10,}  "
+                            f"({pct_eg1:5.1f}%)")
+                logger.info(f"      ⚠️  Avec écart (≠ 0)               : {n_ec1:>10,}  "
+                            f"({pct_ec1:5.1f}%)")
                 if n_ec1 > 0:
                     lec1    = df_p1.filter(pl.col("_ecart_interne") != 0)["_ecart_interne"]
                     ec1_moy = lec1.mean()
                     ec1_abs = lec1.abs().mean()
                     ec1_med = lec1.median()
-                    # Écart signé : + = sum(composantes) > total F2 déclaré
-                    #               - = sum(composantes) < total F2 déclaré
-                    print(f"        Écart moyen (signé)           : {ec1_moy:>12,.0f} FCFA  "
-                          f"(+ = sum > total_F2  /  - = sum < total_F2)", flush=True)
-                    print(f"        Écart moyen (absolu)          : {ec1_abs:>12,.0f} FCFA",
-                          flush=True)
-                    print(f"        Écart médian (signé)          : {ec1_med:>12,.0f} FCFA",
-                          flush=True)
+                    logger.info(f"        Écart moyen (signé)           : {ec1_moy:>12,.0f} FCFA  "
+                                f"(+ = sum > total_F2  /  - = sum < total_F2)")
+                    logger.info(f"        Écart moyen (absolu)          : {ec1_abs:>12,.0f} FCFA")
+                    logger.info(f"        Écart médian (signé)          : {ec1_med:>12,.0f} FCFA")
                 del df_d1, df_p1
 
             # ── Diagnostic 2 : total déclaré F2 vs montant_brut Feuille 1 ───
-            # Vérifie la cohérence INTER-FEUILLES.
-            # Un agent absent de F2 → colonnes F2 nulles (pas de Feuille 2).
-            # Un écart résiduel (présent dans les deux mais différent) est à investiguer.
             if "montant_brut" in df.columns:
                 if col_total_f2:
-                    # Cas normal : comparer le total déclaré F2 à montant_brut F1
                     df_d2 = df_avec_sum.with_columns([
                         pl.col("montant_brut").cast(pl.Float64, strict=False),
                         pl.col(col_total_f2).cast(pl.Float64, strict=False)
@@ -386,7 +350,6 @@ def construire_panel_annee(df: pl.DataFrame) -> pl.DataFrame:
                     ])
                     ref_label = f"'{col_total_f2}' (total déclaré F2)"
                 else:
-                    # Pas de total déclaré : comparer sum(composantes) à montant_brut F1
                     df_d2 = df_avec_sum.with_columns(
                         pl.col("montant_brut").cast(pl.Float64, strict=False)
                     ).with_columns([
@@ -407,44 +370,37 @@ def construire_panel_annee(df: pl.DataFrame) -> pl.DataFrame:
                 pct_eg2  = 100 * n_eg2  / n_pres2 if n_pres2 > 0 else 0
                 pct_ec2  = 100 * n_ec2  / n_pres2 if n_pres2 > 0 else 0
 
-                print(f"\n    DIAGNOSTIC 2 — Cohérence inter-feuilles :", flush=True)
-                print(f"      {ref_label} vs montant_brut (Feuille 1)", flush=True)
-                print(f"    {'─'*65}", flush=True)
-                print(f"    Lignes totales (Feuille 1)           : {n_tot2:>10,}  (100.0%)",
-                      flush=True)
-                print(f"    Absents de Feuille 2 (null)          : {n_abs2:>10,}  "
-                      f"({pct_ab2:5.1f}%)  → agent sans données F2", flush=True)
-                print(f"    Présents dans les deux feuilles      : {n_pres2:>10,}  "
-                      f"({pct_pr2:5.1f}%)", flush=True)
-                print(f"    {'─'*65}", flush=True)
-                print(f"    Parmi les présents en F2 :", flush=True)
-                print(f"      ✅ Égalité exacte (écart = 0)      : {n_eg2:>10,}  "
-                      f"({pct_eg2:5.1f}%)", flush=True)
-                print(f"      ⚠️  Avec écart résiduel (≠ 0)      : {n_ec2:>10,}  "
-                      f"({pct_ec2:5.1f}%)", flush=True)
+                logger.info(f"    DIAGNOSTIC 2 — Cohérence inter-feuilles :")
+                logger.info(f"      {ref_label} vs montant_brut (Feuille 1)")
+                logger.info(f"    {'─'*65}")
+                logger.info(f"    Lignes totales (Feuille 1)           : {n_tot2:>10,}  (100.0%)")
+                logger.info(f"    Absents de Feuille 2 (null)          : {n_abs2:>10,}  "
+                            f"({pct_ab2:5.1f}%)  → agent sans données F2")
+                logger.info(f"    Présents dans les deux feuilles      : {n_pres2:>10,}  "
+                            f"({pct_pr2:5.1f}%)")
+                logger.info(f"    {'─'*65}")
+                logger.info(f"    Parmi les présents en F2 :")
+                logger.info(f"      ✅ Égalité exacte (écart = 0)      : {n_eg2:>10,}  "
+                            f"({pct_eg2:5.1f}%)")
+                logger.info(f"      ⚠️  Avec écart résiduel (≠ 0)      : {n_ec2:>10,}  "
+                            f"({pct_ec2:5.1f}%)")
                 if n_ec2 > 0:
                     lec2    = df_p2.filter(pl.col("_ecart_f1f2") != 0)["_ecart_f1f2"]
                     ec2_moy = lec2.mean()
                     ec2_abs = lec2.abs().mean()
                     ec2_med = lec2.median()
-                    # Écart signé : + = F2 supérieur à montant_brut F1
-                    #               - = F2 inférieur à montant_brut F1
-                    print(f"        Écart moyen (signé)           : {ec2_moy:>12,.0f} FCFA  "
-                          f"(+ = F2 > F1  /  - = F2 < F1)", flush=True)
-                    print(f"        Écart moyen (absolu)          : {ec2_abs:>12,.0f} FCFA",
-                          flush=True)
-                    print(f"        Écart médian (signé)          : {ec2_med:>12,.0f} FCFA",
-                          flush=True)
-                    print(f"        → À investiguer : différence F1 vs F2 pour ces agents",
-                          flush=True)
+                    logger.info(f"        Écart moyen (signé)           : {ec2_moy:>12,.0f} FCFA  "
+                                f"(+ = F2 > F1  /  - = F2 < F1)")
+                    logger.info(f"        Écart moyen (absolu)          : {ec2_abs:>12,.0f} FCFA")
+                    logger.info(f"        Écart médian (signé)          : {ec2_med:>12,.0f} FCFA")
+                    logger.info(f"        → À investiguer : différence F1 vs F2 pour ces agents")
                 del df_d2, df_p2
 
-            print(f"\n    {'─'*65}", flush=True)
-            print(f"    → montant_brut_total_composantes_F2 = sum({len(cols_f2_composantes)} composantes *_F2) "
-                  f"[Option A — conservé tel quel]", flush=True)
-            print(f"    → Analyses Méthodo 2 : montant_brut_total (Feuille 1) sera utilisé",
-                  flush=True)
-            print(f"    {'─'*65}", flush=True)
+            logger.info(f"    {'─'*65}")
+            logger.info(f"    → montant_brut_total_composantes_F2 = sum({len(cols_f2_composantes)} composantes *_F2) "
+                        f"[Option A — conservé tel quel]")
+            logger.info(f"    → Analyses Méthodo 2 : montant_brut_total (Feuille 1) sera utilisé")
+            logger.info(f"    {'─'*65}")
 
             # Agrégation montant_brut_total_composantes_F2 par individu × mois (tous organismes)
             agg_brut_Total = (
@@ -454,16 +410,12 @@ def construire_panel_annee(df: pl.DataFrame) -> pl.DataFrame:
             )
             del df_avec_sum
         else:
-            print(f"    ⚠️  Aucune composante *_F2 trouvée — montant_brut_total_composantes_F2 non calculé",
-                  flush=True)
+            logger.warning(f"    ⚠️  Aucune composante *_F2 trouvée — montant_brut_total_composantes_F2 non calculé")
 
         # ── montant_brut_sans_ind_sans_alloc = somme des 4 composantes F2 connues (sans 421) ──
-        # NOMS_F2_BAREME = {124_F2, 228_F2, 271_F2, 425_F2} — code 421 exclu.
-        # On somme horizontalement puis on agrège par (matricule × mois_annee)
-        # pour cumuler les organismes différents d'un agent multi-postes.
         cols_f2 = [c for c in df.columns if c.upper() in NOMS_F2_BAREME]
         if cols_f2:
-            print(f"    Composantes F2 barème (sans 421) : {sorted(cols_f2)}", flush=True)
+            logger.info(f"    Composantes F2 barème (sans 421) : {sorted(cols_f2)}")
             agg_brut_bareme = (
                 df
                 .with_columns([
@@ -477,8 +429,8 @@ def construire_panel_annee(df: pl.DataFrame) -> pl.DataFrame:
                 .agg(pl.col("_bareme_row").sum().alias("montant_brut_sans_ind_sans_alloc"))
             )
         else:
-            print(f"    ⚠️  Aucune colonne F2 barème trouvée {sorted(NOMS_F2_BAREME)} — "
-                  f"montant_brut_sans_ind_sans_alloc non calculé", flush=True)
+            logger.warning(f"    ⚠️  Aucune colonne F2 barème trouvée {sorted(NOMS_F2_BAREME)} — "
+                           f"montant_brut_sans_ind_sans_alloc non calculé")
 
         # Somme montant_net sur tous les postes
         if "montant_net" in df.columns:
@@ -492,7 +444,7 @@ def construire_panel_annee(df: pl.DataFrame) -> pl.DataFrame:
 
         n_postes = agg_nb["NB_POSTES"]
         n_multi  = int((n_postes > 1).sum())
-        print(f"    Multi-postes : {n_multi:,} / {len(agg_nb):,} individus×mois", flush=True)
+        logger.info(f"    Multi-postes : {n_multi:,} / {len(agg_nb):,} individus×mois")
 
         # ── Stats NB_POSTES par période (mois_annee) ──────────────────────
         if "mois_annee" in agg_nb.columns:
@@ -513,19 +465,16 @@ def construire_panel_annee(df: pl.DataFrame) -> pl.DataFrame:
                 )
                 .sort("mois_annee")
             )
-            print(f"    {'mois_annee':<12} {'nb_agents':>12} {'multi-postes':>14} "
-                  f"{'%':>8} {'moy(tous)':>11} {'moy(multi)':>12}", flush=True)
-            print(f"    {'-'*12} {'-'*12} {'-'*14} {'-'*8} {'-'*11} {'-'*12}", flush=True)
+            logger.info(f"    {'mois_annee':<12} {'nb_agents':>12} {'multi-postes':>14} "
+                        f"{'%':>8} {'moy(tous)':>11} {'moy(multi)':>12}")
+            logger.info(f"    {'-'*12} {'-'*12} {'-'*14} {'-'*8} {'-'*11} {'-'*12}")
             for row in stats_periode.iter_rows(named=True):
                 moy_multi = f"{row['moy_postes_multi']:.3f}" if row['moy_postes_multi'] is not None else "   —"
-                print(f"    {row['mois_annee']:<12} {row['nb_agents']:>12,} "
-                      f"{row['nb_multipostes']:>14,} {row['pct_multi']:>7.2f}% "
-                      f"{row['moy_postes_tous']:>11.3f} {moy_multi:>12}", flush=True)
-            print(flush=True)
+                logger.info(f"    {row['mois_annee']:<12} {row['nb_agents']:>12,} "
+                            f"{row['nb_multipostes']:>14,} {row['pct_multi']:>7.2f}% "
+                            f"{row['moy_postes_tous']:>11.3f} {moy_multi:>12}")
 
     # ── Sélection défensive : colonnes COLONNES_PANEL présentes dans df ───
-    # Les nouvelles colonnes agrégées (NB_POSTES, montant_brut_total, etc.)
-    # ne sont pas encore dans df — elles seront jointes après déduplication.
     _cols_calculees = ("NB_POSTES", "montant_brut_total", "montant_brut_sans_ind_sans_alloc",
                        "montant_brut_total_composantes_F2", "montant_net_total")
     cols_silver    = [c for c in COLONNES_PANEL
@@ -535,7 +484,7 @@ def construire_panel_annee(df: pl.DataFrame) -> pl.DataFrame:
     df = df.select(cols_silver)
 
     if cols_absentes:
-        print(f"    ⚠️  Colonnes absentes du Silver (ignorées) : {cols_absentes}", flush=True)
+        logger.warning(f"    ⚠️  Colonnes absentes du Silver (ignorées) : {cols_absentes}")
 
     # ── Déduplication matricule × mois_annee (garde la première occurrence) ──
     cles_dedup = [c for c in ["matricule", "mois_annee"] if c in df.columns]
@@ -544,8 +493,8 @@ def construire_panel_annee(df: pl.DataFrame) -> pl.DataFrame:
         df    = df.unique(subset=cles_dedup, keep="first", maintain_order=True)
         apres = len(df)
         if avant != apres:
-            print(f"    Déduplication : {avant - apres:,} lignes supprimées "
-                  f"→ {apres:,} individus×mois", flush=True)
+            logger.info(f"    Déduplication : {avant - apres:,} lignes supprimées "
+                        f"→ {apres:,} individus×mois")
 
     # ── Jointure des colonnes agrégées ────────────────────────────────────
     if cles_agg:
@@ -556,13 +505,11 @@ def construire_panel_annee(df: pl.DataFrame) -> pl.DataFrame:
         if agg_brut_bareme is not None:
             df = df.join(agg_brut_bareme, on=cles_agg, how="left")
         else:
-            print("    ⚠️  montant_brut_sans_ind_sans_alloc non calculé (colonnes F2 barème absentes)",
-                  flush=True)
+            logger.warning("    ⚠️  montant_brut_sans_ind_sans_alloc non calculé (colonnes F2 barème absentes)")
         if agg_brut_Total is not None:
             df = df.join(agg_brut_Total, on=cles_agg, how="left")
         else:
-            print("    ⚠️  montant_brut_total_composantes_F2 non calculé (aucune colonne *_F2 détectée)",
-                  flush=True)
+            logger.warning("    ⚠️  montant_brut_total_composantes_F2 non calculé (aucune colonne *_F2 détectée)")
         if agg_net_total is not None:
             df = df.join(agg_net_total, on=cles_agg, how="left")
 
@@ -577,10 +524,9 @@ def construire_panel_annee(df: pl.DataFrame) -> pl.DataFrame:
 # LISTER LES FICHIERS SILVER
 # ============================================================
 
-print("=" * 70)
-print("COMPILATION DU PANEL INDIVIDUS")
-print("=" * 70)
-print()
+logger.info("=" * 70)
+logger.info("COMPILATION DU PANEL INDIVIDUS")
+logger.info("=" * 70)
 
 pages_silver = s3.get_paginator("list_objects_v2").paginate(
     Bucket=BUCKET_SILVER, Prefix=PREFIX_SILVER
@@ -592,7 +538,7 @@ cles_silver = sorted([
     if obj["Key"].endswith(".parquet")
 ])
 
-print(f"Fichiers Silver trouvés : {len(cles_silver)}\n")
+logger.info(f"Fichiers Silver trouvés : {len(cles_silver)}")
 
 # ============================================================
 # TRAITEMENT ANNÉE PAR ANNÉE
@@ -607,22 +553,21 @@ for cle in cles_silver:
     annee_str = re.search(r"20\d{2}", os.path.basename(cle))
     annee_str = annee_str.group() if annee_str else os.path.splitext(os.path.basename(cle))[0]
 
-    print(f"[{annee_str}] Lecture...", end=" ", flush=True)
     df = lire_parquet_s3(BUCKET_SILVER, cle)
-    print(f"✓  {len(df):,} lignes × {len(df.columns)} cols", flush=True)
+    logger.info(f"[{annee_str}] ✓ {len(df):,} lignes × {len(df.columns)} cols")
 
     df_panel = construire_panel_annee(df)
     del df
     gc.collect()
 
     nb_lignes = len(df_panel)
-    print(f"    Panel : {nb_lignes:,} lignes × {len(df_panel.columns)} cols", flush=True)
+    logger.info(f"    Panel : {nb_lignes:,} lignes × {len(df_panel.columns)} cols")
 
     # Vérification explicite des colonnes critiques
     for col_critique in ["GRADE", "GRADE_SOURCE", "montant_brut_SOURCE", "montant_net_SOURCE",
                          "NB_POSTES", "montant_brut_total", "montant_brut_sans_ind_sans_alloc"]:
         statut = "✓" if col_critique in df_panel.columns else "✗ ABSENT"
-        print(f"    {col_critique:<25} : {statut}", flush=True)
+        logger.info(f"    {col_critique:<25} : {statut}")
 
     # Écriture Gold annuelle
     key_panel = f"{PREFIX_PANEL}/panel_{annee_str}.parquet"
@@ -638,12 +583,10 @@ for cle in cles_silver:
     row_stat = {"annee": annee_str, "nb_obs": nb_lignes}
     if "matricule" in df_panel.columns:
         row_stat["nb_individus"] = df_panel["matricule"].n_unique()
-    # moy(montant_brut_total)
     col_brut = "montant_brut_total" if "montant_brut_total" in df_panel.columns else "montant_brut"
     if col_brut in df_panel.columns:
         brut = df_panel[col_brut].drop_nulls()
         row_stat["moy_montant_brut_total"] = round(brut.mean(), 0) if len(brut) > 0 else None
-    # moy(montant_brut_sans_ind_sans_alloc)
     if "montant_brut_sans_ind_sans_alloc" in df_panel.columns:
         bareme = df_panel["montant_brut_sans_ind_sans_alloc"].drop_nulls()
         row_stat["moy_montant_brut_sans_ind_sans_alloc"] = round(bareme.mean(), 0) if len(bareme) > 0 else None
@@ -656,18 +599,16 @@ for cle in cles_silver:
 # RÉSUMÉ FINAL
 # ============================================================
 
-print()
-print("=" * 70)
-print("APERÇU DU PANEL")
-print("=" * 70)
-print()
-print(f"Observations totales  : {nb_total_lignes:,}")
-print(f"Individus uniques     : {len(nb_total_agents):,}")
+logger.info("=" * 70)
+logger.info("APERÇU DU PANEL")
+logger.info("=" * 70)
+logger.info(f"Observations totales  : {nb_total_lignes:,}")
+logger.info(f"Individus uniques     : {len(nb_total_agents):,}")
 if periodes_vues:
-    print(f"Plage temporelle      : {min(periodes_vues)} → {max(periodes_vues)}")
-    print(f"Périodes distinctes   : {len(set(periodes_vues))}")
+    logger.info(f"Plage temporelle      : {min(periodes_vues)} → {max(periodes_vues)}")
+    logger.info(f"Périodes distinctes   : {len(set(periodes_vues))}")
 
-print(f"\nDétail par année :")
+logger.info(f"Détail par année :")
 for row in stats_par_annee:
     ligne = f"  {row['annee']}  :  {row.get('nb_obs', 0):>8,} obs"
     if "nb_individus" in row:
@@ -676,25 +617,21 @@ for row in stats_par_annee:
         ligne += f"  |  moy(montant_brut_total) = {row['moy_montant_brut_total']:,.0f}"
     if "moy_montant_brut_sans_ind_sans_alloc" in row and row["moy_montant_brut_sans_ind_sans_alloc"]:
         ligne += f"  |  moy(montant_brut_sans_ind_sans_alloc) = {row['moy_montant_brut_sans_ind_sans_alloc']:,.0f}"
-    print(ligne)
+    logger.info(ligne)
 
-print()
-print("=" * 70)
-print("✓ PANEL INDIVIDUS TERMINÉ")
-print("=" * 70)
-print(f"\nFichiers disponibles dans : s3://{BUCKET_GOLD}/{PREFIX_PANEL}/")
-print()
-print("Prochaine étape : exécuter 07_calcul_indicateur.py")
+logger.info("=" * 70)
+logger.info("✓ PANEL INDIVIDUS TERMINÉ")
+logger.info("=" * 70)
+logger.info(f"Fichiers disponibles dans : s3://{BUCKET_GOLD}/{PREFIX_PANEL}/")
+logger.info("Prochaine étape : exécuter 07_calcul_indicateur.py")
 
 # ============================================================
 # FUSION COMPLÈTE : tous les fichiers annuels → panel_complet
 # ============================================================
 
-print()
-print("=" * 70)
-print("FUSION : panel_complet.parquet (toutes années)")
-print("=" * 70)
-print()
+logger.info("=" * 70)
+logger.info("FUSION : panel_complet.parquet (toutes années)")
+logger.info("=" * 70)
 
 KEY_PANEL_COMPLET = f"{PREFIX_PANEL}/panel_complet.parquet"
 
@@ -708,21 +645,19 @@ cles_panel = sorted([
     if re.search(r"panel_20\d{2}\.parquet$", obj["Key"])
 ])
 
-print(f"Fichiers panel annuels trouvés : {len(cles_panel)}")
+logger.info(f"Fichiers panel annuels trouvés : {len(cles_panel)}")
 for cle in cles_panel:
-    print(f"  · {os.path.basename(cle)}")
-print()
+    logger.info(f"  · {os.path.basename(cle)}")
 
 with tempfile.TemporaryDirectory() as tmpdir:
     chemins_locaux = []
     for cle in cles_panel:
         dest = os.path.join(tmpdir, os.path.basename(cle))
-        print(f"  Téléchargement {os.path.basename(cle)}...", end=" ", flush=True)
         s3.download_file(BUCKET_GOLD, cle, dest)
         chemins_locaux.append(dest)
-        print("✓", flush=True)
+        logger.info(f"  Téléchargement {os.path.basename(cle)} ✓")
 
-    print(f"\nFusion en streaming...", flush=True)
+    logger.info(f"Fusion en streaming...")
     chemin_complet = os.path.join(tmpdir, "panel_complet.parquet")
 
     (
@@ -731,14 +666,13 @@ with tempfile.TemporaryDirectory() as tmpdir:
         .sink_parquet(chemin_complet, compression="snappy")
     )
 
-    print(f"Upload vers s3://{BUCKET_GOLD}/{KEY_PANEL_COMPLET}...", end=" ", flush=True)
+    logger.info(f"Upload vers s3://{BUCKET_GOLD}/{KEY_PANEL_COMPLET}...")
     s3.upload_file(chemin_complet, BUCKET_GOLD, KEY_PANEL_COMPLET)
     taille = os.path.getsize(chemin_complet) / 1024**2
-    print(f"✓  {taille:.1f} MB")
+    logger.info(f"✓  {taille:.1f} MB uploadés")
 
-print()
-print("=" * 70)
-print("✓ PANEL COMPLET ÉCRIT")
-print("=" * 70)
-print(f"\n  s3://{BUCKET_GOLD}/{KEY_PANEL_COMPLET}")
-print(f"  {nb_total_lignes:,} lignes  ·  {len(nb_total_agents):,} individus uniques")
+logger.info("=" * 70)
+logger.info("✓ PANEL COMPLET ÉCRIT")
+logger.info("=" * 70)
+logger.info(f"  s3://{BUCKET_GOLD}/{KEY_PANEL_COMPLET}")
+logger.info(f"  {nb_total_lignes:,} lignes  ·  {len(nb_total_agents):,} individus uniques")

@@ -22,21 +22,14 @@ import os
 import re
 import tempfile
 import unicodedata
-from dotenv import load_dotenv
-import boto3
-from botocore.client import Config
+from common.s3_client import create_s3_client
+from common.logging_config import setup_pipeline_logging
 import warnings
 import polars as pl
 
 warnings.filterwarnings("ignore", message="Could not determine dtype")
 
-load_dotenv(".env")
-
 # --- CONFIGURATION ---
-
-MINIO_ENDPOINT   = os.getenv("MINIO_ENDPOINT",   "http://192.168.1.230:30137")
-MINIO_ACCESS_KEY = os.getenv("MINIO_ACCESS_KEY", "datalab-team")
-MINIO_SECRET_KEY = os.getenv("MINIO_SECRET_KEY", "minio-datalabteam123")
 
 BUCKET_STAGING  = os.getenv("BUCKET_STAGING", "staging")
 BUCKET_BRONZE   = os.getenv("BUCKET_BRONZE",  "bronze")
@@ -44,15 +37,8 @@ PREFIX_MENSUELS = "panel_admin/fichiers_mensuels"
 PREFIX_BRONZE   = "panel_admin"
 
 # --- CLIENT S3 (MinIO) ---
-s3 = boto3.client(
-    "s3",
-    endpoint_url          = MINIO_ENDPOINT,
-    aws_access_key_id     = MINIO_ACCESS_KEY,
-    aws_secret_access_key = MINIO_SECRET_KEY,
-    config                = Config(signature_version="s3v4"),
-    region_name           = "us-east-1",
-    verify                = False,
-)
+s3 = create_s3_client()
+logger, _ = setup_pipeline_logging("02_staging_to_bronze")
 
 # ============================================================
 # FONCTIONS UTILITAIRES
@@ -120,10 +106,9 @@ def ecrire_parquet_bronze(df: pl.DataFrame, periode: str) -> None:
 # LISTER LES FICHIERS DANS STAGING
 # ============================================================
 
-print("=" * 70)
-print("STAGING → BRONZE : Panel Administratif")
-print("=" * 70)
-print()
+logger.info("=" * 70)
+logger.info("STAGING → BRONZE : Panel Administratif")
+logger.info("=" * 70)
 
 paginator = s3.get_paginator("list_objects_v2")
 pages = paginator.paginate(Bucket=BUCKET_STAGING, Prefix=PREFIX_MENSUELS)
@@ -135,7 +120,7 @@ fichiers_minio = sorted([
     if obj["Key"].lower().endswith(".xlsx")
 ])
 
-print(f"Fichiers dans staging : {len(fichiers_minio)}\n")
+logger.info(f"Fichiers dans staging : {len(fichiers_minio)}")
 
 # ============================================================
 # TRAITEMENT FICHIER PAR FICHIER (Polars → Parquet/bronze)
@@ -147,7 +132,6 @@ nb_err = 0
 for chemin_objet in fichiers_minio:
     periode     = os.path.splitext(os.path.basename(chemin_objet))[0]
     nom_fichier = os.path.basename(chemin_objet)
-    print(f"  [{periode}] ... ", end="", flush=True)
 
     tmp_path = None
     try:
@@ -204,36 +188,32 @@ for chemin_objet in fichiers_minio:
             cols_obligatoires = {"124_F2", "421_F2"}
 
             if cols_obligatoires.issubset(set(cols_num_f2)):
-                # Étape 1 : ne garder dans F2 que les lignes
-                # avec 124 ET 421 renseignés
                 feuille2 = feuille2.filter(
                     pl.col("124_F2").is_not_null()
                     & (pl.col("124_F2").cast(pl.Utf8).str.strip_chars() != "")
                     & pl.col("421_F2").is_not_null()
                     & (pl.col("421_F2").cast(pl.Utf8).str.strip_chars() != "")
                 )
-                print(f"\n      (F2 : {len(feuille2):,} lignes avec 124+421 renseignés)")
+                logger.info(f"  [{periode}] F2 : {len(feuille2):,} lignes avec 124+421 renseignés")
             else:
-                print(f"\n      (F2 : colonnes 124_F2/421_F2 absentes, F2 ignoré)")
+                logger.info(f"  [{periode}] F2 : colonnes 124_F2/421_F2 absentes, F2 ignoré")
                 feuille2 = None
 
             if feuille2 is not None:
                 cle_f1 = "CLE_UNIQUE" if "CLE_UNIQUE" in feuille1.columns else None
 
                 if cle_f1:
-                    # Étape 2 : INNER JOIN — ne garder que les lignes
-                    # présentes dans F1 ET dans F2 filtré
                     feuille1 = feuille1.join(
                         feuille2,
                         left_on=cle_f1,
                         right_on="CLE_UNIQUE_F2",
                         how="inner",
                     )
-                    print(f"      (F1↔F2 : {len(feuille1):,} individus communs)")
+                    logger.info(f"  [{periode}] F1↔F2 : {len(feuille1):,} individus communs")
                 else:
-                    print(f"      (CLE_UNIQUE absente de F1, jointure ignorée)")
+                    logger.info(f"  [{periode}] CLE_UNIQUE absente de F1, jointure ignorée")
         else:
-            print(f"\n      (F2 : clé MATRICULE||CODE_ORGANISME introuvable, F2 ignoré)")
+            logger.info(f"  [{periode}] F2 : clé MATRICULE||CODE_ORGANISME introuvable, F2 ignoré")
 
         # Ajout des métadonnées et cast tout-String (Bronze = brut)
         feuille1 = (
@@ -250,11 +230,11 @@ for chemin_objet in fichiers_minio:
         # --- ÉCRITURE PARQUET SUR BRONZE ---
         ecrire_parquet_bronze(feuille1, periode)
 
-        print(f"✓  {len(feuille1):,} lignes × {len(feuille1.columns)} cols")
+        logger.info(f"  [{periode}] ✓ {len(feuille1):,} lignes × {len(feuille1.columns)} cols")
         nb_ok += 1
 
     except Exception as e:
-        print(f"✗ ERREUR : {e}")
+        logger.error(f"  [{periode}] ✗ ERREUR : {e}")
         nb_err += 1
         if tmp_path and os.path.exists(tmp_path):
             os.unlink(tmp_path)
@@ -263,13 +243,11 @@ for chemin_objet in fichiers_minio:
 # RÉSUMÉ FINAL
 # ============================================================
 
-print()
-print("=" * 70)
-print("RÉSUMÉ")
-print("=" * 70)
-print()
-print(f"Fichiers traités avec succès : {nb_ok}")
-print(f"Erreurs                      : {nb_err}")
-print(f"\nFichiers Parquet disponibles dans : s3://{BUCKET_BRONZE}/{PREFIX_BRONZE}/")
-print("\n✓ INGESTION BRONZE TERMINÉE")
-print("Prochaine étape : exécuter 03_bronze_to_silver.py")
+logger.info("=" * 70)
+logger.info("RÉSUMÉ")
+logger.info("=" * 70)
+logger.info(f"Fichiers traités avec succès : {nb_ok}")
+logger.info(f"Erreurs                      : {nb_err}")
+logger.info(f"Fichiers Parquet disponibles dans : s3://{BUCKET_BRONZE}/{PREFIX_BRONZE}/")
+logger.info("✓ INGESTION BRONZE TERMINÉE")
+logger.info("Prochaine étape : exécuter 03_bronze_to_silver.py")

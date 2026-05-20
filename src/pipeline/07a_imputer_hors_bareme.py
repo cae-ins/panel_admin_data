@@ -37,22 +37,13 @@
 
 import io
 import os
-import urllib3
-from dotenv import load_dotenv
-import boto3
-from botocore.client import Config
+from common.s3_client import create_s3_client
+from common.logging_config import setup_pipeline_logging
 import polars as pl
-
-urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
-load_dotenv(".env")
 
 # ============================================================
 # CONFIGURATION
 # ============================================================
-
-MINIO_ENDPOINT   = os.getenv("MINIO_ENDPOINT",   "http://192.168.1.230:30137")
-MINIO_ACCESS_KEY = os.getenv("MINIO_ACCESS_KEY", "datalab-team")
-MINIO_SECRET_KEY = os.getenv("MINIO_SECRET_KEY", "minio-datalabteam123")
 
 BUCKET_GOLD = os.getenv("BUCKET_GOLD", "gold")
 PREFIX_PANEL = "panel_admin"
@@ -73,42 +64,33 @@ STATUTS_HORS_BAREME = [
 ]
 
 # --- CLIENT S3 ---
-s3 = boto3.client(
-    "s3",
-    endpoint_url          = MINIO_ENDPOINT,
-    aws_access_key_id     = MINIO_ACCESS_KEY,
-    aws_secret_access_key = MINIO_SECRET_KEY,
-    config                = Config(signature_version="s3v4"),
-    region_name           = "us-east-1",
-    verify                = False,
-)
+s3 = create_s3_client()
+logger, _ = setup_pipeline_logging("07a_imputer_hors_bareme")
 
-print("=" * 70)
-print("IMPUTATION HORS-BARÈME — Forward/Backward fill (1-5 mois)")
-print("=" * 70)
-print()
+logger.info("=" * 70)
+logger.info("IMPUTATION HORS-BARÈME — Forward/Backward fill (1-5 mois)")
+logger.info("=" * 70)
 
 # ============================================================
 # 1. CHARGEMENT base_avec_statut.parquet
 # ============================================================
 
-print("1. Chargement base_avec_statut.parquet...")
+logger.info("1. Chargement base_avec_statut.parquet...")
 
 buf = io.BytesIO()
 s3.download_fileobj(BUCKET_GOLD, KEY_BASE_AVEC_STATUT, buf)
 buf.seek(0)
 base = pl.read_parquet(buf)
 
-print(f"   Base chargée : {base.shape[0]:,} lignes × {base.shape[1]} colonnes")
-print(f"   Agents uniques : {base.select('matricule').n_unique():,}")
+logger.info(f"   Base chargée : {base.shape[0]:,} lignes × {base.shape[1]} colonnes")
+logger.info(f"   Agents uniques : {base.select('matricule').n_unique():,}")
 
 # Distribution Statut initiale
 total = len(base)
-print(f"\n   Distribution Statut (entrée) :")
+logger.info(f"\n   Distribution Statut (entrée) :")
 for row in base["Statut"].value_counts().sort("Statut").iter_rows(named=True):
     pct = 100 * row["count"] / total if total > 0 else 0.0
-    print(f"     {row['Statut']:<40} : {row['count']:>10,}  ({pct:.1f}%)")
-print()
+    logger.info(f"     {row['Statut']:<40} : {row['count']:>10,}  ({pct:.1f}%)")
 
 # ============================================================
 # 2. VÉRIFICATION COLONNES NÉCESSAIRES
@@ -135,8 +117,7 @@ if cols_manquantes:
 
 # Filtrer les GROUP_COLS disponibles (emploi peut être absent)
 group_cols_dispo = [c for c in GROUP_COLS if c in base.columns]
-print(f"2. Colonnes de groupe utilisées : {group_cols_dispo}")
-print()
+logger.info(f"2. Colonnes de groupe utilisées : {group_cols_dispo}")
 
 # ============================================================
 # 3. CLÉ DE TRI CHRONOLOGIQUE
@@ -158,7 +139,7 @@ base = base.with_columns(
 # 4. ÉLIGIBILITÉ — agents avec 1 à MAX_MOIS_HORS_BAREME mois hors-barème
 # ============================================================
 
-print("3. Calcul éligibilité (1-{} mois hors-barème par matricule)...".format(
+logger.info("3. Calcul éligibilité (1-{} mois hors-barème par matricule)...".format(
     MAX_MOIS_HORS_BAREME))
 
 nb_hors_matricule = (
@@ -191,20 +172,19 @@ nb_lignes_elig  = base.filter(
 pct_agents = 100 * nb_eligible / nb_total_incoh if nb_total_incoh > 0 else 0.0
 pct_lignes = 100 * nb_lignes_elig / nb_lignes_total if nb_lignes_total > 0 else 0.0
 
-print(f"   Agents hors-barème          : {nb_total_incoh:,}")
-print(f"   → éligibles  (1-{MAX_MOIS_HORS_BAREME} mois)  : {nb_eligible:,}  ({pct_agents:.1f}%)")
-print(f"   → non éligibles (>{MAX_MOIS_HORS_BAREME} mois): {nb_non_eligible:,}  "
-      f"({100-pct_agents:.1f}%)")
-print(f"   Lignes hors-barème éligibles : {nb_lignes_elig:,}  ({pct_lignes:.1f}%)")
-print()
+logger.info(f"   Agents hors-barème          : {nb_total_incoh:,}")
+logger.info(f"   → éligibles  (1-{MAX_MOIS_HORS_BAREME} mois)  : {nb_eligible:,}  ({pct_agents:.1f}%)")
+logger.info(f"   → non éligibles (>{MAX_MOIS_HORS_BAREME} mois): {nb_non_eligible:,}  "
+            f"({100-pct_agents:.1f}%)")
+logger.info(f"   Lignes hors-barème éligibles : {nb_lignes_elig:,}  ({pct_lignes:.1f}%)")
 
 # ============================================================
 # 5. FORWARD + BACKWARD FILL — valeur conforme la plus proche
 # ============================================================
 
-print("4. M1 — Imputation forward/backward (montant_brut_sans_ind_sans_alloc)...")
-print(f"   Méthode : pour chaque mois hors-barème, on cherche la valeur conforme la plus proche")
-print(f"   dans le temps (même {group_cols_dispo}) — priorité au passé en cas d'égalité de distance")
+logger.info("4. M1 — Imputation forward/backward (montant_brut_sans_ind_sans_alloc)...")
+logger.info(f"   Méthode : pour chaque mois hors-barème, on cherche la valeur conforme la plus proche")
+logger.info(f"   dans le temps (même {group_cols_dispo}) — priorité au passé en cas d'égalité de distance")
 
 # Valeur conforme uniquement (sinon None)
 base = base.with_columns([
@@ -290,7 +270,7 @@ base_corrigee = base.with_columns(
 # 7. VÉRIFICATION — valeurs imputées dans [min_bareme, max_bareme]
 # ============================================================
 
-print("5. M1 — Vérification : les valeurs imputées respectent-elles [min_bareme, max_bareme] ?")
+logger.info("5. M1 — Vérification : les valeurs imputées respectent-elles [min_bareme, max_bareme] ?")
 
 imputes = base_corrigee.filter(pl.col("montant_brut_sans_ind_sans_alloc_source") == "IMPUTE")
 n_imputes = len(imputes)
@@ -303,11 +283,13 @@ if n_imputes > 0 and "min_bareme" in base_corrigee.columns and "max_bareme" in b
     n_hors_borne = len(hors_borne)
 
     if n_hors_borne == 0:
-        print(f"   ✅ Toutes les {n_imputes:,} imputations M1 sont dans [min_bareme, max_bareme] — OK")
+        logger.info(f"   ✅ Toutes les {n_imputes:,} imputations M1 sont dans [min_bareme, max_bareme] — OK")
     else:
         pct_hors = 100 * n_hors_borne / n_imputes if n_imputes > 0 else 0
-        print(f"   ⚠️  {n_hors_borne:,} / {n_imputes:,} imputations M1 ({pct_hors:.1f}%) "
-              f"dépassent les bornes du barème → annulées, retour à la valeur observée (OBSERVE)")
+        logger.warning(
+            f"   ⚠️  {n_hors_borne:,} / {n_imputes:,} imputations M1 ({pct_hors:.1f}%) "
+            f"dépassent les bornes du barème → annulées, retour à la valeur observée (OBSERVE)"
+        )
         # Annuler les imputations hors-borne : restaurer la valeur originale observée
         # _original_m1 a été sauvegardé juste avant l'écrasement → valeur hors-barème d'origine
         base_corrigee = base_corrigee.with_columns(
@@ -333,21 +315,25 @@ if n_imputes > 0 and "min_bareme" in base_corrigee.columns and "max_bareme" in b
         )
         n_retenues_m1 = n_imputes - n_hors_borne
         pct_ret_m1    = 100 * n_retenues_m1 / n_imputes if n_imputes > 0 else 0
-        print(f"\n   Bilan M1 :")
-        print(f"     Imputations réalisées              : {n_imputes:>10,}")
-        print(f"     Annulées (hors [min_bareme, max])  : {n_hors_borne:>10,}  ({pct_hors:.1f}%)"
-              f"  → valeur originale restaurée, Statut inchangé (hors-barème)")
-        print(f"     Retenues dans la base              : {n_retenues_m1:>10,}  ({pct_ret_m1:.1f}%)"
-              f"  → valeur remplacée, Statut → Conforme")
+        logger.info(f"\n   Bilan M1 :")
+        logger.info(f"     Imputations réalisées              : {n_imputes:>10,}")
+        logger.info(
+            f"     Annulées (hors [min_bareme, max])  : {n_hors_borne:>10,}  ({pct_hors:.1f}%)"
+            f"  → valeur originale restaurée, Statut inchangé (hors-barème)"
+        )
+        logger.info(
+            f"     Retenues dans la base              : {n_retenues_m1:>10,}  ({pct_ret_m1:.1f}%)"
+            f"  → valeur remplacée, Statut → Conforme"
+        )
 else:
-    print(f"   ✓ {n_imputes:,} lignes imputées — vérification bornes ignorée "
-          f"(colonnes min/max absentes)")
+    logger.info(f"   ✓ {n_imputes:,} lignes imputées — vérification bornes ignorée "
+                f"(colonnes min/max absentes)")
 
 # ============================================================
 # 8. MISE À JOUR DU STATUT post-imputation
 # ============================================================
 
-print("6. M1 — Recalcul du Statut pour les lignes imputées avec succès...")
+logger.info("6. M1 — Recalcul du Statut pour les lignes imputées avec succès...")
 
 if "min_bareme" in base_corrigee.columns and "max_bareme" in base_corrigee.columns:
     base_corrigee = base_corrigee.with_columns(
@@ -372,20 +358,18 @@ if "min_bareme" in base_corrigee.columns and "max_bareme" in base_corrigee.colum
 
 # Distribution Statut M1 après imputation
 total_m1 = len(base_corrigee)
-print(f"\n   Distribution Statut M1 après imputation :")
+logger.info(f"\n   Distribution Statut M1 après imputation :")
 for row in base_corrigee["Statut"].value_counts().sort("Statut").iter_rows(named=True):
     pct = 100 * row["count"] / total_m1 if total_m1 > 0 else 0.0
-    print(f"     {row['Statut']:<40} : {row['count']:>10,}  ({pct:.1f}%)")
+    logger.info(f"     {row['Statut']:<40} : {row['count']:>10,}  ({pct:.1f}%)")
 
 # ============================================================
 # M2. IMPUTATION STATUT_TOTAL (montant_brut_total)
 # ============================================================
 
-print()
-print("─" * 70)
-print("M2 — Imputation Statut_Total (montant_brut_total vs [min_total, max_total])")
-print("─" * 70)
-print()
+logger.info("─" * 70)
+logger.info("M2 — Imputation Statut_Total (montant_brut_total vs [min_total, max_total])")
+logger.info("─" * 70)
 
 # Éligibilité M2 : agents avec 1-MAX_MOIS_HORS_BAREME mois hors-barème (Statut_Total)
 nb_hors_m2_df = (
@@ -407,16 +391,15 @@ nb_elig_m2 = base_corrigee.filter(
 pct_m2 = 100 * nb_elig_m2 / nb_hors_m2_tot if nb_hors_m2_tot > 0 else 0.0
 # Distribution Statut_Total M2 à l'entrée
 total_m2_in = len(base_corrigee)
-print(f"   Distribution Statut_Total (entrée) :")
+logger.info(f"   Distribution Statut_Total (entrée) :")
 for row in base_corrigee["Statut_Total"].value_counts().sort("Statut_Total").iter_rows(named=True):
     pct = 100 * row["count"] / total_m2_in if total_m2_in > 0 else 0.0
-    print(f"     {row['Statut_Total']:<40} : {row['count']:>10,}  ({pct:.1f}%)")
-print()
+    logger.info(f"     {row['Statut_Total']:<40} : {row['count']:>10,}  ({pct:.1f}%)")
 
 pct_non_m2 = 100 - pct_m2
-print(f"   Agents avec Statut_Total hors-barème            : {nb_hors_m2_tot:,}")
-print(f"   → Éligibles à l'imputation (1–{MAX_MOIS_HORS_BAREME} mois hors-barème) : {nb_elig_m2:,}  ({pct_m2:.1f}%)")
-print(f"   → Non éligibles (>{MAX_MOIS_HORS_BAREME} mois — trop instables)        : {nb_hors_m2_tot - nb_elig_m2:,}  ({pct_non_m2:.1f}%)  → conservés hors-barème")
+logger.info(f"   Agents avec Statut_Total hors-barème            : {nb_hors_m2_tot:,}")
+logger.info(f"   → Éligibles à l'imputation (1–{MAX_MOIS_HORS_BAREME} mois hors-barème) : {nb_elig_m2:,}  ({pct_m2:.1f}%)")
+logger.info(f"   → Non éligibles (>{MAX_MOIS_HORS_BAREME} mois — trop instables)        : {nb_hors_m2_tot - nb_elig_m2:,}  ({pct_non_m2:.1f}%)  → conservés hors-barème")
 
 # Valeur conforme M2
 base_corrigee = base_corrigee.with_columns([
@@ -491,7 +474,7 @@ if n_imp_m2 > 0:
     )
     n_hb_m2 = len(hors_borne_m2)
     if n_hb_m2 == 0:
-        print(f"   ✅ Toutes les {n_imp_m2:,} imputations M2 respectent [min_total, max_total] — OK")
+        logger.info(f"   ✅ Toutes les {n_imp_m2:,} imputations M2 respectent [min_total, max_total] — OK")
     else:
         # Annuler les imputations hors-borne : restaurer la valeur originale observée
         base_corrigee = base_corrigee.with_columns(
@@ -516,8 +499,10 @@ if n_imp_m2 > 0:
             .alias("montant_brut_total_source")
         )
         pct_hb_m2 = 100 * n_hb_m2 / n_imp_m2 if n_imp_m2 > 0 else 0
-        print(f"   ⚠️  {n_hb_m2:,} / {n_imp_m2:,} imputations M2 ({pct_hb_m2:.1f}%) "
-              f"dépassent [min_total, max_total] → annulées, valeur originale restaurée (OBSERVE)")
+        logger.warning(
+            f"   ⚠️  {n_hb_m2:,} / {n_imp_m2:,} imputations M2 ({pct_hb_m2:.1f}%) "
+            f"dépassent [min_total, max_total] → annulées, valeur originale restaurée (OBSERVE)"
+        )
 
 # Mise à jour Statut_Total post-imputation
 base_corrigee = base_corrigee.with_columns(
@@ -544,17 +529,21 @@ n_imp_m2_final = len(base_corrigee.filter(pl.col("montant_brut_total_source") ==
 total = len(base_corrigee)
 pct_imp_ret = 100 * n_imp_m2_final / n_imp_m2 if n_imp_m2 > 0 else 0
 
-print(f"\n   Bilan M2 :")
-print(f"     Imputations réalisées            : {n_imp_m2:>10,}")
-print(f"     Annulées (hors [min_total, max]) : {n_hb_m2:>10,}  ({100*n_hb_m2/n_imp_m2:.1f}%)"
-      f"  → valeur originale restaurée, Statut_Total inchangé (hors-barème)")
-print(f"     Retenues dans la base            : {n_imp_m2_final:>10,}  ({pct_imp_ret:.1f}%)"
-      f"  → valeur remplacée, Statut_Total → Conforme")
+logger.info(f"\n   Bilan M2 :")
+logger.info(f"     Imputations réalisées            : {n_imp_m2:>10,}")
+logger.info(
+    f"     Annulées (hors [min_total, max]) : {n_hb_m2:>10,}  ({100*n_hb_m2/n_imp_m2:.1f}%)"
+    f"  → valeur originale restaurée, Statut_Total inchangé (hors-barème)"
+)
+logger.info(
+    f"     Retenues dans la base            : {n_imp_m2_final:>10,}  ({pct_imp_ret:.1f}%)"
+    f"  → valeur remplacée, Statut_Total → Conforme"
+)
 
-print(f"\n   Distribution Statut_Total après imputation M2 :")
+logger.info(f"\n   Distribution Statut_Total après imputation M2 :")
 for row in base_corrigee["Statut_Total"].value_counts().sort("Statut_Total").iter_rows(named=True):
     pct = 100 * row["count"] / total if total > 0 else 0.0
-    print(f"     {row['Statut_Total']:<40} : {row['count']:>10,}  ({pct:.1f}%)")
+    logger.info(f"     {row['Statut_Total']:<40} : {row['count']:>10,}  ({pct:.1f}%)")
 
 # ============================================================
 # 9. NETTOYAGE COLONNES TEMPORAIRES
@@ -574,15 +563,14 @@ cols_temp = [
 ]
 base_corrigee = base_corrigee.drop([c for c in cols_temp if c in base_corrigee.columns])
 
-print(f"   ✓ Colonnes de travail (forward/backward fill) supprimées — base allégée")
-print(f"   Base corrigée finale : {len(base_corrigee):,} lignes × {len(base_corrigee.columns)} colonnes")
-print()
+logger.info(f"   ✓ Colonnes de travail (forward/backward fill) supprimées — base allégée")
+logger.info(f"   Base corrigée finale : {len(base_corrigee):,} lignes × {len(base_corrigee.columns)} colonnes")
 
 # ============================================================
 # 10. STATISTIQUES POST-IMPUTATION
 # ============================================================
 
-print("7. Statistiques post-imputation :")
+logger.info("7. Statistiques post-imputation :")
 
 # Distribution source
 distrib_source = (
@@ -598,13 +586,15 @@ distrib_source = (
     .sort("nb_lignes", descending=True)
 )
 
-print(f"\n   Distribution montant_brut_sans_ind_sans_alloc_source (M1) :")
+logger.info(f"\n   Distribution montant_brut_sans_ind_sans_alloc_source (M1) :")
 for row in distrib_source.iter_rows(named=True):
-    print(f"     {row['montant_brut_sans_ind_sans_alloc_source']:<10} : "
-          f"{row['nb_lignes']:>10,} lignes  "
-          f"({row['pct_lignes']:.1f}%)  —  "
-          f"{row['nb_agents']:>8,} agents "
-          f"({row['pct_agents']:.1f}%)")
+    logger.info(
+        f"     {row['montant_brut_sans_ind_sans_alloc_source']:<10} : "
+        f"{row['nb_lignes']:>10,} lignes  "
+        f"({row['pct_lignes']:.1f}%)  —  "
+        f"{row['nb_agents']:>8,} agents "
+        f"({row['pct_agents']:.1f}%)"
+    )
 
 if "montant_brut_total_source" in base_corrigee.columns:
     distrib_source_m2 = (
@@ -619,34 +609,36 @@ if "montant_brut_total_source" in base_corrigee.columns:
         ])
         .sort("nb_lignes", descending=True)
     )
-    print(f"\n   Distribution montant_brut_total_source (M2) :")
+    logger.info(f"\n   Distribution montant_brut_total_source (M2) :")
     for row in distrib_source_m2.iter_rows(named=True):
-        print(f"     {row['montant_brut_total_source']:<10} : "
-              f"{row['nb_lignes']:>10,} lignes  "
-              f"({row['pct_lignes']:.1f}%)  —  "
-              f"{row['nb_agents']:>8,} agents "
-              f"({row['pct_agents']:.1f}%)")
+        logger.info(
+            f"     {row['montant_brut_total_source']:<10} : "
+            f"{row['nb_lignes']:>10,} lignes  "
+            f"({row['pct_lignes']:.1f}%)  —  "
+            f"{row['nb_agents']:>8,} agents "
+            f"({row['pct_agents']:.1f}%)"
+        )
 
 # Distribution Statut M1 après imputation
 total = len(base_corrigee)
-print(f"\n   Distribution Statut M1 (après imputation) :")
+logger.info(f"\n   Distribution Statut M1 (après imputation) :")
 for row in base_corrigee["Statut"].value_counts().sort("Statut").iter_rows(named=True):
     pct = 100 * row["count"] / total if total > 0 else 0.0
-    print(f"     {row['Statut']:<40} : {row['count']:>10,}  ({pct:.1f}%)")
+    logger.info(f"     {row['Statut']:<40} : {row['count']:>10,}  ({pct:.1f}%)")
 
 # Distribution Statut_Total M2 après imputation
 if "Statut_Total" in base_corrigee.columns:
-    print(f"\n   Distribution Statut_Total M2 (après imputation) :")
+    logger.info(f"\n   Distribution Statut_Total M2 (après imputation) :")
     for row in base_corrigee["Statut_Total"].value_counts().sort("Statut_Total").iter_rows(named=True):
         pct = 100 * row["count"] / total if total > 0 else 0.0
-        print(f"     {row['Statut_Total']:<40} : {row['count']:>10,}  ({pct:.1f}%)")
+        logger.info(f"     {row['Statut_Total']:<40} : {row['count']:>10,}  ({pct:.1f}%)")
 
 
 # ============================================================
 # 11. SAUVEGARDE base_avec_statut_corrigee.parquet → Gold
 # ============================================================
 
-print("\n8. Sauvegarde base_avec_statut_corrigee.parquet...")
+logger.info("8. Sauvegarde base_avec_statut_corrigee.parquet...")
 
 buf_pq = io.BytesIO()
 base_corrigee.write_parquet(buf_pq, compression="snappy")
@@ -657,12 +649,10 @@ s3.put_object(
     Body=buf_pq.getvalue(),
 )
 
-print(f"   ✅ s3://{BUCKET_GOLD}/{KEY_BASE_CORRIGEE}")
-print(f"   {len(base_corrigee):,} lignes × {len(base_corrigee.columns)} colonnes")
+logger.info(f"   ✅ s3://{BUCKET_GOLD}/{KEY_BASE_CORRIGEE}")
+logger.info(f"   {len(base_corrigee):,} lignes × {len(base_corrigee.columns)} colonnes")
 
-print()
-print("=" * 70)
-print("✓ IMPUTATION HORS-BARÈME TERMINÉE")
-print("=" * 70)
-print()
-print("Prochaine étape : exécuter 07b_calcul_indicateurs.py")
+logger.info("=" * 70)
+logger.info("✓ IMPUTATION HORS-BARÈME TERMINÉE")
+logger.info("=" * 70)
+logger.info("Prochaine étape : exécuter 07b_calcul_indicateurs.py")
