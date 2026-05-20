@@ -13,15 +13,11 @@
 
 import io
 import os
-from dotenv import load_dotenv
-import boto3
-from botocore.client import Config
+from common.s3_client import create_s3_client
 import polars as pl
 import streamlit as st
 import plotly.graph_objects as go
 import plotly.express as px
-
-load_dotenv(".env")
 
 # Configuration Streamlit - DOIT ÊTRE LE PREMIER APPEL
 st.set_page_config(
@@ -33,10 +29,6 @@ st.set_page_config(
 # ============================================================
 # CONFIGURATION
 # ============================================================
-
-MINIO_ENDPOINT   = os.getenv("MINIO_ENDPOINT",   "http://192.168.1.230:30137")
-MINIO_ACCESS_KEY = os.getenv("MINIO_ACCESS_KEY", "datalab-team")
-MINIO_SECRET_KEY = os.getenv("MINIO_SECRET_KEY", "minio-datalabteam123")
 
 BUCKET_GOLD    = os.getenv("BUCKET_GOLD", "gold")
 BUCKET_STAGING = os.getenv("BUCKET_STAGING", "staging")
@@ -50,20 +42,7 @@ KEY_HORS_BAREME     = "panel_admin/exports_gold/agents_au_dessus_max.parquet"
 
 @st.cache_resource
 def get_s3_client():
-    return boto3.client(
-        "s3",
-        endpoint_url          = MINIO_ENDPOINT,
-        aws_access_key_id     = MINIO_ACCESS_KEY,
-        aws_secret_access_key = MINIO_SECRET_KEY,
-        config                = Config(
-            signature_version = "s3v4",
-            retries           = {"max_attempts": 5, "mode": "adaptive"},
-            connect_timeout   = 30,
-            read_timeout      = 120,
-        ),
-        region_name = "us-east-1",
-        verify      = False,
-    )
+    return create_s3_client()
 
 s3 = get_s3_client()
 

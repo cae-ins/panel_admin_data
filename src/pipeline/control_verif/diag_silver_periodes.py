@@ -13,34 +13,17 @@
 
 import io
 import os
-from dotenv import load_dotenv
-import boto3
-from botocore.client import Config
+import sys
+from pathlib import Path
 import polars as pl
 
-load_dotenv(".env")
-
-MINIO_ENDPOINT   = "http://192.168.1.230:30137"
-MINIO_ACCESS_KEY = "datalab-team"
-MINIO_SECRET_KEY = "minio-datalabteam123"
-
-# LORSQU'ON TRAVAILLE SUR JHUB
-# MINIO_ENDPOINT   = "http://minio.mon-namespace.svc.cluster.local:80"
-# MINIO_ACCESS_KEY = "datalab-team"
-# MINIO_SECRET_KEY = "minio-datalabteam123"
+sys.path.append(str(Path(__file__).resolve().parents[1]))
+from common.s3_client import create_s3_client
 
 BUCKET_SILVER = "silver"
 PREFIX_SILVER = "panel_admin"
 
-s3 = boto3.client(
-    "s3",
-    endpoint_url          = MINIO_ENDPOINT,
-    aws_access_key_id     = MINIO_ACCESS_KEY,
-    aws_secret_access_key = MINIO_SECRET_KEY,
-    config                = Config(signature_version="s3v4"),
-    region_name           = "us-east-1",
-    verify                = False,
-)
+s3 = create_s3_client()
 
 # ============================================================
 # PÉRIODES À VÉRIFIER : période manquante → fichier silver

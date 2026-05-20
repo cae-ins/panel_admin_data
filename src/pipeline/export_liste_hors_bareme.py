@@ -13,22 +13,14 @@
 
 import io
 import os
-from dotenv import load_dotenv
-import boto3
-from botocore.client import Config
+from common.s3_client import create_s3_client
 import polars as pl
 from openpyxl import Workbook
 from openpyxl.styles import PatternFill, Font, Alignment
 
-load_dotenv(".env")
-
 # ============================================================
 # CONFIGURATION
 # ============================================================
-
-MINIO_ENDPOINT   = os.getenv("MINIO_ENDPOINT",   "http://192.168.1.230:30137")
-MINIO_ACCESS_KEY = os.getenv("MINIO_ACCESS_KEY", "datalab-team")
-MINIO_SECRET_KEY = os.getenv("MINIO_SECRET_KEY", "minio-datalabteam123")
 
 BUCKET_GOLD    = os.getenv("BUCKET_GOLD",    "gold")
 BUCKET_STAGING = os.getenv("BUCKET_STAGING", "staging")
@@ -46,20 +38,7 @@ STATUTS_HORS_BAREME = [
 # CLIENT S3
 # ============================================================
 
-s3 = boto3.client(
-    "s3",
-    endpoint_url          = MINIO_ENDPOINT,
-    aws_access_key_id     = MINIO_ACCESS_KEY,
-    aws_secret_access_key = MINIO_SECRET_KEY,
-    config                = Config(
-        signature_version = "s3v4",
-        retries           = {"max_attempts": 5, "mode": "adaptive"},
-        connect_timeout   = 30,
-        read_timeout      = 120,
-    ),
-    region_name = "us-east-1",
-    verify      = False,
-)
+s3 = create_s3_client()
 
 print("=" * 70)
 print("EXPORT LISTE AGENTS HORS BARÈME")
