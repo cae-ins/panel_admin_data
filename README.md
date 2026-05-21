@@ -35,7 +35,10 @@ Le projet adopte une architecture "Medallion" pour garantir la traçabilité et 
 - **src/pipeline/tests/** : Suite de tests unitaires pour la validation des calculs d'imputation et de normalisation.
 - **src/pipeline/control_verif/** : Scripts de diagnostic pour le suivi de la qualité des données à chaque étape.
 - **src/research/** : Archives des travaux exploratoires et notebooks de développement.
-- **docs/** : Documentation technique et manuels méthodologiques.
+- **docs/documentation_officielle/** : Documentation officielle structurée en trois piliers :
+    - `01_Note_Methodologique.tex` : Principes statistiques, GSBPM et règles métier.
+    - `02_Architecture_Technique.tex` : Architecture Medallion, choix technologiques (Polars/MinIO) et flux de données.
+    - `03_Manuel_Exploitation.tex` : Guide opérationnel, déploiement et dépannage.
 
 ## Utilisation
 

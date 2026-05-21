@@ -1,0 +1,103 @@
+# Configuration du pipeline Panel Admin
+
+# Mapping des colonnes brutes vers les noms standardisés
+# Les valeurs sont des expressions régulières (regex) cherchées dans les noms de colonnes normalisés.
+column_mapping:
+  cle_unique:
+    - "MATRICULE.*CODE.*ORGANISME"
+    - "MATRICULE.*\\|\\|.*CODE"
+  matricule:
+    - "^MATRICULE$"
+    - "^MATRIC$"
+  nom:
+    - "^NOM$"
+    - "^NOM_PRENOM$"
+    - "^NOM_ET_PRENOM$"
+  date_naissance:
+    - "DATE.*NAISSANCE"
+    - "DATE_NAISS"
+    - "NAISSANCE"
+  sexe:
+    - "^SEXE$"
+  situation_matrimoniale:
+    - "SITUATION.*MATRIMONIALE"
+    - "STATUT.*MATRIMONIAL"
+  nombre_enfant:
+    - "NOMBRE.*ENFANT"
+    - "NBR.*ENFANT"
+  situation:
+    - "^SITUATION$"
+    - "SITUATION_ADMINISTRATIVE"
+  date_debut_situation:
+    - "DATE.*DEBUT.*SITUATION"
+    - "DATE_SITUATION"
+  montant_brut:
+    - "MONTANT_BRUT"
+    - "SALAIRE_BRUT"
+    - "REMUNERATION_BRUTE"
+    - "^BRUT$"
+  montant_net:
+    - "MONTANT_NET"
+    - "SALAIRE_NET"
+    - "REMUNERATION_NETTE"
+    - "^NET$"
+  retenue_pension:
+    - "RETENUE.*PENSION"
+    - "^PENSION$"
+    - "COTISATION.*PENSION"
+  impot:
+    - "^IMPOT$"
+    - "^IGR$"
+    - "IMPOT.*REVENU"
+  charge_patronale:
+    - "CHARGE.*PATRONALE"
+    - "CHARGES.*PATRONALES"
+  organisme:
+    - "^ORGANISME$"
+    - "MINISTERE"
+    - "DIRECTION"
+  lieu_affectation:
+    - "LIEU.*AFFECTATION"
+    - "^AFFECTATION$"
+  service:
+    - "^SERVICE$"
+  emploi:
+    - "^EMPLOI$"
+    - "^CORPS$"
+    - "CORPS.*EMPLOI"
+  fonction:
+    - "^FONCTION$"
+  grade:
+    - "CLASSE.*ECHELON"
+    - "CLASSE_ECHELON"
+  statut_fonctionnaire:
+    - "^GRADE$"
+  poste:
+    - "^POSTE$"
+    - "LIBELLE.*POSTE"
+  prise_service:
+    - "PRISE.*SERVICE"
+    - "DATE.*PRISE.*SERVICE"
+  date_retraite:
+    - "DATE.*RETRAITE"
+  age_retraite:
+    - "AGE.*RETRAITE"
+  mois_annee:
+    - "MOIS.*ANNEE"
+    - "^PERIODE$"
+
+# Catégorisation des situations administratives
+# Permet de filtrer les agents en activité ou en régularisation.
+situations_valides:
+  en_activite:
+    - "EN ACTIVITE"
+    - "ACTIVITE"
+  regul_indemnites:
+    - "REGUL. INDEMNITES"
+    - "REGUL INDEMNITES"
+    - "REGULARISATION INDEMNITES"
+  demi_solde:
+    - "DEMI-SOLDE"
+    - "DEMI SOLDE"
+    - "DEMISOLDE"
+    - "1/2 SOLDE"

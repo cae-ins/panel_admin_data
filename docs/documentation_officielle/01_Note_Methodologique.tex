@@ -1,0 +1,107 @@
+\documentclass[12pt,a4paper,french]{article}
+\input{preambule.tex}
+
+\title{Note Méthodologique : Calcul des indicateurs de salaire}
+\author{Data Engineering Team}
+\date{\today}
+
+\begin{document}
+
+\maketitle
+\tableofcontents
+\newpage
+
+\section{Introduction et Objectifs}
+
+Cette note décrit les principes méthodologiques retenus pour la constitution du panel administratif et le calcul des indicateurs statistiques de rémunération. L'objectif principal du projet est de transformer des données de paie mensuelles hétérogènes en une série temporelle cohérente, fiable et auditable, couvrant la période 2015-2025.
+
+La méthodologie repose sur trois piliers : la rigueur de la sélection des données, la robustesse du traitement des valeurs manquantes et l'application de standards statistiques internationaux.
+
+\section{Cadre de référence : Alignement GSBPM}
+
+Afin de garantir une qualité de niveau institutionnel, le pipeline est structuré selon le modèle \textbf{GSBPM (Generic Statistical Business Process Model)}. Ce cadre permet de décomposer le flux de production en phases logiques :
+
+\begin{itemize}
+    \item \textbf{Collecte (Phase 4)} : Centralisation des fichiers Excel sources sur MinIO.
+    \item \textbf{Traitement (Phase 5)} : Intégration des feuilles agents et codes (F1/F2), normalisation des nomenclatures ANSTAT et imputation des grades.
+    \item \textbf{Analyse (Phase 6)} : Calcul des agrégats et application des filtres statistiques (winsorisation).
+    \item \textbf{Diffusion (Phase 7)} : Production des rapports Excel structurés pour les utilisateurs métier.
+\end{itemize}
+
+\section{Critères de sélection et d'exclusion des données}
+
+La qualité des indicateurs dépend de la propreté de la base de sondage. Le pipeline applique des règles d'exclusion strictes pour éliminer les bruits de mesure.
+
+\subsection{La jointure F1$\leftrightarrow$F2 (INNER JOIN)}
+Chaque fichier de paie est composé de deux feuilles : l'identité des agents (F1) et le détail des codes de paie (F2). La méthodologie impose une jointure interne stricte (\textit{Inner Join}) sur la clé composite \texttt{MATRICULE||CODE\_ORGANISME}.
+
+\begin{infobox}[Raison du choix de l'INNER JOIN]
+    原始ement, le pipeline utilisait un \textit{Left Join}, ce qui incluait des individus présents uniquement en F1 (sans données F2). Cela créait une population incohérente où certains salaires étaient calculés par composantes et d'autres via le champ agrégé de F1. L'Inner Join garantit que chaque salaire est appuyé par un détail de codes vérifiable.
+\end{infobox}
+
+\subsection{Le filtre des codes obligatoires}
+Au sein de la feuille F2, nous exigeons la présence simultanée des codes de base (notamment le \texttt{124\_f2} et le \texttt{421\_f2}). Ces codes représentent le socle de la rémunération brute. Un individu pour lequel ces montants seraient nuls ou absents est considéré comme ayant une paie incomplète ou une situation administrative particulière non représentative d'une activité normale ; il est donc écarté de la série Silver.
+
+\subsection{Normalisation des situations administratives}
+Seuls les agents en position d'activité réelle sont conservés. Nous filtrons les données pour ne garder que les catégories :
+\begin{itemize}
+    \item \textbf{En activité} : situation normale.
+    \item \textbf{Régularisation d'indemnités} : paiements rétroactifs liés à l'activité.
+    \item \textbf{Demi-solde} : situations de maladie ou de disponibilité partielle.
+\end{itemize}
+Toute autre situation (\textit{autre}) est jugée hors périmètre statistique pour le calcul des salaires moyens.
+
+\section{Calcul du Salaire Brut de Référence}
+
+\subsection{Principe de comparabilité}
+Pour réduire l'effet des particularités de chaque grille salariale sur la moyenne, le calcul du salaire moyen des fonctionnaires se fait en tenant compte uniquement des codes postes de salaires que \textbf{tous les fonctionnaires ont en commun}.
+
+\subsection{Composantes retenues}
+Les codes postes communs retenus pour le calcul du salaire brut sont :
+\begin{center}
+\begin{tabular}{cll}
+    \toprule
+    \textbf{Code} & \textbf{Libellé (ANSTAT)} & \textbf{Rôle} \\
+    \midrule
+    \code{124\_F2} & Solde de Base & Composante principale \\
+    \code{228\_F2} & Indemnité de résidence & Composante commune \\
+    \code{271\_F2} & Prime de rendement & Composante commune \\
+    \code{421\_F2} & Majoration spécifique & Composante commune \\
+    \code{425\_F2} & Autre indemnité & Composante commune \\
+    \bottomrule
+\end{tabular}
+\end{center}
+
+\subsection{Formule de calcul}
+\[
+\text{SALAIRE\_BRUT} = 124\_F2 + 228\_F2 + 271\_F2 + 421\_F2 + 425\_F2
+\]
+\textit{Note : Le code poste 135 est explicitement exclu car il représente des indemnités spécifiques non universelles.}
+
+\section{Traitement des valeurs manquantes et aberrantes}
+
+\subsection{Imputation des grades en cascade}
+Le grade est extrait du champ \texttt{statut\_fonctionnaire} via regex. En cas de grade invalide (ex: "B7", "A", "NF"), nous appliquons une \textbf{imputation statistique par mode} en trois niveaux de repli :
+\begin{enumerate}
+    \item \textbf{P1 (Mois)} : Mode du grade pour cet emploi, pour ce mois précis.
+    \item \textbf{P2 (Année)} : Mode de l'emploi sur l'année civile.
+    \item \textbf{P3 (Global)} : Mode de l'emploi sur l'intégralité de l'historique 2015-2025.
+\end{enumerate}
+
+\subsection{Winsorisation (Écrêtage statistique)}
+Pour neutraliser l'impact des valeurs extrêmes, nous pratiquons une \textbf{winsorisation au seuil de 1\%}.
+Les valeurs en dehors de l'intervalle $[P_1, P_{99}]$ sont ramenées aux bornes :
+\[
+x_{wins} = \begin{cases}
+    P_1 & \text{si } x < P_1 \\
+    x & \text{si } P_1 \leq x \leq P_{99} \\
+    P_{99} & \text{si } x > P_{99}
+\end{cases}
+\]
+Ce traitement est appliqué dynamiquement par cellule (Mois $\times$ Grade $\times$ CITP).
+
+\section{Analyse des individus "Hors Barème"}
+
+L'étape 07c permet de suivre longitudinalement les individus dont le salaire est incohérent avec la grille indiciaire. Ce diagnostic permet de distinguer les erreurs de grade des changements de situation administrative réels, garantissant ainsi la fiabilité de la série Gold.
+
+\end{document}

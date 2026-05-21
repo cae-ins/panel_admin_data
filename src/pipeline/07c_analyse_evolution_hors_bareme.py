@@ -24,6 +24,7 @@ import io
 import os
 import tempfile
 from common.s3_client import create_s3_client
+from common.logging_config import setup_pipeline_logging
 import polars as pl
 from openpyxl import Workbook
 from openpyxl.styles import PatternFill, Font, Alignment
@@ -41,36 +42,35 @@ OUTPUT_PQ           = "panel_admin/hors_bareme_avec_historique.parquet"
 OUTPUT_XLSX         = "panel_admin/exports_gold/hors_bareme_evolution.xlsx"
 
 # ============================================================
-# CLIENT S3
+# CLIENT S3 & LOGGING
 # ============================================================
 
 s3 = create_s3_client()
+logger, _ = setup_pipeline_logging("07c_analyse_evolution_hors_bareme")
 
-print("=" * 70)
-print("ANALYSE ÉVOLUTION — INDIVIDUS HORS BARÈME")
-print("=" * 70)
-print()
+logger.info("Démarrage de l'analyse évolution — individus hors barème")
 
 # ============================================================
 # 1. CHARGEMENT DES AGENTS HORS BARÈME
 # ============================================================
 
-print("1. Chargement des agents hors barème...")
+logger.info(f"1. Chargement des agents hors barème (s3://{BUCKET_GOLD}/{KEY_HORS_BAREME})...")
 
 buf_hb = io.BytesIO()
 s3.download_fileobj(BUCKET_GOLD, KEY_HORS_BAREME, buf_hb)
 buf_hb.seek(0)
 hors_bareme = pl.read_parquet(buf_hb)
 
-print(f"   ✓ {len(hors_bareme):,} lignes chargées")
-print(f"   Colonnes disponibles : {hors_bareme.columns}")
+logger.info(f"   ✓ {len(hors_bareme):,} lignes chargées")
+logger.info(f"   Colonnes disponibles : {hors_bareme.columns}")
 
 # Colonnes clés nécessaires pour le matching
 cols_cle = [c for c in ["matricule", "cle_unique", "mois_annee", "ANNEE", "MOIS"] 
             if c in hors_bareme.columns]
-print(f"   Clés identifiées : {cols_cle}")
+logger.info(f"   Clés identifiées : {cols_cle}")
 
 if not cols_cle:
+    logger.error("Colonnes de clé (matricule/mois_annee) absentes du fichier hors barème")
     raise RuntimeError("Colonnes de clé (matricule/mois_annee) absentes du fichier hors barème")
 
 # Identifier la colonne salaire
@@ -79,64 +79,60 @@ col_salaire = next(
      if c in hors_bareme.columns),
     None,
 )
-print(f"   Colonne salaire : {col_salaire}")
+logger.info(f"   Colonne salaire : {col_salaire}")
 
 # Identifier les colonnes pour filtrer à grade/organisme/emploi constants
 cols_filtre = []
 for col in ["GRADE", "CODE_GRADE", "CODE_ORGANISME", "organisme", "CODE_EMPLOI", "emploi"]:
     if col in hors_bareme.columns:
         cols_filtre.append(col)
-print(f"   Colonnes filtre (grade/organisme/emploi) : {cols_filtre}")
-
-print()
+logger.info(f"   Colonnes filtre (grade/organisme/emploi) : {cols_filtre}")
 
 # ============================================================
 # 2. EXTRACTION DES INDIVIDUS UNIQUES HORS BARÈME
 # ============================================================
 
-print("2. Extraction des individus uniques...")
+logger.info("2. Extraction des individus uniques...")
 
 # Créer une clé d'identification individuelle
 # Utiliser matricule comme clé principale
 if "matricule" in hors_bareme.columns:
     identifiants_uniques = hors_bareme.select("matricule").unique().to_series().to_list()
-    print(f"   ✓ {len(identifiants_uniques):,} individus uniques identifiés par matricule")
+    logger.info(f"   ✓ {len(identifiants_uniques):,} individus uniques identifiés par matricule")
 elif "cle_unique" in hors_bareme.columns:
     identifiants_uniques = hors_bareme.select("cle_unique").unique().to_series().to_list()
-    print(f"   ✓ {len(identifiants_uniques):,} individus uniques identifiés par cle_unique")
+    logger.info(f"   ✓ {len(identifiants_uniques):,} individus uniques identifiés par cle_unique")
 else:
+    logger.error("Ni matricule ni cle_unique disponibles")
     raise RuntimeError("Ni matricule ni cle_unique disponibles")
-
-print()
 
 # ============================================================
 # 3. CHARGEMENT DU PANEL COMPLET
 # ============================================================
 
-print("3. Chargement du panel complet...")
+logger.info(f"3. Chargement du panel complet (s3://{BUCKET_GOLD}/{KEY_PANEL_COMPLET})...")
 
 buf_panel = io.BytesIO()
 s3.download_fileobj(BUCKET_GOLD, KEY_PANEL_COMPLET, buf_panel)
 buf_panel.seek(0)
 panel = pl.read_parquet(buf_panel)
 
-print(f"   ✓ {len(panel):,} lignes × {len(panel.columns)} colonnes")
-print(f"   Période : {panel['annee'].min()} - {panel['annee'].max()}")
+logger.info(f"   ✓ {len(panel):,} lignes × {len(panel.columns)} colonnes")
+logger.info(f"   Période : {panel['annee'].min()} - {panel['annee'].max()}")
 
 # Vérifier les colonnes nécessaires dans le panel
 cols_panel_dispos = panel.columns
-print(f"   Colonnes panel : {cols_panel_dispos[:15]}...")  # Afficher les 15 premières
-print()
+logger.info(f"   Colonnes panel : {cols_panel_dispos[:15]}...")  # Afficher les 15 premières
 
 # ============================================================
 # 4. Pour chaque individu, récupérer son historique complet
 # ============================================================
 
-print("4. Construction de l'historique pour chaque individu hors barème...")
+logger.info("4. Construction de l'historique pour chaque individu hors barème...")
 
 # Définir la clé d'identification dans le panel
 cle_panel = "matricule" if "matricule" in panel.columns else "cle_unique"
-print(f"   Clé utilisée dans le panel : {cle_panel}")
+logger.info(f"   Clé utilisée dans le panel : {cle_panel}")
 
 # Colonnes à garder du panel
 cols_a_garder = [
@@ -150,11 +146,12 @@ cols_a_garder = [
     "min_bareme", "max_bareme" if "max_bareme" in panel.columns else None,
     "GRADE_SOURCE", "montant_brut_SOURCE",
     "situation_normalisee",
-].filter(None)
+]
+cols_a_garder = [c for c in cols_a_garder if c is not None]
 
 # Filtrer sur les colonnes existantes
 cols_panel_final = [c for c in cols_a_garder if c in panel.columns]
-print(f"   Colonnes retenues pour l'historique : {cols_panel_final}")
+logger.info(f"   Colonnes retenues pour l'historique : {cols_panel_final}")
 
 # Créer le dataframe de résultat
 historiques = []
@@ -162,7 +159,7 @@ historiques = []
 # Pour chaque individu hors barème
 for i, identifiant in enumerate(identifiants_uniques):
     if i % 1000 == 0:
-        print(f"   [{i}/{len(identifiants_uniques)}] Traitement...", flush=True)
+        logger.info(f"   [{i}/{len(identifiants_uniques)}] Traitement...")
     
     # Récupérer l'historique complet de l'individu dans le panel
     histo = panel.filter(pl.col(cle_panel) == identifiant).select(cols_panel_final)
@@ -197,20 +194,19 @@ for i, identifiant in enumerate(identifiants_uniques):
     historiques.append(histo)
 
 # Concaténer tous les historiques
-print("   Concaténation des historiques...")
+logger.info("   Concaténation des historiques...")
 if historiques:
     panel_evol = pl.concat(historiques, how="diagonal")
 else:
     panel_evol = pl.DataFrame()
 
-print(f"   ✓ {len(panel_evol):,} lignes dans l'historique complet")
-print()
+logger.info(f"   ✓ {len(panel_evol):,} lignes dans l'historique complet")
 
 # ============================================================
 # 5. Tri chronologique et calcul des deltas
 # ============================================================
 
-print("5. Tri chronologique et calculs complémentaires...")
+logger.info("5. Tri chronologique et calculs complémentaires...")
 
 if len(panel_evol) > 0 and "annee" in panel_evol.columns and "mois" in panel_evol.columns:
     # Créer une colonne période pour le tri (YYYYMM)
@@ -236,14 +232,13 @@ if len(panel_evol) > 0 and "annee" in panel_evol.columns and "mois" in panel_evo
             (pl.col("montant_brut_bareme") - pl.col("max_bareme_ref")).alias("ecart_max"),
         ])
     
-    print(f"   ✓ Tri et calculs terminés")
-print()
+    logger.info(f"   ✓ Tri et calculs terminés")
 
 # ============================================================
 # 6. Export Parquet vers Gold
 # ============================================================
 
-print("6. Export Parquet vers Gold...")
+logger.info("6. Export Parquet vers Gold...")
 
 buf_out = io.BytesIO()
 panel_evol.write_parquet(buf_out, compression="snappy")
@@ -251,14 +246,13 @@ buf_out.seek(0)
 s3.put_object(Bucket=BUCKET_GOLD, Key=OUTPUT_PQ, Body=buf_out.getvalue())
 
 taille_mb = len(buf_out.getvalue()) / 1024**2
-print(f"   ✓ s3://{BUCKET_GOLD}/{OUTPUT_PQ} ({taille_mb:.1f} MB)")
-print()
+logger.info(f"   ✓ s3://{BUCKET_GOLD}/{OUTPUT_PQ} ({taille_mb:.1f} MB)")
 
 # ============================================================
 # 7. Export Excel résumée (échantillon)
 # ============================================================
 
-print("7. Export Excel résumée...")
+logger.info("7. Export Excel résumée...")
 
 # Pour l'Excel, on va créer un résumé par individu avec :
 # -première apparition, dernière apparition, nombre de mois
@@ -288,7 +282,7 @@ def creer_resume_individus(df: pl.DataFrame, cle: str) -> pl.DataFrame:
     return resume
 
 resume = creer_resume_individus(panel_evol, cle_panel)
-print(f"   ✓ {len(resume):,} individus dans le résumé")
+logger.info(f"   ✓ {len(resume):,} individus dans le résumé")
 
 # Créer l'Excel avec plusieurs feuilles
 wb = Workbook()
@@ -348,24 +342,17 @@ s3.put_object(
 )
 
 taille_xlsx = len(xlsx_bytes) / 1024
-print(f"   ✓ s3://{BUCKET_STAGING}/{OUTPUT_XLSX} ({taille_xlsx:.1f} KB)")
-print()
+logger.info(f"   ✓ s3://{BUCKET_STAGING}/{OUTPUT_XLSX} ({taille_xlsx:.1f} KB)")
 
 # ============================================================
 # RÉSUMÉ
 # ============================================================
 
-print("=" * 70)
-print("✓ ANALYSE ÉVOLUTION HORS BARÈME TERMINÉE")
-print("=" * 70)
-print()
-print("Fichiers produits :")
-print(f"  • Parquet (complet) : s3://{BUCKET_GOLD}/{OUTPUT_PQ}")
-print(f"  • Excel (résumé)    : s3://{BUCKET_STAGING}/{OUTPUT_XLSX}")
-print()
-print("Colonnes disponibles dans le fichier Parquet :")
+logger.info("✓ ANALYSE ÉVOLUTION HORS BARÈME TERMINÉE")
+logger.info(f"  • Parquet (complet) : s3://{BUCKET_GOLD}/{OUTPUT_PQ}")
+logger.info(f"  • Excel (résumé)    : s3://{BUCKET_STAGING}/{OUTPUT_XLSX}")
+logger.info("Colonnes disponibles dans le fichier Parquet :")
 for col in panel_evol.columns:
-    print(f"  • {col}")
-print()
-print("Vous pouvez maintenant analyser l'évolution des individus")
-print("avant et après leur mois de détection hors barème.")
+    logger.info(f"  • {col}")
+logger.info("Vous pouvez maintenant analyser l'évolution des individus avant et après leur mois de détection hors barème.")
+

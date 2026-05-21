@@ -1,0 +1,101 @@
+% ─── PACKAGES STANDARDS ───────────────────────────────────────
+\usepackage[utf8]{inputenc}
+\usepackage[T1]{fontenc}
+\usepackage{babel}
+\usepackage{geometry}
+\usepackage{xcolor}
+\usepackage{hyperref}
+\usepackage{graphicx}
+\usepackage{listings}
+\usepackage{fancyhdr}
+\usepackage{titlesec}
+\usepackage{tcolorbox}
+\usepackage{enumitem}
+\usepackage{booktabs}
+\usepackage{longtable}
+\usepackage{array}
+\usepackage{tabularx}
+\usepackage{float}
+\usepackage{tikz}
+\usepackage{amsmath}
+\usepackage{setspace}
+\usepackage{parskip}
+\usepackage{charter}
+
+% ─── GÉOMÉTRIE ───────────────────────────────────────────────
+\geometry{
+  top=2.5cm, bottom=2.5cm,
+  left=2.5cm, right=2.5cm,
+  headheight=15pt
+}
+
+% ─── COULEURS ────────────────────────────────────────────────
+\definecolor{primaryblue}{RGB}{31,78,121}
+\definecolor{lightblue}{RGB}{214,228,240}
+\definecolor{accentblue}{RGB}{70,130,180}
+\definecolor{darkgray}{RGB}{64,64,64}
+\definecolor{lightgray}{RGB}{245,245,245}
+\definecolor{successgreen}{RGB}{0,128,0}
+\definecolor{warningorange}{RGB}{204,102,0}
+\definecolor{errored}{RGB}{180,30,30}
+\definecolor{codebg}{RGB}{248,248,248}
+
+% ─── HYPERREF ────────────────────────────────────────────────
+\hypersetup{
+  colorlinks=true,
+  linkcolor=primaryblue,
+  urlcolor=accentblue,
+  citecolor=primaryblue
+}
+
+% ─── EN-TÊTES / PIEDS DE PAGE ────────────────────────────────
+\pagestyle{fancy}
+\fancyhf{}
+\fancyhead[L]{\small\color{darkgray} Panel Admin — Documentation de Production}
+\fancyhead[R]{\small\color{darkgray} \leftmark}
+\fancyfoot[C]{\small\color{darkgray} \thepage}
+\renewcommand{\headrulewidth}{0.4pt}
+\renewcommand{\footrulewidth}{0pt}
+
+% ─── TITRES ──────────────────────────────────────────────────
+\titleformat{\chapter}[block]
+  {\normalfont\huge\bfseries\color{primaryblue}}
+  {\thechapter.}{1em}{}
+  [\vspace{0.5ex}\titrule[1pt]]
+
+\titleformat{\section}[block]
+  {\normalfont\Large\bfseries\color{primaryblue}}
+  {\thesection}{1em}{}
+
+\titleformat{\subsection}[block]
+  {\normalfont\large\bfseries\color{accentblue}}
+  {\thesubsection}{1em}{}
+
+% ─── BOÎTES COLORÉES ─────────────────────────────────────────
+\tcbuselibrary{skins,breakable}
+
+\newtcolorbox{infobox}[1][]{
+  enhanced, breakable,
+  colback=lightblue!30, colframe=primaryblue,
+  fonttitle=\bfseries\color{primaryblue},
+  title={#1}, left=6pt, right=6pt, top=4pt, bottom=4pt
+}
+
+\newtcolorbox{warningbox}[1][Attention]{
+  enhanced, breakable,
+  colback=orange!10, colframe=warningorange,
+  fonttitle=\bfseries\color{warningorange},
+  title={#1}, left=6pt, right=6pt, top=4pt, bottom=4pt
+}
+
+\newtcolorbox{codebox}[1][]{
+  enhanced, breakable,
+  colback=codebg, colframe=darkgray!40,
+  fonttitle=\bfseries\color{darkgray},
+  title={#1}, left=6pt, right=6pt, top=4pt, bottom=4pt
+}
+
+% ─── COMMANDES PERSONNALISÉES ────────────────────────────────
+\newcommand{\bucket}[1]{\texttt{s3://#1}}
+\newcommand{\scriptname}[1]{\texttt{#1}}
+\newcommand{\ymlkey}[1]{\textbf{\texttt{#1}}}

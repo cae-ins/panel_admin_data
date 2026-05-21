@@ -1,0 +1,86 @@
+\documentclass[12pt,a4paper,french]{report}
+\input{preambule.tex}
+
+\title{Architecture Technique : Pipeline Panel Admin}
+\author{Data Engineering Team}
+\date{\today}
+
+\begin{document}
+
+\maketitle
+\tableofcontents
+\newpage
+
+\chapter{Architecture Globale et Voyage de la Donnée}
+
+Le système repose sur une architecture \textbf{Medallion (ou Data Lakehouse)}, permettant une montée en maturité progressive de la donnée. Ce choix garantit que les transformations métier sont isolées des opérations de nettoyage technique.
+
+\section{Le "Data Journey" : de l'Excel au Parquet Gold}
+
+\begin{enumerate}
+    \item \textbf{Ingestion (Staging)} : Les fichiers Excel mensuels sont déposés sur MinIO. Cette zone est la seule contenant des formats non-optimisés et hétérogènes (noms de colonnes variables, en-têtes décalés).
+    \item \textbf{Uniformisation (Bronze)} : Chaque Excel est converti en Parquet. Toutes les colonnes sont conservées en type \textit{String} pour éviter toute perte d'information. C'est ici qu'on réalise la jointure technique F1-F2 sur la clé \texttt{matricule||organisme}.
+    \item \textbf{Métier et Normalisation (Silver)} : Les données sont typées. Les nomenclatures administratives (ANSTAT) sont rattachées via un \textbf{fuzzy join} textuel. Les agents hors-périmètre (situations non-actives) sont supprimés. Les fichiers sont regroupés par année civile.
+    \item \textbf{Stabilisation et Imputation (Gold)} : Le panel longitudinal est constitué. Les grades manquants sont imputés par cascade statistique. Cette couche est la "Source de Vérité" pour toutes les analyses.
+\end{enumerate}
+
+\section{Stratégie de Stockage : MinIO et Parquet}
+
+Le projet utilise \textbf{MinIO}, un stockage objet S3-compatible. Cela permet de simuler un environnement Cloud moderne tout en restant sur une infrastructure locale souveraine.
+Le format \textbf{Apache Parquet} offre des lectures colonnaire extrêmement rapides et une compression binaire réduisant l'espace disque de 90\% par rapport à l'Excel.
+
+\chapter{Dictionnaire des Données Gold}
+
+Le panel final (\scriptname{panel\_complet.parquet}) contient les colonnes suivantes :
+
+\begin{longtable}{lll}
+  \toprule
+  \textbf{Groupe} & \textbf{Colonne} & \textbf{Type} \\
+  \midrule
+  \endhead
+  Identité & \texttt{matricule} & Utf8 \\
+  & \texttt{nom} & Utf8 \\
+  & \texttt{sexe} & Utf8 \\
+  & \texttt{date\_naissance} & Utf8 \\
+  \midrule
+  Nomenclature & \texttt{CODE\_ORGANISME} & Utf8 (Code ANSTAT) \\
+  & \texttt{organisme} & Utf8 (Libellé source) \\
+  & \texttt{CODE\_EMPLOI} & Utf8 \\
+  & \texttt{Metier\_CITP} & Utf8 \\
+  & \texttt{GRADE} & Utf8 (Imputé/Observé) \\
+  & \texttt{GRADE\_SOURCE} & Utf8 (OBSERVE|IMPUTE|NF) \\
+  \midrule
+  Temporel & \texttt{mois\_annee} & String (Format MMYYYY) \\
+  & \texttt{annee} / \texttt{mois} & Int32 \\
+  \midrule
+  Salaires & \texttt{montant\_brut} & Float64 (F1) \\
+  & \texttt{montant\_net} & Float64 (F1) \\
+  & \texttt{124\_f2} \ldots \texttt{425\_f2} & Float64 (Composantes détaillées) \\
+  \midrule
+  Traçabilité & \texttt{fichier\_source} & Utf8 \\
+  \bottomrule
+\end{longtable}
+
+\chapter{Moteur d'Exécution et Performance}
+
+\section{Streaming et Gestion de la RAM avec Polars}
+
+Le pipeline utilise \textbf{Polars}. Pour traiter des millions de lignes sans saturer la RAM, nous exploitons le \textbf{Lazy Evaluation} :
+\begin{itemize}
+    \item \texttt{scan\_parquet()} : Lit uniquement les métadonnées pour préparer le plan d'exécution.
+    \item \texttt{sink\_parquet()} : Écrit le résultat en streaming vers le disque, permettant de traiter des volumes supérieurs à la RAM disponible.
+\end{itemize}
+
+\section{Configuration Dynamique (YAML)}
+
+La logique métier est séparée du code Python via \ymlkey{pipeline\_settings.yaml} :
+\begin{itemize}
+    \item \ymlkey{column\_mapping} : Gère la variabilité des en-têtes Excel via regex.
+    \item \ymlkey{situations\_valides} : Définit le périmètre d'activité administrative.
+\end{itemize}
+
+\section{Observabilité Industrielle}
+
+Le module \scriptname{common.logging\_config} remplace les \texttt{print()}. Il assure une traçabilité horodatée et structurée, permettant à l'orchestrateur de générer des rapports de run Markdown détaillés pour chaque exécution.
+
+\end{document}

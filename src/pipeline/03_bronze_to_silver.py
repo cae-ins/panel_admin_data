@@ -17,7 +17,7 @@
 # Sortie  : s3://silver/panel_admin/YYYY.parquet (un par année)
 #
 # Dépendances :
-#   pip install polars fastexcel boto3 python-dotenv
+#   pip install polars fastexcel boto3 python-dotenv PyYAML
 # ============================================================
 
 import gc
@@ -26,11 +26,25 @@ import os
 import re
 import tempfile
 import unicodedata
+from pathlib import Path
+import yaml
 from common.s3_client import create_s3_client
 from common.logging_config import setup_pipeline_logging
 import polars as pl
 
 # --- CONFIGURATION ---
+
+CONFIG_PATH = Path(__file__).parent / "config" / "pipeline_settings.yaml"
+
+def load_pipeline_settings():
+    if not CONFIG_PATH.exists():
+        raise FileNotFoundError(f"Fichier de configuration introuvable : {CONFIG_PATH}")
+    with open(CONFIG_PATH, "r", encoding="utf-8") as f:
+        return yaml.safe_load(f)
+
+SETTINGS = load_pipeline_settings()
+COLUMN_MAPPING = SETTINGS.get("column_mapping", {})
+SITUATIONS_VALIDES = SETTINGS.get("situations_valides", {})
 
 BUCKET_STAGING = os.getenv("BUCKET_STAGING", "staging")
 BUCKET_BRONZE  = os.getenv("BUCKET_BRONZE",  "bronze")
@@ -113,39 +127,11 @@ def normaliser_nom_colonne(nom: str) -> str:
 
 
 def mapper_colonnes(noms_colonnes: list[str]) -> dict[str, str]:
-    mapping = {
-        "cle_unique":             [r"MATRICULE.*CODE.*ORGANISME", r"MATRICULE.*\\|\\|.*CODE"],
-        "matricule":              [r"^MATRICULE$", r"^MATRIC$"],
-        "nom":                    [r"^NOM$", r"^NOM_PRENOM$", r"^NOM_ET_PRENOM$"],
-        "date_naissance":         [r"DATE.*NAISSANCE", r"DATE_NAISS", r"NAISSANCE"],
-        "sexe":                   [r"^SEXE$"],
-        "situation_matrimoniale": [r"SITUATION.*MATRIMONIALE", r"STATUT.*MATRIMONIAL"],
-        "nombre_enfant":          [r"NOMBRE.*ENFANT", r"NBR.*ENFANT"],
-        "situation":              [r"^SITUATION$", r"SITUATION_ADMINISTRATIVE"],
-        "date_debut_situation":   [r"DATE.*DEBUT.*SITUATION", r"DATE_SITUATION"],
-        "montant_brut":           [r"MONTANT_BRUT", r"SALAIRE_BRUT", r"REMUNERATION_BRUTE", r"^BRUT$"],
-        "montant_net":            [r"MONTANT_NET", r"SALAIRE_NET", r"REMUNERATION_NETTE", r"^NET$"],
-        "retenue_pension":        [r"RETENUE.*PENSION", r"^PENSION$", r"COTISATION.*PENSION"],
-        "impot":                  [r"^IMPOT$", r"^IGR$", r"IMPOT.*REVENU"],
-        "charge_patronale":       [r"CHARGE.*PATRONALE", r"CHARGES.*PATRONALES"],
-        "organisme":              [r"^ORGANISME$", r"MINISTERE", r"DIRECTION"],
-        "lieu_affectation":       [r"LIEU.*AFFECTATION", r"^AFFECTATION$"],
-        "service":                [r"^SERVICE$"],
-        "emploi":                 [r"^EMPLOI$", r"^CORPS$", r"CORPS.*EMPLOI"],
-        "fonction":               [r"^FONCTION$"],
-        "grade":                  [r"CLASSE.*ECHELON", r"CLASSE_ECHELON"],
-        "statut_fonctionnaire":   [r"^GRADE$"],
-        "poste":                  [r"^POSTE$", r"LIBELLE.*POSTE"],
-        "prise_service":          [r"PRISE.*SERVICE", r"DATE.*PRISE.*SERVICE"],
-        "date_retraite":          [r"DATE.*RETRAITE"],
-        "age_retraite":           [r"AGE.*RETRAITE"],
-        "mois_annee":             [r"MOIS.*ANNEE", r"^PERIODE$"],
-    }
     correspondance = {}
     for nom in noms_colonnes:
         nom_norm = normaliser_nom_colonne(nom)
         matched  = None
-        for std_name, patterns in mapping.items():
+        for std_name, patterns in COLUMN_MAPPING.items():
             for pattern in patterns:
                 if re.search(pattern, nom_norm, re.IGNORECASE):
                     matched = std_name
@@ -163,12 +149,8 @@ def normaliser_situation(situation) -> str:
     sit = unicodedata.normalize("NFKD", sit)
     sit = "".join(c for c in sit if not unicodedata.combining(c))
     sit = re.sub(r"\s+", " ", sit).strip()
-    situations_valides = {
-        "en_activite":      ["EN ACTIVITE", "ACTIVITE"],
-        "regul_indemnites": ["REGUL. INDEMNITES", "REGUL INDEMNITES", "REGULARISATION INDEMNITES"],
-        "demi_solde":       ["DEMI-SOLDE", "DEMI SOLDE", "DEMISOLDE", "1/2 SOLDE"],
-    }
-    for categorie, valeurs in situations_valides.items():
+    
+    for categorie, valeurs in SITUATIONS_VALIDES.items():
         if sit in valeurs:
             return categorie
     return "autre"

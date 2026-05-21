@@ -14,6 +14,7 @@
 import io
 import os
 from common.s3_client import create_s3_client
+from common.logging_config import setup_pipeline_logging
 import polars as pl
 from openpyxl import Workbook
 from openpyxl.styles import PatternFill, Font, Alignment
@@ -35,77 +36,71 @@ STATUTS_HORS_BAREME = [
 ]
 
 # ============================================================
-# CLIENT S3
+# CLIENT S3 & LOGGING
 # ============================================================
 
 s3 = create_s3_client()
+logger, _ = setup_pipeline_logging("export_liste_hors_bareme")
 
-print("=" * 70)
-print("EXPORT LISTE AGENTS HORS BARÈME")
-print("=" * 70)
-print()
+logger.info("Démarrage de l'export liste agents hors barème")
 
 # ============================================================
 # 1. CHARGEMENT
 # ============================================================
 
-print(f"1. Chargement de s3://{BUCKET_GOLD}/{KEY_PANEL_GOLD}...")
+logger.info(f"1. Chargement de s3://{BUCKET_GOLD}/{KEY_PANEL_GOLD}...")
 
 buf = io.BytesIO()
 s3.download_fileobj(BUCKET_GOLD, KEY_PANEL_GOLD, buf)
 buf.seek(0)
 panel = pl.read_parquet(buf)
 
-print(f"   ✓ {len(panel):,} lignes × {len(panel.columns)} colonnes")
+logger.info(f"   ✓ {len(panel):,} lignes × {len(panel.columns)} colonnes")
 
 if "Statut" not in panel.columns:
+    logger.error("Colonne 'Statut' absente de panel_gold.parquet")
     raise RuntimeError(
         "Colonne 'Statut' absente de panel_gold.parquet. "
         "Exécutez d'abord 07_calcul_indicateur.py puis 07b_analyse_hors_bareme.py."
     )
 
-print()
-
 # ============================================================
 # 2. FILTRAGE
 # ============================================================
 
-print("2. Filtrage des agents hors barème...")
+logger.info("2. Filtrage des agents hors barème...")
 
 hors_bareme = panel.filter(pl.col("Statut").is_in(STATUTS_HORS_BAREME))
 n_total = len(panel)
 n_hors  = len(hors_bareme)
 
-print(f"   ✓ {n_hors:,} agents hors barème / {n_total:,} total ({100*n_hors/n_total:.1f}%)")
+logger.info(f"   ✓ {n_hors:,} agents hors barème / {n_total:,} total ({100*n_hors/n_total:.1f}%)")
 n_inf = int((hors_bareme["Statut"] == "Inférieur au minimum du barème").sum())
 n_sup = int((hors_bareme["Statut"] == "Supérieur au maximum du barème").sum())
-print(f"     Inférieur au minimum : {n_inf:,}")
-print(f"     Supérieur au maximum : {n_sup:,}")
+logger.info(f"     Inférieur au minimum : {n_inf:,}")
+logger.info(f"     Supérieur au maximum : {n_sup:,}")
 
 if n_hors == 0:
-    print("\n⚠️  Aucun agent hors barème — arrêt.")
+    logger.warning("Aucun agent hors barème — arrêt.")
     exit(0)
-
-print()
 
 # ============================================================
 # 3. EXPORT PARQUET → GOLD
 # ============================================================
 
-print("3. Export Parquet → Gold...")
+logger.info("3. Export Parquet → Gold...")
 
 buf_pq = io.BytesIO()
 hors_bareme.write_parquet(buf_pq, compression="snappy")
 buf_pq.seek(0)
 s3.put_object(Bucket=BUCKET_GOLD, Key=OUTPUT_PQ, Body=buf_pq.getvalue())
-print(f"   ✓ s3://{BUCKET_GOLD}/{OUTPUT_PQ}  ({len(hors_bareme):,} lignes)")
-print()
+logger.info(f"   ✓ s3://{BUCKET_GOLD}/{OUTPUT_PQ}  ({len(hors_bareme):,} lignes)")
 
 # ============================================================
 # 4. EXPORT EXCEL → STAGING
 # ============================================================
 
-print("4. Export Excel → Staging...")
+logger.info("4. Export Excel → Staging...")
 
 wb = Workbook()
 wb.remove(wb.active)
@@ -143,14 +138,14 @@ def ecrire_feuille(wb: Workbook, nom: str, df: pl.DataFrame, colorier: bool = Fa
             if fill_ligne:
                 c.fill = fill_ligne
     ws.freeze_panes = "A2"
-    print(f"   ✓ {nom} ({len(df):,} lignes)")
+    logger.info(f"   ✓ {nom} ({len(df):,} lignes)")
 
 
 # Feuille 1 : liste complète
 MAX_EXCEL = 50_000
 df_excel = hors_bareme.head(MAX_EXCEL)
 if len(hors_bareme) > MAX_EXCEL:
-    print(f"   ⚠️  Excel tronqué à {MAX_EXCEL:,} lignes (total dans Parquet : {n_hors:,})")
+    logger.warning(f"   Excel tronqué à {MAX_EXCEL:,} lignes (total dans Parquet : {n_hors:,})")
 ecrire_feuille(wb, "LISTE_HORS_BAREME", df_excel, colorier=True)
 
 # Feuille 2 : récap par Statut × Grade
@@ -190,17 +185,13 @@ s3.put_object(
     Body=buf_xlsx.getvalue(),
     ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
 )
-print(f"\n   ✓ s3://{BUCKET_STAGING}/{OUTPUT_XLSX}  ({len(buf_xlsx.getvalue()) / 1024:.1f} KB)")
+logger.info(f"   ✓ s3://{BUCKET_STAGING}/{OUTPUT_XLSX}  ({len(buf_xlsx.getvalue()) / 1024:.1f} KB)")
 
 # ============================================================
 # RÉSUMÉ
 # ============================================================
 
-print()
-print("=" * 70)
-print("✓ EXPORT TERMINÉ")
-print("=" * 70)
-print(f"  {n_hors:,} agents hors barème  "
-      f"({n_inf:,} inférieurs au min  |  {n_sup:,} supérieurs au max)")
-print(f"  Parquet : s3://{BUCKET_GOLD}/{OUTPUT_PQ}")
-print(f"  Excel   : s3://{BUCKET_STAGING}/{OUTPUT_XLSX}")
+logger.info("✓ EXPORT TERMINÉ")
+logger.info(f"  {n_hors:,} agents hors barème ({n_inf:,} inférieurs au min | {n_sup:,} supérieurs au max)")
+logger.info(f"  Parquet : s3://{BUCKET_GOLD}/{OUTPUT_PQ}")
+logger.info(f"  Excel   : s3://{BUCKET_STAGING}/{OUTPUT_XLSX}")
