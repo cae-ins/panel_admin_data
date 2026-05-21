@@ -24,6 +24,7 @@ import tempfile
 import unicodedata
 from common.s3_client import create_s3_client
 from common.logging_config import setup_pipeline_logging
+from common.polars_s3 import normaliser_nom_colonne
 import warnings
 import polars as pl
 
@@ -43,22 +44,6 @@ logger, _ = setup_pipeline_logging("02_staging_to_bronze")
 # ============================================================
 # FONCTIONS UTILITAIRES
 # ============================================================
-
-def normaliser_nom_colonne(nom: str) -> str:
-    """Normalise un nom de colonne : ASCII majuscule, sans caractères spéciaux."""
-    if not nom or isinstance(nom, float):
-        return "colonne_vide"
-    nom = str(nom)
-    nom = re.sub(r"^[A-Z_]+[0-9]+\.", "", nom)
-    nom = nom.upper()
-    nom = re.sub(r"[-/_ ]", "_", nom)
-    nom = re.sub(r"\.", "_", nom)
-    nom = unicodedata.normalize("NFKD", nom)
-    nom = "".join(c for c in nom if not unicodedata.combining(c))
-    nom = re.sub(r"[^A-Z0-9_]", "", nom)
-    nom = re.sub(r"_+", "_", nom)
-    return nom.strip("_")
-
 
 def deduplication_noms(noms: list[str]) -> list[str]:
     """Rend une liste de noms de colonnes unique en suffixant les doublons."""

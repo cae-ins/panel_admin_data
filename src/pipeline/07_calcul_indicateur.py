@@ -52,6 +52,7 @@ import tempfile
 import unicodedata
 from common.s3_client import create_s3_client
 from common.logging_config import setup_pipeline_logging
+from common.polars_s3 import lire_parquet_s3
 import polars as pl
 from openpyxl import Workbook
 from openpyxl.styles import PatternFill, Font, Alignment
@@ -131,13 +132,6 @@ logger.info("=" * 70)
 # ============================================================
 # FONCTIONS UTILITAIRES
 # ============================================================
-
-def lire_parquet_s3(bucket: str, key: str) -> pl.DataFrame:
-    buf = io.BytesIO()
-    s3.download_fileobj(bucket, key, buf)
-    buf.seek(0)
-    return pl.read_parquet(buf)
-
 
 # ============================================================
 # CONSTANTES BARÈME

@@ -22,6 +22,7 @@ import os
 import re
 from common.s3_client import create_s3_client
 from common.logging_config import setup_pipeline_logging
+from common.polars_s3 import lire_parquet_s3
 import polars as pl
 
 # --- CONFIGURATION ---
@@ -36,11 +37,6 @@ s3 = create_s3_client()
 logger, _ = setup_pipeline_logging("04_validation_silver")
 
 
-def lire_parquet_s3(bucket: str, key: str) -> pl.DataFrame:
-    buf = io.BytesIO()
-    s3.download_fileobj(bucket, key, buf)
-    buf.seek(0)
-    return pl.read_parquet(buf)
 
 
 def sauvegarder_rapport(df: pl.DataFrame, nom_fichier: str) -> None:

@@ -26,6 +26,7 @@ import polars as pl
 
 sys.path.append(str(Path(__file__).resolve().parents[1]))
 from common.s3_client import create_s3_client
+from common.polars_s3 import lire_parquet_s3
 
 BUCKET_BRONZE  = "bronze"
 BUCKET_STAGING = "staging"
@@ -33,12 +34,6 @@ PREFIX_BRONZE  = "panel_admin"
 PREFIX_EXPORTS = "panel_admin/exports_gold"
 
 s3 = create_s3_client()
-
-def lire_parquet_s3(bucket: str, key: str) -> pl.DataFrame:
-    buf = io.BytesIO()
-    s3.download_fileobj(bucket, key, buf)
-    buf.seek(0)
-    return pl.read_parquet(buf)
 
 def normaliser_situation(situation) -> str:
     """Identique à l'étape 03."""

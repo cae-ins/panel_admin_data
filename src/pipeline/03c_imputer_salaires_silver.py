@@ -41,6 +41,7 @@ import os
 import re
 from common.s3_client import create_s3_client
 from common.logging_config import setup_pipeline_logging
+from common.polars_s3 import lire_parquet_s3, ecrire_parquet_s3
 import polars as pl
 
 # ============================================================
@@ -79,22 +80,6 @@ logger, _ = setup_pipeline_logging("03c_imputer_salaires_silver")
 # ============================================================
 # FONCTIONS UTILITAIRES
 # ============================================================
-
-def lire_parquet_s3(bucket: str, key: str) -> pl.DataFrame:
-    buf = io.BytesIO()
-    s3.download_fileobj(bucket, key, buf)
-    buf.seek(0)
-    return pl.read_parquet(buf)
-
-
-def ecrire_parquet_s3(df: pl.DataFrame, bucket: str, key: str) -> None:
-    buf = io.BytesIO()
-    df.write_parquet(buf, compression="snappy")
-    buf.seek(0)
-    taille = len(buf.getvalue()) / 1024**2
-    s3.put_object(Bucket=bucket, Key=key, Body=buf.getvalue())
-    logger.info(f"  ✓ s3://{bucket}/{key}  ({len(df):,} lignes × {len(df.columns)} cols  {taille:.1f} MB)")
-
 
 def annee_depuis_cle(cle: str) -> str:
     m = re.search(r"20\d{2}", os.path.basename(cle))
