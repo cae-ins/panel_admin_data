@@ -19,6 +19,7 @@
 import gc
 import io
 import os
+from datetime import date
 
 from common.s3_client import create_s3_client
 from common.logging_config import setup_pipeline_logging
@@ -33,6 +34,7 @@ from openpyxl.utils import get_column_letter
 # ============================================================
 
 INCLURE_ZEROS = True   # True = inclure salaires = 0 | False = strictement > 0
+ANNEE_MIN     = 2024   # première année incluse (inclus)
 
 BUCKET_GOLD    = os.getenv("BUCKET_GOLD",    "gold")
 BUCKET_STAGING = os.getenv("BUCKET_STAGING", "staging")
@@ -127,6 +129,14 @@ if "MOIS" not in base.columns and "MOIS_NUM" in base.columns:
         .map_elements(lambda m: MOIS_FR.get(m, str(m) if m is not None else ""), return_dtype=pl.Utf8)
         .alias("MOIS")
     )
+
+annee_max = date.today().year
+base = base.filter(
+    pl.col("ANNEE").is_not_null()
+    & (pl.col("ANNEE") >= ANNEE_MIN)
+    & (pl.col("ANNEE") <= annee_max)
+)
+logger.info(f"   Filtre années : {ANNEE_MIN} → {annee_max}  ({len(base):,} lignes retenues)")
 
 # ============================================================
 # 4. AGRÉGATION INDIVIDU × PÉRIODE (cohérent avec 07b)
