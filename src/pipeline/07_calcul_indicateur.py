@@ -586,7 +586,7 @@ base = base.with_columns([
 annees_dispo = sorted(base["ANNEE"].drop_nulls().unique().to_list())
 logger.info(f"   Années disponibles : {annees_dispo}")
 
-ANNEES_ANALYSE = [2024, 2025] if PERIODE_RECENTE else [a for a in annees_dispo if a >= 2015]
+ANNEES_ANALYSE = [a for a in annees_dispo if a >= 2024] if PERIODE_RECENTE else [a for a in annees_dispo if a >= 2015]
 logger.info(f"   Période retenue    : {ANNEES_ANALYSE}")
 
 base = base.filter(pl.col("ANNEE").is_in(ANNEES_ANALYSE))
