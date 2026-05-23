@@ -52,10 +52,12 @@ import polars as pl
 
 # --- CONFIGURATION ---
 
-BUCKET_SILVER  = os.getenv("BUCKET_SILVER", "silver")
-BUCKET_GOLD    = os.getenv("BUCKET_GOLD",   "gold")
+BUCKET_SILVER  = os.getenv("BUCKET_SILVER",  "silver")
+BUCKET_GOLD    = os.getenv("BUCKET_GOLD",    "gold")
+BUCKET_STAGING = os.getenv("BUCKET_STAGING", "staging")
 PREFIX_SILVER  = "panel_admin"
 PREFIX_PANEL   = "panel_admin"
+PREFIX_EXPORTS = "panel_admin/exports_gold"
 
 # Noms des colonnes F2 (composantes barème issues de la Feuille 2 du fichier source)
 # Recherche insensible à la casse : 124_F2 ou 124_f2 selon la normalisation Bronze
@@ -655,6 +657,39 @@ with tempfile.TemporaryDirectory() as tmpdir:
     s3.upload_file(chemin_complet, BUCKET_GOLD, KEY_PANEL_COMPLET)
     taille = os.path.getsize(chemin_complet) / 1024**2
     logger.info(f"✓  {taille:.1f} MB uploadés")
+
+    # Export CSV : salaire moyen par sexe × mois
+    logger.info("Export CSV : salaire moyen par sexe × mois...")
+    df_sexe_mois = (
+        pl.scan_parquet(chemin_complet)
+        .with_columns(
+            pl.when(pl.col("sexe").str.to_uppercase().str.starts_with("MASC")).then(pl.lit("Homme"))
+            .when(pl.col("sexe").str.to_uppercase().str.starts_with("FEM")).then(pl.lit("Femme"))
+            .otherwise(pl.lit("Autre"))
+            .alias("sexe")
+        )
+        .filter(
+            pl.col("sexe").is_in(["Homme", "Femme"]) &
+            pl.col("montant_brut_sans_ind_sans_alloc").is_not_null() &
+            (pl.col("montant_brut_sans_ind_sans_alloc") > 0)
+        )
+        .group_by(["annee", "mois", "sexe"])
+        .agg([
+            pl.len().alias("effectif"),
+            pl.col("montant_brut_sans_ind_sans_alloc").mean().round(0).alias("salaire_moyen"),
+            pl.col("montant_brut_sans_ind_sans_alloc").median().round(0).alias("salaire_median"),
+            pl.col("montant_brut_sans_ind_sans_alloc").quantile(0.25).round(0).alias("salaire_p25"),
+            pl.col("montant_brut_sans_ind_sans_alloc").quantile(0.75).round(0).alias("salaire_p75"),
+        ])
+        .sort(["annee", "mois", "sexe"])
+        .collect()
+    )
+    s3.put_object(
+        Bucket=BUCKET_STAGING,
+        Key=f"{PREFIX_EXPORTS}/salaire_moyen_sexe_mois.csv",
+        Body=df_sexe_mois.write_csv().encode("utf-8"),
+    )
+    logger.info(f"  ✓ s3://{BUCKET_STAGING}/{PREFIX_EXPORTS}/salaire_moyen_sexe_mois.csv  ({len(df_sexe_mois)} lignes)")
 
 logger.info("=" * 70)
 logger.info("✓ PANEL COMPLET ÉCRIT")

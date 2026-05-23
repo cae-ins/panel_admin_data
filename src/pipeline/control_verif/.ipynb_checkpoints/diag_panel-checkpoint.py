@@ -31,14 +31,14 @@ import polars as pl
 load_dotenv(".env")
 
 # --- CONFIGURATION ---
-MINIO_ENDPOINT   = "http://192.168.1.230:30137"
-MINIO_ACCESS_KEY = "datalab-team"
-MINIO_SECRET_KEY = "minio-datalabteam123"
+MINIO_ENDPOINT   = "http://<IP_SERVEUR>:30137"
+MINIO_ACCESS_KEY = "<ACCESS_KEY_NAME>"
+MINIO_SECRET_KEY = "<SECRET_KEY_VALUE>"
 
 # LORSQU'ON TRAVAILLE SUR JHUB
 # MINIO_ENDPOINT   = "http://minio.mon-namespace.svc.cluster.local:80"
-# MINIO_ACCESS_KEY = "datalab-team"
-# MINIO_SECRET_KEY = "minio-datalabteam123"
+# MINIO_ACCESS_KEY = "<ACCESS_KEY_NAME>"
+# MINIO_SECRET_KEY = "<SECRET_KEY_VALUE>"
 
 BUCKET_GOLD   = "gold"
 BUCKET_BRONZE = "bronze"

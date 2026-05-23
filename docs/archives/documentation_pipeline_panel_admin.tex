@@ -387,9 +387,9 @@ Chaque script supporte deux modes de connexion :
 
 \begin{codebox}[Configuration locale vs JupyterHub]
 # Depuis la machine locale
-MINIO\_ENDPOINT   = "http://192.168.1.230:30137"
-MINIO\_ACCESS\_KEY = "datalab-team"
-MINIO\_SECRET\_KEY = "minio-datalabteam123"
+MINIO\_ENDPOINT   = "http://<IP_SERVEUR>:30137"
+MINIO\_ACCESS\_KEY = "<ACCESS_KEY>"
+MINIO\_SECRET\_KEY = "<SECRET_KEY>"
 
 # Depuis JupyterHub (décommenter)
 # MINIO\_ENDPOINT = "http://minio.mon-namespace.svc.cluster.local:80"
@@ -1935,9 +1935,9 @@ Voir section 4.9 (tableau des feuilles produites).
 import polars as pl, io, boto3
 from botocore.client import Config
 
-s3 = boto3.client("s3", endpoint\_url="http://192.168.1.230:30137",
-                  aws\_access\_key\_id="datalab-team",
-                  aws\_secret\_access\_key="minio-datalabteam123",
+s3 = boto3.client("s3", endpoint\_url="http://<IP_SERVEUR>:30137",
+                  aws\_access\_key\_id="<ACCESS_KEY>",
+                  aws\_secret\_access\_key="<SECRET_KEY>",
                   config=Config(signature\_version="s3v4"),
                   region\_name="us-east-1", verify=False)
 

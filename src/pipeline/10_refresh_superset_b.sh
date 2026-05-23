@@ -16,7 +16,8 @@ PG_HOST="postgres-service.postgres.svc.cluster.local"
 PG_PORT="5432"
 PG_DB="datalab_db"
 PG_USER="datalab"
-export PGPASSWORD="datalab123"
+# Récupération sécurisée du mot de passe depuis l'environnement
+export PGPASSWORD="${PG_PASSWORD}"
 
 SQL_FILE="$(dirname "$0")/superset_views.sql"
 

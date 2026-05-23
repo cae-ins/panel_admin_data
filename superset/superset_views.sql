@@ -23,6 +23,7 @@ DROP VIEW IF EXISTS
     v_indicateurs_grade,
     v_indicateurs_citp_gg,
     v_indicateurs_citp,
+    v_salaire_moyen_sexe,
     v_indicateurs_global,
     v_panel_base
 CASCADE;
@@ -60,6 +61,7 @@ SELECT
     mois,
     TO_DATE(annee::text || '-' || LPAD(mois::text,2,'0') || '-01', 'YYYY-MM-DD') AS date_mois,
     montant_brut, montant_net, retenue_pension, impot, charge_patronale,
+    montant_brut_sans_ind_sans_alloc,
     organisme, emploi,
     CASE
         WHEN UPPER(organisme) LIKE '%AFFAIRES ETRANG%'
@@ -116,9 +118,27 @@ CREATE INDEX idx_mv_bareme      ON mv_panel_base(bareme);
 CREATE INDEX idx_mv_date        ON mv_panel_base(date_mois);
 CREATE INDEX idx_mv_sexe        ON mv_panel_base(sexe);
 CREATE INDEX idx_mv_citp        ON mv_panel_base(citp_grand_groupe);
+CREATE INDEX idx_mv_brut_bareme ON mv_panel_base(montant_brut_sans_ind_sans_alloc);
 
 -- ------------------------------------------------------------
--- 1. INDICATEURS GLOBAUX MENSUELS
+-- 1. SALAIRE MOYEN PAR SEXE × MOIS
+-- ------------------------------------------------------------
+CREATE OR REPLACE VIEW v_salaire_moyen_sexe AS
+SELECT
+    annee, mois, date_mois, sexe,
+    COUNT(*)                                                                                  AS effectif,
+    ROUND(AVG(montant_brut_sans_ind_sans_alloc)::numeric, 0)                                  AS salaire_moyen,
+    ROUND(PERCENTILE_CONT(0.5)  WITHIN GROUP (ORDER BY montant_brut_sans_ind_sans_alloc)::numeric, 0) AS salaire_median,
+    ROUND(PERCENTILE_CONT(0.25) WITHIN GROUP (ORDER BY montant_brut_sans_ind_sans_alloc)::numeric, 0) AS salaire_p25,
+    ROUND(PERCENTILE_CONT(0.75) WITHIN GROUP (ORDER BY montant_brut_sans_ind_sans_alloc)::numeric, 0) AS salaire_p75
+FROM mv_panel_base
+WHERE sexe IN ('Homme', 'Femme')
+  AND montant_brut_sans_ind_sans_alloc > 0
+GROUP BY annee, mois, date_mois, sexe
+ORDER BY annee, mois, sexe;
+
+-- ------------------------------------------------------------
+-- 2. INDICATEURS GLOBAUX MENSUELS
 -- ------------------------------------------------------------
 CREATE OR REPLACE VIEW v_indicateurs_global AS
 SELECT
