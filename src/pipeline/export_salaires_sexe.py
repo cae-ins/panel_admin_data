@@ -33,7 +33,10 @@ from openpyxl.utils import get_column_letter
 # PARAMÈTRES
 # ============================================================
 
-INCLURE_ZEROS = True   # True = inclure salaires = 0 | False = strictement > 0
+INCLURE_ZEROS = False  # True = inclure salaires = 0 | False = strictement > 0
+# NOTE : False aligne ce script avec 06_compiler_panel.py et superset_views.sql
+#        (WHERE montant_brut_sans_ind_sans_alloc > 0) pour assurer la cohérence
+#        des indicateurs entre les trois sorties.
 ANNEE_MIN     = 2024   # première année incluse (inclus)
 
 BUCKET_GOLD    = os.getenv("BUCKET_GOLD",    "gold")
@@ -75,7 +78,7 @@ try:
     base = pl.read_parquet(buf)
     logger.info("   Source : base_avec_statut_corrigee.parquet")
 except Exception:
-    logger.warning("   ⚠️  Repli sur base_avec_statut.parquet")
+    logger.warning("   ⚠️  Repli sur base_avec_statut.parquet", exc_info=True)
     buf = io.BytesIO()
     s3.download_fileobj(BUCKET_GOLD, KEY_BASE_AVEC_STATUT, buf)
     buf.seek(0)
@@ -144,12 +147,20 @@ logger.info(f"   Filtre années : {ANNEE_MIN} → {annee_max}  ({len(base):,} li
 
 logger.info("3. Agrégation par agent × période...")
 
-agg_col = "cle_unique" if "cle_unique" in base.columns else "matricule"
+if "cle_unique" in base.columns:
+    agg_col = "cle_unique"
+elif "matricule" in base.columns:
+    agg_col = "matricule"
+else:
+    raise RuntimeError(
+        "Aucune colonne identifiant trouvée (cle_unique, matricule) — "
+        "impossible de dédupliquer les agents par période."
+    )
 
 base_agrege = (
     base
     .group_by(["ANNEE", "MOIS_NUM", "MOIS", agg_col, "SEXE_STD"])
-    .agg(pl.col(VALUE_COL).first().alias(VALUE_COL))
+    .agg(pl.col(VALUE_COL).mean().alias(VALUE_COL))  # mean() est déterministe contrairement à first()
     .filter(
         pl.col("SEXE_STD").is_in(["Homme", "Femme"])
         & pl.col(VALUE_COL).is_not_null()
