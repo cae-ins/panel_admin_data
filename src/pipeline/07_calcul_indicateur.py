@@ -124,13 +124,7 @@ MOIS_FR = {
     9: "Septembre",10: "Octobre",  11: "Novembre", 12: "Décembre",
 }
 
-# Grades retenus par le document methodologique du 28/05/2026.
-GRADES_VALIDES = [
-    "A3", "A4", "A5", "A6", "A7",
-    "B1", "B3",
-    "C1", "C2", "C3",
-    "D1", "D2",
-]
+GRADES_VALIDES = list(METHODOLOGY["grades_valides"])
 
 # Composantes du montant_brut_sans_ind_sans_alloc (codes F2, sans 421 allocation familiale)
 COMPOSANTES_SALAIRE_NOMS = {"124_F2", "228_F2", "271_F2", "425_F2"}

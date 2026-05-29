@@ -8,6 +8,19 @@ methodology:
   inclure_zeros: true          # true = inclure salaires nuls/NA ; false = salaire > 0
   seuil_wins: 0.01             # null pour désactiver la winsorisation
   min_obs_wins: 100            # seuil de repli mois x grade si cellule CITP trop petite
+  grades_valides:              # liste issue du document méthodologique du 28/05/2026
+    - "A3"
+    - "A4"
+    - "A5"
+    - "A6"
+    - "A7"
+    - "B1"
+    - "B3"
+    - "C1"
+    - "C2"
+    - "C3"
+    - "D1"
+    - "D2"
 
 # Mapping des colonnes brutes vers les noms standardisés
 # Les valeurs sont des expressions régulières (regex) cherchées dans les noms de colonnes normalisés.

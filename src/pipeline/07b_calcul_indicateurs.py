@@ -50,9 +50,11 @@ import io
 import os
 import re
 import unicodedata
+from pathlib import Path
 from common.s3_client import create_s3_client
 from common.logging_config import setup_pipeline_logging
 import polars as pl
+import yaml
 from openpyxl import Workbook
 from openpyxl.styles import PatternFill, Font, Alignment
 
@@ -60,28 +62,43 @@ from openpyxl.styles import PatternFill, Font, Alignment
 # PARAMÈTRES DE CONFIGURATION
 # ============================================================
 
-# True = Salaire brut (cle_unique) | False = Revenu salarial (matricule)
-MODE_SALAIRE_BRUT = True
+CONFIG_PATH = Path(__file__).parent / "config" / "pipeline_settings.yaml"
 
-# True = 2024-2025 | False = 2015 → dernière année disponible
-PERIODE_RECENTE   = True
+DEFAULT_METHODOLOGY = {
+    "mode_salaire_brut": True,
+    "periode_recente": True,
+    "inclure_zeros": True,
+    "seuil_wins": 0.01,
+    "min_obs_wins": 100,
+    "grades_valides": [
+        "A3", "A4", "A5", "A6", "A7",
+        "B1", "B3",
+        "C1", "C2", "C3",
+        "D1", "D2",
+    ],
+}
 
-# True = inclure zéros | False = salaire strictement > 0
-INCLURE_ZEROS     = True
 
-# Seuil de winsorisation (ex: 0.01 = écrêtage à P1/P99)
-# Mettre à None pour désactiver
-SEUIL_WINS        = 0.01
+def load_methodology_settings() -> dict:
+    if not CONFIG_PATH.exists():
+        return DEFAULT_METHODOLOGY.copy()
+    with open(CONFIG_PATH, "r", encoding="utf-8") as f:
+        config = yaml.safe_load(f) or {}
+    settings = DEFAULT_METHODOLOGY.copy()
+    settings.update(config.get("methodology", {}) or {})
+    return settings
 
-# Effectif minimum par cellule mois × grade × CITP
-MIN_OBS_WINS      = 100
 
-GRADES_METHODO = [
-    "A3", "A4", "A5", "A6", "A7",
-    "B1", "B3",
-    "C1", "C2", "C3",
-    "D1", "D2",
-]
+METHODOLOGY = load_methodology_settings()
+
+MODE_SALAIRE_BRUT = bool(METHODOLOGY["mode_salaire_brut"])
+PERIODE_RECENTE   = bool(METHODOLOGY["periode_recente"])
+INCLURE_ZEROS     = bool(METHODOLOGY["inclure_zeros"])
+SEUIL_WINS        = METHODOLOGY["seuil_wins"]
+if SEUIL_WINS is not None:
+    SEUIL_WINS = float(SEUIL_WINS)
+MIN_OBS_WINS      = int(METHODOLOGY["min_obs_wins"])
+GRADES_METHODO    = list(METHODOLOGY["grades_valides"])
 
 # ============================================================
 
