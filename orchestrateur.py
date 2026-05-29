@@ -22,6 +22,7 @@
 #   07b Indicateurs       (Excel technique)
 #   08  Rapport Sommaire  (Excel interactif final)
 #   09  Chargement PG     (Gold -> PostgreSQL)
+#   10  Validation SQL    (Vues Superset -> PostgreSQL)
 #
 # Modes d'exécution :
 #   python orchestrateur.py                → pipeline complet
@@ -40,6 +41,7 @@ from pathlib import Path
 
 sys.path.append(str(Path(__file__).resolve().parent / "src" / "pipeline"))
 from common.logging_config import setup_pipeline_logging
+from common.s3_client import create_s3_client
 
 # ============================================================
 # DÉFINITION DES ÉTAPES
@@ -146,6 +148,13 @@ ETAPES = [
         "description": "Charge le panel Gold final vers PostgreSQL (Superset).",
         "optionnelle": False,
     },
+    {
+        "id":          "10",
+        "nom":         "Validation SQL Superset",
+        "script":      "10_validate_superset_views.py",
+        "description": "Applique et teste les vues Superset directement dans PostgreSQL.",
+        "optionnelle": False,
+    },
 ]
 
 IDS_ETAPES = [e["id"] for e in ETAPES]
@@ -196,6 +205,27 @@ def sauvegarder_etat(completed: set[str]) -> None:
 def effacer_etat() -> None:
     if STATE_FILE.exists():
         STATE_FILE.unlink()
+
+
+def uploader_logs_minio(
+    log_file: Path | None,
+    rapport: Path | None,
+    debut_dt: datetime,
+) -> None:
+    """Upload non-bloquant du log et du rapport vers MinIO après un run."""
+    bucket = os.getenv("BUCKET_STAGING", "staging")
+    prefix = "panel_admin/logs/" + debut_dt.strftime("%Y-%m") + "/" + debut_dt.strftime("run_%Y%m%d_%H%M%S")
+    fichiers = [(log_file, f"{prefix}.log"), (rapport, f"{prefix}.md")]
+    fichiers = [(src, key) for src, key in fichiers if src and Path(src).exists()]
+    if not fichiers:
+        return
+    try:
+        s3 = create_s3_client()
+        for src, key in fichiers:
+            s3.upload_file(str(src), bucket, key)
+            logger.info(f"Log archivé : s3://{bucket}/{key}")
+    except Exception as exc:
+        logger.warning(f"Upload logs MinIO ignoré (non bloquant) : {exc}")
 
 
 def generer_rapport_md(
@@ -434,3 +464,4 @@ if __name__ == "__main__":
 
     rapport = generer_rapport_md(resultats, duree_totale, debut_dt, args, log_file, PIPELINE_DIR)
     logger.info(f"Rapport généré : {rapport}")
+    uploader_logs_minio(log_file, rapport, debut_dt)
