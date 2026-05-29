@@ -139,6 +139,7 @@ dt_citp         = lire_feuille("REVENU_CITP_Detail")
 dt_grade        = lire_feuille("REVENU_Grade_Detail")
 dt_grade_sexe   = lire_feuille("REVENU_Grade_Sexe")
 dt_multi        = lire_feuille("MULTI_Par_Grade_NbPostes")
+dt_multi_revenu = lire_feuille("REVENU_MultiPostes")
 dt_bareme       = lire_feuille("REVENU_Total_Bareme")
 dt_bareme_grade = lire_feuille("REVENU_Total_Bar_Grade")
 dt_bareme_sexe  = lire_feuille("REVENU_Total_Bar_Sexe")
@@ -498,6 +499,16 @@ if dt_multi is not None:
 
     current_row += 2
 
+    if dt_multi_revenu is not None:
+        lien_interne(ws_som, current_row, 1, "Statistiques revenu multi-postes", "MULTI_Revenus")
+        ws_som.cell(row=current_row, column=2, value="Effectif, P25, mediane, P75 et moyenne")
+        ws_som.cell(
+            row=current_row,
+            column=3,
+            value=int(dt_multi_revenu["Effectif"].sum()) if "Effectif" in dt_multi_revenu.columns else "",
+        )
+        current_row += 2
+
 # ────────────────────────────────────────────────────────────
 # SECTION 5 : BARÈME / GRILLE SALARIALE
 # ────────────────────────────────────────────────────────────
@@ -608,6 +619,14 @@ if dt_multi is not None:
         logger.info(f"  ✓ {sheet_name}")
 
 # ── Section 5 : Barème ──────────────────────────────────────
+if dt_multi_revenu is not None:
+    ws = wb.create_sheet("MULTI_Revenus")
+    merge_titre(ws, "MULTI-POSTES : STATISTIQUES DE REVENU", row=1, n_cols=max(len(dt_multi_revenu.columns), 5))
+    ajouter_lien_retour(ws, row=2)
+    ecrire_df_dans_feuille(ws, dt_multi_revenu, start_row=4)
+    ajuster_largeurs(ws, {1: 15, 2: 15, 3: 15, 4: 18, 5: 18, 6: 15, 7: 15, 8: 15, 9: 15})
+    logger.info("  ✓ MULTI_Revenus")
+
 if BAREME_DISPONIBLE:
     for b in baremes_liste:
         sheet_name = f"BAREME_{re.sub(r'[^A-Za-z0-9]', '_', b)[:25]}"

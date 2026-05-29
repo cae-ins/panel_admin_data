@@ -1,14 +1,14 @@
 # ============================================================
 # PANEL ADMIN — ÉTAPE 9 : CHARGEMENT PANEL → POSTGRESQL
 # ============================================================
-# Charge le fichier Gold panel_complet.parquet dans la table
+# Charge la base Gold enrichie par les statuts barème dans la table
 # `panel` de PostgreSQL (datalab_db).
 #
-# Prérequis : 06_compiler_panel.py doit avoir été exécuté
-#   (s3://gold/panel_admin/panel_complet.parquet doit exister).
+# Prérequis : 07a_imputer_hors_bareme.py doit avoir été exécuté
+#   (s3://gold/panel_admin/base_avec_statut_corrigee.parquet doit exister).
 #
 # Ce script :
-#   1. Télécharge panel_complet.parquet depuis MinIO (boto3)
+#   1. Télécharge la base Gold enrichie depuis MinIO (boto3)
 #   2. Le lit avec Polars
 #   3. Charge une table staging PostgreSQL
 #   4. Vérifie le nombre de lignes puis remplace la table finale en transaction
@@ -66,7 +66,10 @@ if _manquantes:
     logger.error(f"Variables d'environnement manquantes : {_manquantes} — vérifier le fichier .env")
     sys.exit(1)
 
-KEY_PANEL_COMPLET = "panel_admin/panel_complet.parquet"
+SOURCE_CANDIDATES = [
+    ("panel_admin/base_avec_statut_corrigee.parquet", "base avec statuts corriges"),
+    ("panel_admin/base_avec_statut.parquet", "base avec statuts non corrigee"),
+]
 
 # ============================================================
 # CHARGEMENT
@@ -75,21 +78,48 @@ KEY_PANEL_COMPLET = "panel_admin/panel_complet.parquet"
 logger.info("=" * 70)
 logger.info("CHARGEMENT PANEL → POSTGRESQL")
 logger.info("=" * 70)
-logger.info(f"Source  : s3://{BUCKET_GOLD}/{KEY_PANEL_COMPLET}")
+logger.info(f"Sources candidates : {', '.join(key for key, _ in SOURCE_CANDIDATES)}")
 logger.info(f"Cible   : {PG_HOST}:{PG_PORT}/{PG_DB}.{PG_SCHEMA}.{PG_TABLE}")
 
 # --- Étape 1 : téléchargement depuis MinIO ---
 logger.info("[1/4] Téléchargement depuis MinIO...")
 buf = io.BytesIO()
-s3.download_fileobj(BUCKET_GOLD, KEY_PANEL_COMPLET, buf)
+source_key = None
+source_label = None
+last_error = None
+for key, label in SOURCE_CANDIDATES:
+    try:
+        buf = io.BytesIO()
+        s3.download_fileobj(BUCKET_GOLD, key, buf)
+        source_key = key
+        source_label = label
+        break
+    except Exception as exc:
+        last_error = exc
+
+if source_key is None:
+    logger.error(f"      ✗ Aucune source Gold disponible : {last_error}")
+    sys.exit(1)
+
 buf.seek(0)
 taille_mb = len(buf.getvalue()) / 1024**2
-logger.info(f"      ✓  {taille_mb:.1f} MB téléchargés")
+logger.info(f"      ✓  {taille_mb:.1f} MB téléchargés depuis s3://{BUCKET_GOLD}/{source_key} ({source_label})")
 
 # --- Étape 2 : lecture Polars ---
 logger.info("[2/4] Lecture Polars...")
 df = pl.read_parquet(buf)
 logger.info(f"      ✓  {len(df):,} lignes × {len(df.columns)} colonnes")
+for col_requise in ["Statut", "Statut_Total", "montant_brut_sans_ind_sans_alloc", "montant_brut_total"]:
+    statut = "✓" if col_requise in df.columns else "✗ ABSENT"
+    logger.info(f"      {col_requise:<35} : {statut}")
+
+cols_manquantes = [
+    c for c in ["Statut", "Statut_Total", "montant_brut_sans_ind_sans_alloc", "montant_brut_total"]
+    if c not in df.columns
+]
+if cols_manquantes:
+    logger.error(f"Colonnes requises absentes pour Superset : {cols_manquantes}")
+    sys.exit(1)
 
 # --- Étape 3 : chargement PostgreSQL ---
 logger.info("[3/4] Connexion à PostgreSQL...")

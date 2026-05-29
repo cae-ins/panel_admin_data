@@ -76,6 +76,13 @@ SEUIL_WINS        = 0.01
 # Effectif minimum par cellule mois × grade × CITP
 MIN_OBS_WINS      = 100
 
+GRADES_METHODO = [
+    "A3", "A4", "A5", "A6", "A7",
+    "B1", "B3",
+    "C1", "C2", "C3",
+    "D1", "D2",
+]
+
 # ============================================================
 
 BUCKET_GOLD    = os.getenv("BUCKET_GOLD",    "gold")
@@ -360,6 +367,9 @@ logger.info("2. Filtrage sur Conforme au barème...")
 
 n_avant = len(base_avec_statut)
 base_gv = base_avec_statut.filter(pl.col("Statut") == "Conforme au barème")
+col_grade_filtre = next((c for c in ["GRADE", "GRADE_PRINCIPAL"] if c in base_gv.columns), None)
+if col_grade_filtre:
+    base_gv = base_gv.filter(pl.col(col_grade_filtre).is_in(GRADES_METHODO))
 n_apres = len(base_gv)
 pct = 100 * n_apres / n_avant if n_avant > 0 else 0.0
 logger.info(f"   {n_apres:,} / {n_avant:,} ({pct:.1f}% retenus pour les indicateurs)")
@@ -390,37 +400,21 @@ if "GRADE_SOURCE" in base_gv.columns:
 BAREME_DISPONIBLE = ("bareme" in base_gv.columns
                      and base_gv["bareme"].is_not_null().sum() > 0)
 
-# ── Exclusion GRADE D2 (catégorie en voie de disparition) ───────────
-# D2 est exclue de TOUS les indicateurs (grade, sexe, CITP, barème, ANSTAT).
-# Le filtre est appliqué ici une seule fois, avant toute agrégation.
-col_grade_d2 = next(
-    (c for c in ["GRADE", "GRADE_PRINCIPAL"] if c in base_gv.columns), None
-)
-if col_grade_d2:
-    n_avant_d2 = len(base_gv)
-    base_gv = base_gv.filter(pl.col(col_grade_d2) != "D2")
-    n_d2 = n_avant_d2 - len(base_gv)
-    if n_d2 > 0:
-        logger.info(f"\n   Exclusion D2 (catégorie en voie de disparition) : {n_d2:,} lignes retirées")
-        logger.info(f"   Base M1 après exclusion D2 : {len(base_gv):,} agents")
-    else:
-        logger.info(f"\n   ✓ Aucun agent D2 dans les conformes M1")
-
 # ── Filtrage Méthodo 2 (Statut_Total) ───────────────────────────────
 base_gv_m2 = pl.DataFrame()
 base_agrege_m2 = pl.DataFrame()
 if M2_ACTIVE:
     n_av_m2 = len(base_avec_statut)
     base_gv_m2 = base_avec_statut.filter(pl.col("Statut_Total") == "Conforme au barème")
-    # Exclusion D2
-    if col_grade_d2 and col_grade_d2 in base_gv_m2.columns:
-        base_gv_m2 = base_gv_m2.filter(pl.col(col_grade_d2) != "D2")
+    col_grade_m2 = next((c for c in ["GRADE", "GRADE_PRINCIPAL"] if c in base_gv_m2.columns), None)
+    if col_grade_m2:
+        base_gv_m2 = base_gv_m2.filter(pl.col(col_grade_m2).is_in(GRADES_METHODO))
     # Cast montant_brut_total en Float64
     base_gv_m2 = base_gv_m2.with_columns(
         pl.col("montant_brut_total").cast(pl.Float64, strict=False)
     )
     pct_m2 = 100 * len(base_gv_m2) / n_av_m2 if n_av_m2 > 0 else 0.0
-    logger.info(f"\n   Méthodo 2 — Statut_Total Conforme (sans D2) : {len(base_gv_m2):,} ({pct_m2:.1f}%)")
+    logger.info(f"\n   Méthodo 2 — Statut_Total Conforme : {len(base_gv_m2):,} ({pct_m2:.1f}%)")
 
 # ── Contrôle intégrité des conformes IMPUTÉS uniquement ─────────────
 # Les agents récupérés par la règle ±5% (OBSERVE) peuvent être
@@ -878,6 +872,9 @@ multi_detail = (
     .agg([
         pl.len().alias("Effectif"),
         pl.col("montant_brut_sans_ind_sans_alloc").mean().round(0).alias("Revenu_moyen"),
+        pl.col("montant_brut_sans_ind_sans_alloc").median().round(0).alias("Revenu_median"),
+        pl.col("montant_brut_sans_ind_sans_alloc").quantile(0.25, interpolation="nearest").round(0).alias("Revenu_p25"),
+        pl.col("montant_brut_sans_ind_sans_alloc").quantile(0.75, interpolation="nearest").round(0).alias("Revenu_p75"),
     ])
     .sort(["ANNEE", "MOIS_NUM", "GRADE_PRINCIPAL", "NB_POSTES"])
 )
@@ -907,11 +904,21 @@ distrib_postes = (
         pl.len().alias("Effectif"),
         (pl.len() * 100 / len(base_agrege)).round(2).alias("Pct"),
         pl.col("montant_brut_sans_ind_sans_alloc").mean().round(0).alias("Revenu_moyen"),
+        pl.col("montant_brut_sans_ind_sans_alloc").median().round(0).alias("Revenu_median"),
+        pl.col("montant_brut_sans_ind_sans_alloc").quantile(0.25, interpolation="nearest").round(0).alias("Revenu_p25"),
+        pl.col("montant_brut_sans_ind_sans_alloc").quantile(0.75, interpolation="nearest").round(0).alias("Revenu_p75"),
     ])
     .sort("NB_POSTES")
 )
 
+multi_stats_revenu = compute_indicators(
+    base_agrege.filter(pl.col("NB_POSTES") > 1),
+    ["ANNEE", "MOIS_NUM", "MOIS", "GRADE_PRINCIPAL"],
+    value_col_indic,
+)
+
 logger.info(f"   Multi-postes détail  : {len(multi_effectif)} lignes")
+logger.info(f"   Multi-postes revenu  : {len(multi_stats_revenu)} lignes")
 logger.info(f"   Distribution globale : {len(distrib_postes)} lignes")
 
 # ============================================================
@@ -989,6 +996,7 @@ if len(indic_citp) > 0:
 ecrire_feuille(wb, "Sal_Bareme_Moyen",   brut_moyen_wide)   # montant_brut_sans_ind_sans_alloc moyen (pivot grade)
 ecrire_feuille(wb, "Sal_Bareme_Median",  brut_median_wide)  # montant_brut_sans_ind_sans_alloc médian (pivot grade)
 ecrire_feuille(wb, "MULTI_Par_Grade_NbPostes",  multi_effectif)
+ecrire_feuille(wb, "REVENU_MultiPostes",         multi_stats_revenu)
 ecrire_feuille(wb, "MULTI_Distribution",        distrib_postes)
 
 # --- Feuilles barème M2 (conformes Statut_Total, montant_brut_total) ---

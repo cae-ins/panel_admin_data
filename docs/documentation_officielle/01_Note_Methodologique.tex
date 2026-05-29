@@ -1,9 +1,9 @@
 \documentclass[12pt,a4paper,french]{article}
 \input{preambule.tex}
 
-\title{Note Méthodologique : Calcul des indicateurs de salaire}
-\author{Data Engineering Team}
-\date{\today}
+\title{Note Methodologique\\Calcul des indicateurs de revenu des agents de l'administration publique}
+\author{ANSTAT -- Cellule d'Analyses Economiques (CAE)}
+\date{Version du 29 mai 2026}
 
 \begin{document}
 
@@ -11,97 +11,370 @@
 \tableofcontents
 \newpage
 
-\section{Introduction et Objectifs}
+\section{Objet de la note}
 
-Cette note décrit les principes méthodologiques retenus pour la constitution du panel administratif et le calcul des indicateurs statistiques de rémunération. L'objectif principal du projet est de transformer des données de paie mensuelles hétérogènes en une série temporelle cohérente, fiable et auditable, couvrant la période 2015-2025.
+La presente note decrit la methodologie retenue par l'ANSTAT, Cellule d'Analyses Economiques (CAE), pour produire les indicateurs de revenu issus des donnees administratives de paie. Elle formalise les definitions statistiques, le perimetre de population, les traitements de qualite et les familles d'indicateurs produits par le pipeline \textit{Panel Admin}.
 
-La méthodologie repose sur trois piliers : la rigueur de la sélection des données, la robustesse du traitement des valeurs manquantes et l'application de standards statistiques internationaux.
+Le document de reference est le fichier \texttt{Document\_Methodologie\_280526\_V1.docx}. La presente version complete cette definition metier par les traitements effectivement industrialises dans le pipeline : ingestion, normalisation, imputation, controle de conformite au bareme, production Excel et alimentation PostgreSQL/Superset.
 
-\section{Cadre de référence : Alignement GSBPM}
-
-Afin de garantir une qualité de niveau institutionnel, le pipeline est structuré selon le modèle \textbf{GSBPM (Generic Statistical Business Process Model)}. Ce cadre permet de décomposer le flux de production en phases logiques :
-
-\begin{itemize}
-    \item \textbf{Collecte (Phase 4)} : Centralisation des fichiers Excel sources sur MinIO.
-    \item \textbf{Traitement (Phase 5)} : Intégration des feuilles agents et codes (F1/F2), normalisation des nomenclatures ANSTAT et imputation des grades.
-    \item \textbf{Analyse (Phase 6)} : Calcul des agrégats et application des filtres statistiques (winsorisation).
-    \item \textbf{Diffusion (Phase 7)} : Production des rapports Excel structurés pour les utilisateurs métier.
-\end{itemize}
-
-\section{Critères de sélection et d'exclusion des données}
-
-La qualité des indicateurs dépend de la propreté de la base de sondage. Le pipeline applique des règles d'exclusion strictes pour éliminer les bruits de mesure.
-
-\subsection{La jointure F1$\leftrightarrow$F2 (INNER JOIN)}
-Chaque fichier de paie est composé de deux feuilles : l'identité des agents (F1) et le détail des codes de paie (F2). La méthodologie impose une jointure interne stricte (\textit{Inner Join}) sur la clé composite \texttt{MATRICULE||CODE\_ORGANISME}.
-
-\begin{infobox}[Raison du choix de l'INNER JOIN]
-    原始ement, le pipeline utilisait un \textit{Left Join}, ce qui incluait des individus présents uniquement en F1 (sans données F2). Cela créait une population incohérente où certains salaires étaient calculés par composantes et d'autres via le champ agrégé de F1. L'Inner Join garantit que chaque salaire est appuyé par un détail de codes vérifiable.
+\begin{infobox}[Principe directeur]
+Les indicateurs de revenu sont calcules uniquement sur des agents dont le grade, le secteur de bareme et le salaire sont exploitables. Le pipeline distingue deux mesures : le salaire strict de reference, construit a partir des codes postes communs, et le salaire brut total, correspondant au montant brut verse a l'agent.
 \end{infobox}
 
-\subsection{Le filtre des codes obligatoires}
-Au sein de la feuille F2, nous exigeons la présence simultanée des codes de base (notamment le \texttt{124\_f2} et le \texttt{421\_f2}). Ces codes représentent le socle de la rémunération brute. Un individu pour lequel ces montants seraient nuls ou absents est considéré comme ayant une paie incomplète ou une situation administrative particulière non représentative d'une activité normale ; il est donc écarté de la série Silver.
+\section{Sources et architecture de traitement}
 
-\subsection{Normalisation des situations administratives}
-Seuls les agents en position d'activité réelle sont conservés. Nous filtrons les données pour ne garder que les catégories :
+\subsection{Sources administratives}
+
+Les donnees sources sont les fichiers mensuels de paie de l'administration publique. Les fichiers comportent deux familles d'information :
+
 \begin{itemize}
-    \item \textbf{En activité} : situation normale.
-    \item \textbf{Régularisation d'indemnités} : paiements rétroactifs liés à l'activité.
-    \item \textbf{Demi-solde} : situations de maladie ou de disponibilité partielle.
+    \item une feuille principale, dite F1, contenant l'identite administrative de l'agent, sa position, son organisme, son emploi, son grade et les montants agreges de paie ;
+    \item une feuille de details, dite F2, contenant les codes postes de remuneration utilises pour reconstruire les composantes du salaire.
 \end{itemize}
-Toute autre situation (\textit{autre}) est jugée hors périmètre statistique pour le calcul des salaires moyens.
 
-\section{Calcul du Salaire Brut de Référence}
+Les tables de correspondance ANSTAT sont utilisees pour enrichir les donnees avec les nomenclatures administratives : organismes, emplois, grades, codes CITP et libelles metiers. Le referentiel \texttt{anstat\_2025} sert de reference pour les bornes de bareme.
 
-\subsection{Principe de comparabilité}
-Pour réduire l'effet des particularités de chaque grille salariale sur la moyenne, le calcul du salaire moyen des fonctionnaires se fait en tenant compte uniquement des codes postes de salaires que \textbf{tous les fonctionnaires ont en commun}.
+\subsection{Architecture Medallion}
 
-\subsection{Composantes retenues}
-Les codes postes communs retenus pour le calcul du salaire brut sont :
+La production suit une architecture en couches :
+
+\begin{description}
+    \item[Staging] depot des fichiers Excel et referentiels dans le stockage objet MinIO ;
+    \item[Bronze] conversion des fichiers sources en tables Parquet, conservation des colonnes brutes et premiere harmonisation technique ;
+    \item[Silver] normalisation des noms de colonnes, enrichissement ANSTAT, typage et controle des situations administratives ;
+    \item[Gold] construction du panel individu-periode, calcul des statuts de conformite au bareme, production des indicateurs et exports finaux.
+\end{description}
+
+Chaque etape est pilotee par l'orchestrateur \texttt{orchestrateur.py}. Les scripts de production sont situes dans \texttt{src/pipeline/}.
+
+\section{Unite statistique et periode}
+
+\subsection{Unite d'observation}
+
+L'unite statistique de base est l'agent observe sur une periode mensuelle. Le pipeline conserve les identifiants \texttt{matricule} et \texttt{cle\_unique}. La cle \texttt{cle\_unique} combine le matricule et le code organisme lorsqu'elle est disponible, afin de tenir compte des situations multi-postes.
+
+\subsection{Panel longitudinal}
+
+Les fichiers annuels sont fusionnes en un panel couvrant la periode 2015--2025, avec une observation par agent et par mois apres consolidation. Les variables temporelles produites sont notamment :
+
+\begin{itemize}
+    \item \texttt{mois\_annee}, periode source ;
+    \item \texttt{annee}, annee civile ;
+    \item \texttt{mois}, numero du mois ;
+    \item \texttt{MOIS\_NUM} et \texttt{MOIS}, variables d'exploitation dans les rapports.
+\end{itemize}
+
+\section{Definitions du revenu}
+
+\subsection{Mesure M1 : salaire strict de reference}
+
+La mesure principale du revenu mensuel moyen est le salaire strict de reference. Il est calcule en additionnant les quatre composantes communes suivantes :
+
 \begin{center}
-\begin{tabular}{cll}
+\begin{tabular}{cl}
     \toprule
-    \textbf{Code} & \textbf{Libellé (ANSTAT)} & \textbf{Rôle} \\
+    \textbf{Code poste} & \textbf{Composante} \\
     \midrule
-    \code{124\_F2} & Solde de Base & Composante principale \\
-    \code{228\_F2} & Indemnité de résidence & Composante commune \\
-    \code{271\_F2} & Prime de rendement & Composante commune \\
-    \code{421\_F2} & Majoration spécifique & Composante commune \\
-    \code{425\_F2} & Autre indemnité & Composante commune \\
+    124 & Salaire de base \\
+    228 & Indemnite de transport \\
+    271 & Indemnite de logement \\
+    425 & Indemnite de residence \\
     \bottomrule
 \end{tabular}
 \end{center}
 
-\subsection{Formule de calcul}
+La variable produite dans le pipeline est :
+
 \[
-\text{SALAIRE\_BRUT} = 124\_F2 + 228\_F2 + 271\_F2 + 421\_F2 + 425\_F2
+\texttt{montant\_brut\_sans\_ind\_sans\_alloc}
+= 124 + 228 + 271 + 425
 \]
-\textit{Note : Le code poste 135 est explicitement exclu car il représente des indemnités spécifiques non universelles.}
 
-\section{Traitement des valeurs manquantes et aberrantes}
+L'allocation familiale, code 421, est exclue. Elle n'entre pas dans la definition de l'agregat de masse salariale retenue par le manuel des statistiques de finances publiques du FMI et introduirait un biais lie a la situation familiale individuelle.
 
-\subsection{Imputation des grades en cascade}
-Le grade est extrait du champ \texttt{statut\_fonctionnaire} via regex. En cas de grade invalide (ex: "B7", "A", "NF"), nous appliquons une \textbf{imputation statistique par mode} en trois niveaux de repli :
+\subsection{Mesure M2 : salaire brut total}
+
+Une seconde mesure est produite pour les analyses par secteur de bareme. Elle correspond au montant brut total verse a l'agent, tous codes postes confondus :
+
+\[
+\texttt{montant\_brut\_total}
+= \sum \texttt{montant\_brut}
+\]
+
+Cette mesure inclut les indemnites, allocations et composantes specifiques presentes dans la paie. Elle permet d'apprecier le cout global et les revenus effectivement verses, tout en etant controlee par un bareme total de reference issu de \texttt{anstat\_2025}.
+
+\section{Population retenue}
+
+\subsection{Conditions generales}
+
+Les indicateurs de revenu sont calcules sur les agents remplissant les conditions suivantes :
+
 \begin{enumerate}
-    \item \textbf{P1 (Mois)} : Mode du grade pour cet emploi, pour ce mois précis.
-    \item \textbf{P2 (Année)} : Mode de l'emploi sur l'année civile.
-    \item \textbf{P3 (Global)} : Mode de l'emploi sur l'intégralité de l'historique 2015-2025.
+    \item etre rattache a un grade reconnu dans la nomenclature finale ;
+    \item disposer d'une information de salaire exploitable ;
+    \item appartenir a un secteur de bareme identifiable ;
+    \item avoir un salaire conforme aux bornes du bareme de son grade et de son secteur, apres application des regles operationnelles de controle et d'imputation decrites ci-dessous.
 \end{enumerate}
 
-\subsection{Winsorisation (Écrêtage statistique)}
-Pour neutraliser l'impact des valeurs extrêmes, nous pratiquons une \textbf{winsorisation au seuil de 1\%}.
-Les valeurs en dehors de l'intervalle $[P_1, P_{99}]$ sont ramenées aux bornes :
+\subsection{Grades retenus}
+
+Conformement au document methodologique, les grades retenus pour les indicateurs finaux sont :
+
 \[
-x_{wins} = \begin{cases}
-    P_1 & \text{si } x < P_1 \\
-    x & \text{si } P_1 \leq x \leq P_{99} \\
-    P_{99} & \text{si } x > P_{99}
+\{A3,A4,A5,A6,A7,B1,B3,C1,C2,C3,D1,D2\}
+\]
+
+Les autres grades et les statuts non fonctionnaires ne sont pas inclus dans les indicateurs finaux de revenu.
+
+\subsection{Exclusions explicites}
+
+Les exclusions suivantes sont appliquees :
+
+\begin{itemize}
+    \item l'organisme de code 59, correspondant aux representations nationales a l'etranger, est exclu de l'analyse, car les agents concernes beneficient d'indemnites specifiques non comparables a la grille salariale nationale ;
+    \item les agents dont le salaire strict est nul ou manquant sont exclus du calcul de conformite M1 ;
+    \item les observations dont le sexe est non interpretable sont exclues des ventilations par sexe ;
+    \item les agents assimiles au bareme police sont ecartes du calcul de conformite au bareme fonctionnaire lorsqu'ils sont identifies comme hors perimetre.
+\end{itemize}
+
+\section{Normalisation et qualite des donnees}
+
+\subsection{Normalisation des colonnes}
+
+Les noms de colonnes sources sont harmonises via des expressions regulieres definies dans \texttt{src/pipeline/config/pipeline\_settings.yaml}. Les variables standardisees incluent notamment :
+
+\begin{itemize}
+    \item identifiants : \texttt{matricule}, \texttt{cle\_unique} ;
+    \item position administrative : \texttt{situation\_normalisee}, \texttt{CODE\_ORGANISME}, \texttt{organisme}, \texttt{emploi} ;
+    \item nomenclatures : \texttt{Code\_CITP}, \texttt{Metier\_CITP}, \texttt{GRADE} ;
+    \item montants : \texttt{montant\_brut}, \texttt{montant\_net}, \texttt{montant\_brut\_total}, \texttt{montant\_brut\_sans\_ind\_sans\_alloc}.
+\end{itemize}
+
+\subsection{Controle de l'unicite}
+
+Lors de la compilation du panel, le pipeline verifie l'unicite des lignes par triplet :
+
+\[
+\texttt{matricule} \times \texttt{mois\_annee} \times \texttt{CODE\_ORGANISME}
+\]
+
+La presence de doublons intra-organisme provoque l'arret de l'etape de compilation, car elle rendrait incertain le calcul des montants mensuels.
+
+\subsection{Traitement des multi-postes}
+
+Un agent peut occuper plusieurs postes simultanement. Le pipeline calcule :
+
+\begin{itemize}
+    \item \texttt{NB\_POSTES}, nombre de postes identifies pour un agent sur un mois ;
+    \item \texttt{montant\_brut\_total}, somme du brut sur tous les postes ;
+    \item \texttt{montant\_brut\_sans\_ind\_sans\_alloc}, somme des composantes 124, 228, 271 et 425 sur les postes de l'agent.
+\end{itemize}
+
+Les indicateurs multi-postes sont produits par grade et par nombre de postes, avec effectif, moyenne, mediane, P25 et P75 lorsque la variable de revenu est disponible.
+
+\section{Imputations et corrections}
+
+\subsection{Imputation des grades}
+
+Le grade est extrait du champ \texttt{statut\_fonctionnaire}. Lorsque le grade est absent ou invalide, une imputation par cascade est appliquee :
+
+\begin{enumerate}
+    \item mode du grade pour le meme emploi, le meme mois et la meme annee ;
+    \item mode du grade pour le meme emploi et la meme annee ;
+    \item mode du grade pour le meme emploi sur tout l'historique.
+\end{enumerate}
+
+Chaque valeur est tracee par \texttt{GRADE\_SOURCE}, qui distingue les grades observes, imputes et non imputables.
+
+\subsection{Imputation des salaires}
+
+Les salaires manquants residuels sont imputes par combinaison de deux approches :
+
+\begin{itemize}
+    \item report temporel par agent lorsque l'historique le permet ;
+    \item mediane de cellules comparables selon une cascade de regroupements, par exemple emploi, grade, organisme et periode.
+\end{itemize}
+
+Les colonnes de source, telles que \texttt{montant\_brut\_SOURCE}, conservent la tracabilite de l'origine observee ou imputee.
+
+\subsection{Correction temporelle des agents hors bareme}
+
+Apres le calcul initial de conformite au bareme, les agents temporairement hors bareme peuvent etre corriges lorsqu'ils presentent entre un et cinq mois hors bareme. La valeur hors bareme est remplacee par la valeur conforme la plus proche dans le temps, dans le meme groupe :
+
+\[
+\texttt{matricule} \times \texttt{GRADE} \times \texttt{emploi} \times \texttt{CODE\_ORGANISME}
+\]
+
+La correction utilise un remplissage avant et arriere, avec priorite a la valeur passee en cas d'egalite de distance. Une valeur imputee n'est conservee que si elle respecte les bornes du bareme. Dans le cas contraire, la valeur observee est restauree et le statut hors bareme est conserve.
+
+\section{Conformite au bareme}
+
+\subsection{Referentiel}
+
+Le referentiel \texttt{anstat\_2025} fournit les salaires de reference par grade et secteur de bareme. Deux jeux de bornes sont calcules :
+
+\begin{itemize}
+    \item \texttt{min\_bareme} et \texttt{max\_bareme} pour la mesure M1 ;
+    \item \texttt{min\_total} et \texttt{max\_total} pour la mesure M2.
+\end{itemize}
+
+\subsection{Statut M1}
+
+Pour la mesure M1, le salaire strict est compare aux bornes du bareme :
+
+\[
+\texttt{Statut} =
+\begin{cases}
+\text{Conforme au bareme} & \text{si } min\_bareme \leq M1 \leq max\_bareme \\
+\text{Inferieur au minimum du bareme} & \text{si } M1 < min\_bareme \\
+\text{Superieur au maximum du bareme} & \text{si } M1 > max\_bareme \\
+\text{Cluster non determine} & \text{si les bornes sont absentes}
 \end{cases}
 \]
-Ce traitement est appliqué dynamiquement par cellule (Mois $\times$ Grade $\times$ CITP).
 
-\section{Analyse des individus "Hors Barème"}
+Une regle operationnelle de repechage classe comme conformes les agents legerement hors bornes lorsque l'ecart est inferieur a 5\% de la borne concernee.
 
-L'étape 07c permet de suivre longitudinalement les individus dont le salaire est incohérent avec la grille indiciaire. Ce diagnostic permet de distinguer les erreurs de grade des changements de situation administrative réels, garantissant ainsi la fiabilité de la série Gold.
+\subsection{Statut M2}
+
+Pour la mesure M2, le salaire brut total est compare aux bornes totales du referentiel :
+
+\[
+\texttt{Statut\_Total} =
+\begin{cases}
+\text{Conforme au bareme} & \text{si } min\_total \leq M2 \leq max\_total \\
+\text{Inferieur au minimum du bareme} & \text{si } M2 < min\_total \\
+\text{Superieur au maximum du bareme} & \text{si } M2 > max\_total \\
+\text{Cluster non determine} & \text{si les bornes sont absentes}
+\end{cases}
+\]
+
+La meme regle de repechage a moins de 5\% est appliquee avant l'imputation temporelle des cas hors bareme.
+
+\section{Secteurs de bareme}
+
+Les indicateurs par secteur utilisent une classification de bareme construite a partir des informations d'organisme et d'emploi. Les principales categories produites sont :
+
+\begin{itemize}
+    \item Enseignement primaire et secondaire ;
+    \item Enseignement superieur ;
+    \item Sante, avec distinction entre cadres superieurs et personnels techniques lorsque l'information le permet ;
+    \item Bareme general ;
+    \item Magistrats ;
+    \item Corps prefectoral ;
+    \item Greffiers ;
+    \item Corps diplomatique.
+\end{itemize}
+
+Ces categories alimentent les sorties \texttt{REVENU\_Total\_Bareme}, \texttt{REVENU\_Total\_Bar\_Grade} et \texttt{REVENU\_Total\_Bar\_Sexe}.
+
+\section{Indicateurs produits}
+
+\subsection{Indicateurs M1 : salaire strict}
+
+Les indicateurs M1 utilisent la variable \texttt{montant\_brut\_sans\_ind\_sans\_alloc} et la population dont \texttt{Statut = Conforme au bareme}. Ils sont produits selon les axes suivants :
+
+\begin{itemize}
+    \item revenu moyen par grade ;
+    \item revenu moyen par grade et par sexe ;
+    \item revenu moyen par groupe de professions CITP ;
+    \item revenu moyen des agents multi-postes par grade.
+\end{itemize}
+
+\subsection{Indicateurs M2 : salaire brut total}
+
+Les indicateurs M2 utilisent \texttt{montant\_brut\_total} et la population dont \texttt{Statut\_Total = Conforme au bareme}. Ils sont produits selon les axes suivants :
+
+\begin{itemize}
+    \item revenu moyen par secteur de bareme ;
+    \item revenu moyen par secteur de bareme et par grade ;
+    \item revenu moyen par secteur de bareme et par sexe.
+\end{itemize}
+
+\subsection{Statistiques calculees}
+
+Pour chaque indicateur, les statistiques suivantes sont produites :
+
+\begin{center}
+\begin{tabular}{ll}
+    \toprule
+    \textbf{Statistique} & \textbf{Definition} \\
+    \midrule
+    Effectif & Nombre d'observations dans le groupe \\
+    P25 & Premier quartile du revenu \\
+    Mediane & Deuxieme quartile du revenu \\
+    P75 & Troisieme quartile du revenu \\
+    Moyenne & Moyenne arithmetique du revenu \\
+    Minimum & Valeur minimale observee, dans les feuilles detaillees \\
+    Maximum & Valeur maximale observee, dans les feuilles detaillees \\
+    \bottomrule
+\end{tabular}
+\end{center}
+
+La moyenne arithmetique de base est :
+
+\[
+\overline{R}_{g,t} = \frac{\sum_{i \in g,t} R_i}{N_{g,t}}
+\]
+
+ou $R_i$ designe le revenu de l'agent $i$, $g$ le groupe d'analyse et $t$ la periode.
+
+\section{Sorties statistiques}
+
+\subsection{Fichier technique}
+
+L'etape \texttt{07b\_calcul\_indicateurs.py} produit un classeur technique contenant notamment :
+
+\begin{itemize}
+    \item \texttt{REVENU\_Grade\_Detail} ;
+    \item \texttt{REVENU\_Grade\_Sexe} ;
+    \item \texttt{REVENU\_CITP\_Detail} ;
+    \item \texttt{REVENU\_MultiPostes} ;
+    \item \texttt{REVENU\_Total\_Bareme} ;
+    \item \texttt{REVENU\_Total\_Bar\_Grade} ;
+    \item \texttt{REVENU\_Total\_Bar\_Sexe} ;
+    \item \texttt{RESUME\_STATUT} et \texttt{RESUME\_STATUT\_TOTAL}.
+\end{itemize}
+
+\subsection{Fichier final avec sommaire}
+
+L'etape \texttt{08\_creation\_fichier\_excel\_avec\_sommaire.py} produit un classeur final navigable. Il regroupe les indicateurs par grade, sexe, multi-postes, bareme et annexes ANSTAT.
+
+\subsection{Base PostgreSQL et Superset}
+
+L'etape \texttt{09\_charger\_panel\_pg.py} charge dans PostgreSQL la base Gold enrichie par les statuts de bareme. Les vues Superset doivent etre construites sur les colonnes de statut et sur les deux mesures distinctes M1 et M2 afin de conserver la coherence methodologique.
+
+\section{Tracabilite et controles}
+
+Le pipeline conserve les informations suivantes pour l'audit :
+
+\begin{itemize}
+    \item logs d'execution par etape ;
+    \item rapport de run produit par l'orchestrateur ;
+    \item sources des grades et salaires imputes ;
+    \item distributions des statuts M1 et M2 ;
+    \item controles d'integrite des valeurs imputees par rapport aux bornes de bareme.
+\end{itemize}
+
+\begin{warningbox}[Limites d'interpretation]
+Les indicateurs sont des statistiques administratives fondees sur les donnees de paie disponibles et les referentiels ANSTAT. Toute modification de nomenclature, de grille salariale ou de structure de fichier source doit etre documentee et, si necessaire, integree dans les referentiels avant comparaison temporelle.
+\end{warningbox}
+
+\section{Synthese methodologique}
+
+La chaine de production applique la sequence suivante :
+
+\begin{enumerate}
+    \item ingestion des fichiers de paie et referentiels ANSTAT ;
+    \item normalisation et enrichissement des donnees administratives ;
+    \item constitution d'un panel agent-periode ;
+    \item calcul des deux mesures de revenu M1 et M2 ;
+    \item exclusion des observations hors perimetre, notamment organisme 59 et grades non retenus ;
+    \item calcul des statuts de conformite au bareme ;
+    \item correction controlee des hors-bareme temporaires ;
+    \item production des indicateurs par grade, sexe, CITP, multi-postes et secteur de bareme ;
+    \item diffusion via Excel, PostgreSQL et Superset.
+\end{enumerate}
+
+Cette methodologie permet de concilier la definition statistique du revenu moyen avec les contraintes operationnelles des donnees administratives, tout en conservant la tracabilite necessaire a une production institutionnelle.
 
 \end{document}

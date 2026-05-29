@@ -51,17 +51,21 @@
 % ─── EN-TÊTES / PIEDS DE PAGE ────────────────────────────────
 \pagestyle{fancy}
 \fancyhf{}
-\fancyhead[L]{\small\color{darkgray} Panel Admin — Documentation de Production}
+\fancyhead[L]{\small\color{darkgray} Panel Admin -- Documentation de Production}
 \fancyhead[R]{\small\color{darkgray} \leftmark}
 \fancyfoot[C]{\small\color{darkgray} \thepage}
 \renewcommand{\headrulewidth}{0.4pt}
 \renewcommand{\footrulewidth}{0pt}
 
 % ─── TITRES ──────────────────────────────────────────────────
-\titleformat{\chapter}[block]
-  {\normalfont\huge\bfseries\color{primaryblue}}
-  {\thechapter.}{1em}{}
-  [\vspace{0.5ex}\titrule[1pt]]
+\makeatletter
+\@ifundefined{chapter}{}{
+  \titleformat{\chapter}[block]
+    {\normalfont\huge\bfseries\color{primaryblue}}
+    {\thechapter.}{1em}{}
+    [\vspace{0.5ex}\titlerule[1pt]]
+}
+\makeatother
 
 \titleformat{\section}[block]
   {\normalfont\Large\bfseries\color{primaryblue}}

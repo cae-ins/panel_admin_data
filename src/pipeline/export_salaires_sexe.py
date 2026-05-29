@@ -5,7 +5,7 @@
 #   Feuille 1 — Moyennes_Mensuelles     : ANNEE × MOIS × SEXE
 #   Feuille 2 — Moyennes_Trimestrielles : ANNEE × TRIMESTRE × SEXE
 #
-# Population : agents "Conformes au barème" (hors grade D2),
+# Population : agents "Conformes au barème",
 #              même filtrage que 07b_calcul_indicateurs.py.
 # Variable   : montant_brut_sans_ind_sans_alloc (codes 124+228+271+425)
 #
@@ -95,14 +95,6 @@ logger.info("2. Filtrage...")
 n_avant = len(base)
 base = base.filter(pl.col("Statut") == "Conforme au barème")
 logger.info(f"   Conformes au barème : {len(base):,} / {n_avant:,}")
-
-col_grade = next((c for c in ["GRADE", "GRADE_PRINCIPAL"] if c in base.columns), None)
-if col_grade:
-    n_av = len(base)
-    base = base.filter(pl.col(col_grade) != "D2")
-    n_d2 = n_av - len(base)
-    if n_d2 > 0:
-        logger.info(f"   Exclusion D2 : {n_d2:,} lignes retirées")
 
 if "SEXE_STD" not in base.columns:
     raise RuntimeError(
@@ -280,14 +272,14 @@ wb.remove(wb.active)
 
 ecrire_feuille(
     wb, "Moyennes_Mensuelles", mensuel,
-    titre="Salaires moyens par sexe — Moyennes mensuelles (conformes au barème, hors D2)",
+    titre="Salaires moyens par sexe — Moyennes mensuelles (conformes au barème)",
     largeurs={1: 10, 2: 10, 3: 14, 4: 12, 5: 12,
               6: 17, 7: 18, 8: 14, 9: 14, 10: 14, 11: 14},
 )
 
 ecrire_feuille(
     wb, "Moyennes_Trimestrielles", trimestriel,
-    titre="Salaires moyens par sexe — Moyennes trimestrielles (conformes au barème, hors D2)",
+    titre="Salaires moyens par sexe — Moyennes trimestrielles (conformes au barème)",
     largeurs={1: 10, 2: 12, 3: 16, 4: 12, 5: 12,
               6: 17, 7: 18, 8: 14, 9: 14, 10: 14, 11: 14},
 )
