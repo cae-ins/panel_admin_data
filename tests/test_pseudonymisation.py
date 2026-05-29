@@ -1,7 +1,7 @@
 import os
 import pytest
 
-from pseudonymisation_cnps_anstat import (
+from src.utils.pseudonymisation_cnps_anstat import (
     generer_id_anstat,
     generer_id_anstat_pbkdf2,
     charger_cle_secrete_depuis_env,

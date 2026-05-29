@@ -3,6 +3,8 @@
 **/.env
 cle_secrete_anstat.txt
 **/*.txt
+!requirements.txt
+!src/pipeline/requirements.txt
 
 # --- Données et Résultats ---
 data/

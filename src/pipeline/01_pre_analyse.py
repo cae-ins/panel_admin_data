@@ -16,6 +16,7 @@
 
 import os
 import io
+import sys
 import tempfile
 from common.s3_client import create_s3_client
 from common.logging_config import setup_pipeline_logging
@@ -285,6 +286,12 @@ if changements_f2:
                            "p_apres": chg["periode_apres"],
                            "type": "APPARU", "code": code})
     sauvegarder_rapport(pl.DataFrame(lignes), "changements_codes_f2.csv")
+
+if erreurs:
+    logger.error(
+        f"PRÉ-ANALYSE INCOMPLÈTE — {len(erreurs)} fichier(s) en erreur : {', '.join(erreurs)}"
+    )
+    sys.exit(1)
 
 logger.info("✓ PRÉ-ANALYSE TERMINÉE")
 logger.info(f"Rapports disponibles dans : s3://{BUCKET}/{PREFIX_SORTIE}/")

@@ -24,6 +24,7 @@ import gc
 import io
 import os
 import re
+import sys
 import tempfile
 import unicodedata
 from pathlib import Path
@@ -456,5 +457,10 @@ logger.info(f"Erreurs                       : {nb_err}")
 logger.info(f"Années Silver produites       : {len(frames_par_annee)}")
 logger.info(f"Fichiers Silver disponibles dans : s3://{BUCKET_SILVER}/{PREFIX_SILVER}/")
 logger.info(f"Rapport matching : s3://{BUCKET_STAGING}/{PREFIX_VALID}/taux_matching_anstat_par_periode.csv")
+
+if nb_err > 0:
+    logger.error(f"SILVER INCOMPLET — {nb_err} période(s) en erreur")
+    sys.exit(1)
+
 logger.info("✓ SILVER TERMINÉ")
 logger.info("Prochaine étape : exécuter 04_validation_silver.py")

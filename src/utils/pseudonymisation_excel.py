@@ -21,10 +21,16 @@ try:
 except Exception:  # pragma: no cover - optional dependency
     pd = None
 
-from pseudonymisation_cnps_anstat import (
-    charger_cle_secrete_depuis_env,
-    generer_id_anstat,
-)
+try:
+    from .pseudonymisation_cnps_anstat import (
+        charger_cle_secrete_depuis_env,
+        generer_id_anstat,
+    )
+except ImportError:  # pragma: no cover - execution directe du script
+    from pseudonymisation_cnps_anstat import (
+        charger_cle_secrete_depuis_env,
+        generer_id_anstat,
+    )
 
 
 def read_values_from_file(path: str, column: str) -> Iterable[str]:

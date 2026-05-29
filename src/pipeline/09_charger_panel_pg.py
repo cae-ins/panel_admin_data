@@ -10,8 +10,8 @@
 # Ce script :
 #   1. Télécharge panel_complet.parquet depuis MinIO (boto3)
 #   2. Le lit avec Polars
-#   3. Recrée la table `panel` dans PostgreSQL (DROP + COPY)
-#   4. Vérifie le nombre de lignes chargées
+#   3. Charge une table staging PostgreSQL
+#   4. Vérifie le nombre de lignes puis remplace la table finale en transaction
 #
 # Après cette étape :
 #   bash src/pipeline/10_refresh_superset.sh
@@ -27,11 +27,11 @@
 import io
 import os
 import sys
-import csv
 from common.s3_client import create_s3_client, get_required_env, load_pipeline_env
 from common.logging_config import setup_pipeline_logging
 import polars as pl
 import psycopg2
+from psycopg2 import sql
 
 load_pipeline_env()
 
@@ -46,6 +46,9 @@ PG_PORT     = os.getenv("PG_PORT", "5432")
 PG_DB       = get_required_env("PG_DB")
 PG_USER     = get_required_env("PG_USER")
 PG_PASSWORD = get_required_env("PG_PASSWORD")
+PG_SCHEMA   = os.getenv("PG_SCHEMA", "public")
+PG_TABLE    = os.getenv("PG_TABLE", "panel")
+PG_STAGING_TABLE = os.getenv("PG_STAGING_TABLE", f"{PG_TABLE}__staging")
 
 # Vérification que les variables critiques sont bien définies
 _manquantes = [k for k, v in {
@@ -64,7 +67,6 @@ if _manquantes:
     sys.exit(1)
 
 KEY_PANEL_COMPLET = "panel_admin/panel_complet.parquet"
-PG_TABLE          = "panel"
 
 # ============================================================
 # CHARGEMENT
@@ -74,7 +76,7 @@ logger.info("=" * 70)
 logger.info("CHARGEMENT PANEL → POSTGRESQL")
 logger.info("=" * 70)
 logger.info(f"Source  : s3://{BUCKET_GOLD}/{KEY_PANEL_COMPLET}")
-logger.info(f"Cible   : {PG_HOST}:{PG_PORT}/{PG_DB}.{PG_TABLE}")
+logger.info(f"Cible   : {PG_HOST}:{PG_PORT}/{PG_DB}.{PG_SCHEMA}.{PG_TABLE}")
 
 # --- Étape 1 : téléchargement depuis MinIO ---
 logger.info("[1/4] Téléchargement depuis MinIO...")
@@ -106,7 +108,7 @@ except Exception as e:
     logger.error(f"      ✗ Impossible de se connecter à PostgreSQL : {e}")
     sys.exit(1)
 
-logger.info(f"[4/4] Chargement dans {PG_TABLE} (DROP + CREATE + COPY)...")
+logger.info(f"[4/4] Chargement dans {PG_SCHEMA}.{PG_STAGING_TABLE}, puis swap transactionnel...")
 try:
     # Mapping types Polars → PostgreSQL
     TYPE_MAP = {
@@ -120,23 +122,70 @@ try:
 
     col_defs = []
     for name, dtype in zip(df.columns, df.dtypes):
-        pg_type = TYPE_MAP.get(type(dtype), "TEXT")
-        col_defs.append(f'"{name}" {pg_type}')
+        pg_type = TYPE_MAP.get(dtype, "TEXT")
+        col_defs.append(
+            sql.SQL("{} {}").format(sql.Identifier(name), sql.SQL(pg_type))
+        )
 
-    cur.execute(f'DROP TABLE IF EXISTS {PG_TABLE};')
-    cur.execute(f'CREATE TABLE {PG_TABLE} ({", ".join(col_defs)});')
+    cur.execute(sql.SQL("CREATE SCHEMA IF NOT EXISTS {}").format(sql.Identifier(PG_SCHEMA)))
+    cur.execute(
+        sql.SQL("DROP TABLE IF EXISTS {}.{}").format(
+            sql.Identifier(PG_SCHEMA),
+            sql.Identifier(PG_STAGING_TABLE),
+        )
+    )
+    cur.execute(
+        sql.SQL("CREATE TABLE {}.{} ({})").format(
+            sql.Identifier(PG_SCHEMA),
+            sql.Identifier(PG_STAGING_TABLE),
+            sql.SQL(", ").join(col_defs),
+        )
+    )
 
     # COPY via buffer CSV en mémoire
     csv_buf = io.StringIO()
     df.write_csv(csv_buf, null_value="")
     csv_buf.seek(0)
+    colonnes = sql.SQL(", ").join(sql.Identifier(name) for name in df.columns)
     cur.copy_expert(
-        f"COPY {PG_TABLE} FROM STDIN WITH (FORMAT CSV, HEADER TRUE, NULL '')",
+        sql.SQL("COPY {}.{} ({}) FROM STDIN WITH (FORMAT CSV, HEADER TRUE, NULL '')")
+        .format(
+            sql.Identifier(PG_SCHEMA),
+            sql.Identifier(PG_STAGING_TABLE),
+            colonnes,
+        )
+        .as_string(conn),
         csv_buf,
     )
 
+    cur.execute(
+        sql.SQL("SELECT COUNT(*) FROM {}.{}").format(
+            sql.Identifier(PG_SCHEMA),
+            sql.Identifier(PG_STAGING_TABLE),
+        )
+    )
+    nb_staging = cur.fetchone()[0]
+    if nb_staging != len(df):
+        raise RuntimeError(
+            f"Contrôle staging échoué : {nb_staging:,} lignes PostgreSQL vs {len(df):,} lignes Parquet"
+        )
+
+    cur.execute(
+        sql.SQL("DROP TABLE IF EXISTS {}.{}").format(
+            sql.Identifier(PG_SCHEMA),
+            sql.Identifier(PG_TABLE),
+        )
+    )
+    cur.execute(
+        sql.SQL("ALTER TABLE {}.{} RENAME TO {}").format(
+            sql.Identifier(PG_SCHEMA),
+            sql.Identifier(PG_STAGING_TABLE),
+            sql.Identifier(PG_TABLE),
+        )
+    )
+
     conn.commit()
-    logger.info("      ✓ Chargement réussi")
+    logger.info("      ✓ Chargement et swap réussis")
 
 except Exception as e:
     conn.rollback()
@@ -146,13 +195,23 @@ except Exception as e:
     sys.exit(1)
 
 # --- Vérification ---
-cur.execute(f"SELECT COUNT(*) FROM {PG_TABLE};")
+cur.execute(
+    sql.SQL("SELECT COUNT(*) FROM {}.{}").format(
+        sql.Identifier(PG_SCHEMA),
+        sql.Identifier(PG_TABLE),
+    )
+)
 nb_lignes = cur.fetchone()[0]
 
 cur.execute(
-    f"SELECT MIN(annee || '-' || LPAD(mois::TEXT,2,'0')), "
-    f"       MAX(annee || '-' || LPAD(mois::TEXT,2,'0')) "
-    f"FROM {PG_TABLE};"
+    sql.SQL(
+        "SELECT MIN(annee || '-' || LPAD(mois::TEXT,2,'0')), "
+        "       MAX(annee || '-' || LPAD(mois::TEXT,2,'0')) "
+        "FROM {}.{}"
+    ).format(
+        sql.Identifier(PG_SCHEMA),
+        sql.Identifier(PG_TABLE),
+    )
 )
 periode = cur.fetchone()
 

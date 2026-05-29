@@ -1,0 +1,35 @@
+# ============================================================
+# PANEL ADMIN — Dépendances Python
+# ============================================================
+# Couvre : orchestrateur.py + tous les scripts src/pipeline/
+# Généré le : 2026-05-22
+# ============================================================
+
+# --- Données & traitement ---
+polars>=1.0.0
+fastexcel>=0.10.0          # lecture Excel rapide via polars (pl.read_excel)
+openpyxl>=3.1.0            # écriture Excel + lecture fallback
+
+# --- Stockage objet (MinIO / S3) ---
+boto3>=1.34.0
+
+# --- Base de données ---
+psycopg2-binary>=2.9.9     # chargement Gold -> PostgreSQL (étape 09)
+
+# --- Configuration ---
+python-dotenv>=1.0.0       # chargement des variables d'environnement .env
+PyYAML>=6.0.1              # mapping de colonnes (étape 03 bronze->silver)
+
+# ============================================================
+# Dépendances optionnelles (non requises pour le pipeline ETL)
+# ============================================================
+
+# Dashboard interactif (app_hors_bareme_dashboard.py)
+# streamlit>=1.35.0
+# plotly>=5.22.0
+
+# Utilitaires (src/utils/)
+pandas>=2.2.0
+
+# Tests
+pytest>=8.2.0

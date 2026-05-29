@@ -46,14 +46,17 @@
 
 import gc
 import io
+import json
 import os
 import re
 import tempfile
 import unicodedata
+from pathlib import Path
 from common.s3_client import create_s3_client
 from common.logging_config import setup_pipeline_logging
 from common.polars_s3 import lire_parquet_s3
 import polars as pl
+import yaml
 from openpyxl import Workbook
 from openpyxl.styles import PatternFill, Font, Alignment
 from openpyxl.utils import get_column_letter
@@ -62,22 +65,45 @@ from openpyxl.utils import get_column_letter
 # PARAMÈTRES DE CONFIGURATION
 # ============================================================
 
+CONFIG_PATH = Path(__file__).parent / "config" / "pipeline_settings.yaml"
+
+DEFAULT_METHODOLOGY = {
+    "mode_salaire_brut": True,
+    "periode_recente": True,
+    "inclure_zeros": True,
+    "seuil_wins": 0.01,
+    "min_obs_wins": 100,
+}
+
+
+def load_methodology_settings() -> dict:
+    if not CONFIG_PATH.exists():
+        return DEFAULT_METHODOLOGY.copy()
+    with open(CONFIG_PATH, "r", encoding="utf-8") as f:
+        config = yaml.safe_load(f) or {}
+    settings = DEFAULT_METHODOLOGY.copy()
+    settings.update(config.get("methodology", {}) or {})
+    return settings
+
+
+METHODOLOGY = load_methodology_settings()
+
 # True = Salaire brut (cle_unique) | False = Revenu salarial (matricule)
-MODE_SALAIRE_BRUT = True
+MODE_SALAIRE_BRUT = bool(METHODOLOGY["mode_salaire_brut"])
 
 # True = 2024-2025 | False = 2015 → dernière année disponible
-PERIODE_RECENTE   = True
+PERIODE_RECENTE = bool(METHODOLOGY["periode_recente"])
 
 # True = inclure zéros | False = salaire strictement > 0
-INCLURE_ZEROS     = True
+INCLURE_ZEROS = bool(METHODOLOGY["inclure_zeros"])
 
-# Seuil de winsorisation (ex: 0.01 = écrêtage à P1/P99)
-# Mettre à None pour désactiver
-SEUIL_WINS        = 0.01
+# Seuil de winsorisation (ex: 0.01 = écrêtage à P1/P99), None pour désactiver.
+SEUIL_WINS = METHODOLOGY["seuil_wins"]
+if SEUIL_WINS is not None:
+    SEUIL_WINS = float(SEUIL_WINS)
 
-# Effectif minimum par cellule mois × grade × CITP pour appliquer la
-# winsorisation CITP. En dessous, repli sur mois × grade uniquement.
-MIN_OBS_WINS      = 100
+# Effectif minimum par cellule mois × grade × CITP avant repli mois × grade.
+MIN_OBS_WINS = int(METHODOLOGY["min_obs_wins"])
 
 # ============================================================
 
@@ -119,6 +145,7 @@ KEY_ANSTAT_2025 = "panel_admin/references/anstat_2025.txt.xlsx"
 
 # Clé de sortie base_avec_statut
 KEY_BASE_AVEC_STATUT = f"{PREFIX_PANEL}/base_avec_statut.parquet"
+KEY_PARAMETRES_METHODO = f"{PREFIX_EXPORTS}/parametres_methodologiques_07.json"
 
 # --- CLIENT S3 ---
 s3 = create_s3_client()
@@ -127,7 +154,39 @@ logger, _ = setup_pipeline_logging("07_calcul_indicateur")
 logger.info("=" * 70)
 logger.info("STATUT BARÈME — Calcul du statut (Conforme/Inférieur/Supérieur)")
 logger.info(f"  Période : {'2024-2025' if PERIODE_RECENTE else '2015 → récent'}")
+logger.info(
+    "Paramètres méthodologiques",
+    extra={
+        "config_path": str(CONFIG_PATH),
+        "mode_salaire_brut": MODE_SALAIRE_BRUT,
+        "periode_recente": PERIODE_RECENTE,
+        "inclure_zeros": INCLURE_ZEROS,
+        "seuil_wins": SEUIL_WINS,
+        "min_obs_wins": MIN_OBS_WINS,
+    },
+)
 logger.info("=" * 70)
+
+s3.put_object(
+    Bucket=BUCKET_STAGING,
+    Key=KEY_PARAMETRES_METHODO,
+    Body=json.dumps(
+        {
+            "script": "07_calcul_indicateur.py",
+            "config_path": str(CONFIG_PATH),
+            "methodology": {
+                "mode_salaire_brut": MODE_SALAIRE_BRUT,
+                "periode_recente": PERIODE_RECENTE,
+                "inclure_zeros": INCLURE_ZEROS,
+                "seuil_wins": SEUIL_WINS,
+                "min_obs_wins": MIN_OBS_WINS,
+            },
+        },
+        ensure_ascii=False,
+        indent=2,
+    ).encode("utf-8"),
+)
+logger.info(f"Paramètres méthodologiques sauvegardés : s3://{BUCKET_STAGING}/{KEY_PARAMETRES_METHODO}")
 
 # ============================================================
 # FONCTIONS UTILITAIRES

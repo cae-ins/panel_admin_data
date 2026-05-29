@@ -20,6 +20,7 @@
 import io
 import os
 import re
+import sys
 import tempfile
 import unicodedata
 from common.s3_client import create_s3_client
@@ -234,5 +235,10 @@ logger.info("=" * 70)
 logger.info(f"Fichiers traités avec succès : {nb_ok}")
 logger.info(f"Erreurs                      : {nb_err}")
 logger.info(f"Fichiers Parquet disponibles dans : s3://{BUCKET_BRONZE}/{PREFIX_BRONZE}/")
+
+if nb_err > 0:
+    logger.error(f"INGESTION BRONZE INCOMPLÈTE — {nb_err} fichier(s) en erreur")
+    sys.exit(1)
+
 logger.info("✓ INGESTION BRONZE TERMINÉE")
 logger.info("Prochaine étape : exécuter 03_bronze_to_silver.py")

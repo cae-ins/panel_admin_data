@@ -1,5 +1,14 @@
 # Configuration du pipeline Panel Admin
 
+# Paramètres méthodologiques de l'étape 07 (calcul des statuts barème).
+# Ces valeurs remplacent les constantes anciennement codées en dur dans le script.
+methodology:
+  mode_salaire_brut: true      # true = agrégation par cle_unique ; false = matricule
+  periode_recente: true        # true = 2024-2025 ; false = 2015 -> dernière année disponible
+  inclure_zeros: true          # true = inclure salaires nuls/NA ; false = salaire > 0
+  seuil_wins: 0.01             # null pour désactiver la winsorisation
+  min_obs_wins: 100            # seuil de repli mois x grade si cellule CITP trop petite
+
 # Mapping des colonnes brutes vers les noms standardisés
 # Les valeurs sont des expressions régulières (regex) cherchées dans les noms de colonnes normalisés.
 column_mapping:

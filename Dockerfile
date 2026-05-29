@@ -9,13 +9,14 @@ RUN apt-get update && apt-get install -y \
 WORKDIR /app
 
 # Copie et installation des requirements
-COPY src/pipeline/requirements.txt .
+COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
 # Copie du pipeline industrialisé
 COPY src/pipeline/*.py   src/pipeline/
 COPY src/pipeline/*.sh   src/pipeline/
 COPY src/pipeline/common src/pipeline/common
+COPY src/pipeline/config src/pipeline/config
 COPY orchestrateur.py .
 
 # Configuration par défaut

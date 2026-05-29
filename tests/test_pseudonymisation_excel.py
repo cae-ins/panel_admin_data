@@ -2,8 +2,8 @@ import os
 import csv
 import tempfile
 
-from tools import pseudonymisation_excel as pe
-from pseudonymisation_cnps_anstat import generer_id_anstat
+from src.utils import pseudonymisation_excel as pe
+from src.utils.pseudonymisation_cnps_anstat import generer_id_anstat
 
 
 def test_generate_mapping_and_write_csv():

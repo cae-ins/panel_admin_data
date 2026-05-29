@@ -49,7 +49,7 @@ Le projet adopte une architecture "Medallion" pour garantir la traçabilité et 
 
 ### Installation
 ```bash
-pip install -r src/pipeline/requirements.txt
+pip install -r requirements.txt
 ```
 
 ### Exécution du Pipeline
