@@ -382,7 +382,7 @@ if dt_grade_sexe is not None and "SEXE_STD" in dt_grade_sexe.columns:
 # --- Section 4 : Multi-postes ---
 grades_multi: list[str] = []
 if dt_multi is not None and "GRADE_PRINCIPAL" in dt_multi.columns:
-    grades_multi = sorted(dt_multi["GRADE_PRINCIPAL"].unique().to_list())
+    grades_multi = sorted(dt_multi["GRADE_PRINCIPAL"].drop_nulls().unique().to_list())
     print(f"  ✓ Multi-postes : {len(grades_multi)} grades")
 
 # --- Section 5 : Barème ---
@@ -436,8 +436,7 @@ def creer_sommaire_annee(wb: Workbook, annee: int) -> None:
 
     titre_global = (
         f"INDICATEURS SALAIRES {annee} — "
-        f"{'Salaire brut' if MODE_SALAIRE_BRUT else 'Revenu salarial'} | "
-        f"M1 (Conformes barème) + M2 (Conformes barème total)"
+        f"{'Salaire brut' if MODE_SALAIRE_BRUT else 'Revenu salarial'}"
     )
     merge_titre(ws_som, titre_global, row=1, n_cols=5, fill=FILL_TITLE, font=FONT_TITLE)
     ws_som.cell(row=2, column=1,
@@ -449,7 +448,7 @@ def creer_sommaire_annee(wb: Workbook, annee: int) -> None:
     # ── Section 1 : CITP — M1 conformes ─────────────────────────────────
     if dt_citp is not None and "ANNEE" in dt_citp.columns:
         merge_titre(ws_som,
-                    f"📊 SECTION 1 : CLASSIFICATION PAR GRAND GROUPE CITP — {annee} (M1 conformes)",
+                    f"📊 SECTION 1 : CLASSIFICATION PAR GRAND GROUPE CITP — {annee}",
                     row=current_row, n_cols=5, fill=FILL_SUBTITLE, font=FONT_SUBTITLE)
         current_row += 1
         ecrire_entetes(ws_som, ["Code", "Grand Groupe CITP", "Effectif (M1)", "Nb métiers", ""],
@@ -472,7 +471,7 @@ def creer_sommaire_annee(wb: Workbook, annee: int) -> None:
     # ── Section 2 : Grade — M1 conformes ─────────────────────────────────
     if dt_grade is not None and "ANNEE" in dt_grade.columns:
         merge_titre(ws_som,
-                    f"📊 SECTION 2 : CLASSIFICATION PAR GRADE — {annee} (M1 conformes)",
+                    f"📊 SECTION 2 : CLASSIFICATION PAR GRADE — {annee}",
                     row=current_row, n_cols=5, fill=FILL_SUBTITLE, font=FONT_SUBTITLE)
         current_row += 1
         ecrire_entetes(ws_som, ["Grade", "Description", "Effectif (M1)", "Revenu moyen (M1)", ""],
@@ -499,7 +498,7 @@ def creer_sommaire_annee(wb: Workbook, annee: int) -> None:
     # ── Section 3 : Sexe — M1 conformes ─────────────────────────────────
     if dt_grade_sexe is not None and "ANNEE" in dt_grade_sexe.columns:
         merge_titre(ws_som,
-                    f"📊 SECTION 3 : CLASSIFICATION PAR SEXE — {annee} (M1 conformes)",
+                    f"📊 SECTION 3 : CLASSIFICATION PAR SEXE — {annee}",
                     row=current_row, n_cols=5, fill=FILL_SUBTITLE, font=FONT_SUBTITLE)
         current_row += 1
         ecrire_entetes(ws_som, ["Sexe", "Description", "Effectif (M1)", "Revenu moyen (M1)", ""],
@@ -524,13 +523,13 @@ def creer_sommaire_annee(wb: Workbook, annee: int) -> None:
     # ── Section 4 : Multi-postes — TOUS agents ───────────────────────────
     if dt_multi is not None and "ANNEE" in dt_multi.columns:
         merge_titre(ws_som,
-                    f"📊 SECTION 4 : MULTI-POSTES PAR GRADE — {annee} (tous agents)",
+                    f"📊 SECTION 4 : MULTI-POSTES PAR GRADE — {annee}",
                     row=current_row, n_cols=5, fill=FILL_SUBTITLE, font=FONT_SUBTITLE)
         current_row += 1
         ecrire_entetes(ws_som, ["Grade", "Description", "Mono-postes", "Multi-postes", ""],
                        current_row)
         current_row += 1
-        grades_multi_an = sorted(dt_multi["GRADE_PRINCIPAL"].unique().to_list()) if "GRADE_PRINCIPAL" in dt_multi.columns else []
+        grades_multi_an = sorted(dt_multi["GRADE_PRINCIPAL"].drop_nulls().unique().to_list()) if "GRADE_PRINCIPAL" in dt_multi.columns else []
         for grade_val in grades_multi_an:
             sub = dt_multi.filter(
                 (pl.col("GRADE_PRINCIPAL") == grade_val) & (pl.col("ANNEE") == annee)
@@ -554,7 +553,7 @@ def creer_sommaire_annee(wb: Workbook, annee: int) -> None:
     # ── Section 5 : Barème — M2 conformes ───────────────────────────────
     if BAREME_DISPONIBLE and dt_bareme is not None and "ANNEE" in dt_bareme.columns:
         merge_titre(ws_som,
-                    f"📊 SECTION 5 : CLASSIFICATION PAR BARÈME / GRILLE SALARIALE — {annee} (M2 conformes)",
+                    f"📊 SECTION 5 : CLASSIFICATION PAR BARÈME / GRILLE SALARIALE — {annee}",
                     row=current_row, n_cols=5, fill=FILL_SUBTITLE, font=FONT_SUBTITLE)
         current_row += 1
         ecrire_entetes(ws_som, ["Barème / Grille salariale", "Effectif (M2)",
