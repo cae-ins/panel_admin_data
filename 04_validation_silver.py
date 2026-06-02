@@ -276,8 +276,34 @@ print(f"Années validées  : {len(cles_silver)}")
 print(f"Lignes totales   : {nb_total_global:,}")
 print(f"Agents uniques   : {len(matricules_vus):,}")
 if periodes_vues:
-    print(f"Périodes         : {min(periodes_vues)} à {max(periodes_vues)} "
-          f"({len(set(periodes_vues))} périodes)")
+    periodes_set = set(periodes_vues)
+
+    # mois_annee format : MMYYYY (ex. "012015")
+    # Clé de tri chronologique : MMYYYY → YYYYMM
+    def _cle_chrono(p: str) -> str:
+        return p[2:] + p[:2]   # "032026" → "202603"
+
+    periode_min = min(periodes_set, key=_cle_chrono)
+    periode_max = max(periodes_set, key=_cle_chrono)
+
+    annees_mois: dict[str, list[str]] = {}
+    for p in periodes_set:
+        annee = p[2:]   # 4 derniers chars = année
+        annees_mois.setdefault(annee, []).append(p)
+
+    annee_max = max(annees_mois)   # tri sur chaîne "YYYY" — correct
+    mois_derniere = sorted(annees_mois[annee_max])
+    nb_mois_derniere = len(mois_derniere)
+
+    print(f"Périodes         : {periode_min} à {periode_max} "
+          f"({len(periodes_set)} périodes)")
+
+    if nb_mois_derniere < 12:
+        print(f"  ⚠️  Dernière année ({annee_max}) : {nb_mois_derniere}/12 mois disponibles"
+              f"  [{', '.join(m[:2] for m in mois_derniere)}]"
+              f"  — données en cours de collecte")
+    else:
+        print(f"  ✓ Dernière année ({annee_max}) : 12/12 mois disponibles")
 print()
 print("=" * 70)
 print("✓ VALIDATION TERMINÉE")
