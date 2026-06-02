@@ -1059,6 +1059,13 @@ if PERIODE_RECENTE and "ANNEE" in _bms.columns:
     _annees_multi = [2024, 2025] if (ANNEES_ANALYSE and max(ANNEES_ANALYSE) > 100) else [24, 25]
     _bms = _bms.filter(pl.col("ANNEE").is_in(_annees_multi))
 
+# Exclure les NF (non-fonctionnaires) des stats multi-postes
+if "GRADE" in _bms.columns:
+    _n_nf = int((_bms["GRADE"] == "NF").sum())
+    _bms = _bms.filter(pl.col("GRADE") != "NF")
+    if _n_nf > 0:
+        print(f"   [DIAG multi-postes] Exclusion NF : {_n_nf:,} lignes retirées")
+
 # Diagnostic APRÈS filtre période — pour voir ce qui reste réellement
 if "NB_POSTES" in _bms.columns:
     _nb_postes_vals = _bms["NB_POSTES"].drop_nulls().unique().sort().to_list()
