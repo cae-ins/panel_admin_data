@@ -49,13 +49,16 @@ MINIO_SECRET_KEY = os.getenv("MINIO_SECRET_KEY", "minio-datalabteam123")
 BUCKET_SILVER = os.getenv("BUCKET_SILVER", "silver")
 PREFIX_SILVER = "panel_admin"
 
-GRADES_VALIDES = (
-    [f"A{i}" for i in range(1, 8)] +
-    [f"B{i}" for i in range(1, 7)] +
-    [f"C{i}" for i in range(1, 6)] +
-    [f"D{i}" for i in range(1, 4)]
-)
-GRADES_INVALIDES = ["B7", "C7", "D7", "A", "B", "C", "D"]
+GRADES_VALIDES = [
+    "A3", "A4", "A5", "A6", "A7",
+    "B1", "B3",
+    "C1", "C2", "C3",
+    "D1", "D2",
+]
+# GRADES_INVALIDES n'est plus une liste fixe.
+# La détection utilise la logique inverse : tout grade absent de GRADES_VALIDES
+# (et différent de "NF") est considéré invalide → imputation tentée.
+# Voir l'expression _grade_invalide dans la boucle ci-dessous.
 
 # --- CLIENT S3 ---
 s3 = boto3.client(
@@ -169,8 +172,8 @@ else:
 
     n_total     = len(panel_all)
     n_valides   = int(panel_all["GRADE"].is_in(GRADES_VALIDES).sum())
-    n_invalides = int(panel_all["GRADE"].is_in(GRADES_INVALIDES).sum())
     n_nf        = int((panel_all["GRADE"] == "NF").sum())
+    n_invalides = n_total - n_valides - n_nf
 
     print(f"   Grades valides     : {n_valides:,}  ({100*n_valides/n_total:.1f}%)")
     print(f"   Grades invalides   : {n_invalides:,}  ({100*n_invalides/n_total:.1f}%)")
@@ -255,9 +258,13 @@ for cle in cles_silver:
     else:
         df = df.with_columns(pl.lit("NF").alias("GRADE"))
 
-    # Marquer les lignes qui nécessitent une imputation
+    # Marquer les lignes qui nécessitent une imputation :
+    # tout grade absent de GRADES_VALIDES et différent de "NF" est invalide.
     df = df.with_columns(
-        pl.col("GRADE").is_in(GRADES_INVALIDES).alias("_grade_invalide")
+        (
+            ~pl.col("GRADE").is_in(GRADES_VALIDES)
+            & (pl.col("GRADE") != "NF")
+        ).alias("_grade_invalide")
     )
 
     # Application de la cascade si lookups disponibles
@@ -306,10 +313,14 @@ for cle in cles_silver:
     n_obs = int((df["GRADE_SOURCE"] == "OBSERVE").sum())
     n_imp = int((df["GRADE_SOURCE"] == "IMPUTE").sum())
     n_nfi = int((df["GRADE_SOURCE"] == "NF_NON_IMPUTABLE").sum())
+    n_ann = n_obs + n_imp + n_nfi
     stats_globales["OBSERVE"]          += n_obs
     stats_globales["IMPUTE"]           += n_imp
     stats_globales["NF_NON_IMPUTABLE"] += n_nfi
-    print(f"    OBSERVE={n_obs:,}  IMPUTE={n_imp:,}  NF_NON_IMPUTABLE={n_nfi:,}")
+    pct_obs = 100 * n_obs / n_ann if n_ann > 0 else 0
+    pct_imp = 100 * n_imp / n_ann if n_ann > 0 else 0
+    pct_nfi = 100 * n_nfi / n_ann if n_ann > 0 else 0
+    print(f"    OBSERVE={n_obs:,} ({pct_obs:.1f}%)  IMPUTE={n_imp:,} ({pct_imp:.1f}%)  NF_NON_IMPUTABLE={n_nfi:,} ({pct_nfi:.1f}%)")
 
     ecrire_parquet_s3(df, BUCKET_SILVER, cle)
     del df
