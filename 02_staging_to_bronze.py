@@ -166,8 +166,15 @@ for chemin_objet in fichiers_minio:
         )
 
         # Normalisation + déduplication des noms de colonnes
-        noms_norm = [normaliser_nom_colonne(c) for c in feuille1.columns]
-        feuille1  = feuille1.rename(dict(zip(feuille1.columns, deduplication_noms(noms_norm))))
+        # Détecter la clé composite MATRICULE||CODE_ORGANISME dans F1 AVANT normalisation
+        # (les || sont supprimés par normaliser_nom_colonne → colonne jamais reconnue comme CLE_UNIQUE)
+        noms_orig = list(feuille1.columns)
+        noms_norm = [normaliser_nom_colonne(c) for c in noms_orig]
+        for i, nom in enumerate(noms_orig):
+            if re.search(r"MATRICULE.*\|\|", str(nom), re.IGNORECASE):
+                noms_norm[i] = "CLE_UNIQUE"
+                break
+        feuille1  = feuille1.rename(dict(zip(noms_orig, deduplication_noms(noms_norm))))
 
         # --- LECTURE FEUILLE 2 (codes numériques) ---
         skip_f2 = detecter_entete(tmp_path, sheet_id=1)
