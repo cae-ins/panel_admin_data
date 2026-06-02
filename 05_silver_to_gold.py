@@ -236,9 +236,47 @@ print("=" * 70)
 print("RÉSUMÉ GOLD")
 print("=" * 70)
 print()
-print(f"Années traitées          : {len(cles_silver)}")
-print(f"Masse salariale          : {len(df_masse_salariale):,} lignes")
-print(f"Effectifs                : {len(df_effectifs):,} lignes")
+
+# Périodes réelles depuis les données (format mois_annee = MMYYYY)
+def _cle_chrono(p: str) -> str:
+    return p[2:] + p[:2]   # MMYYYY → YYYYMM pour tri chronologique
+
+periodes_gold = df_masse_salariale["mois_annee"].drop_nulls().unique().to_list()
+periode_min   = min(periodes_gold, key=_cle_chrono)
+periode_max   = max(periodes_gold, key=_cle_chrono)
+
+# Détail de la dernière année
+annees_mois_gold: dict[str, list[str]] = {}
+for p in periodes_gold:
+    annees_mois_gold.setdefault(p[2:], []).append(p)
+
+annee_max_gold     = max(annees_mois_gold)
+mois_derniere_gold = sorted(annees_mois_gold[annee_max_gold])
+nb_mois_derniere   = len(mois_derniere_gold)
+
+# Nombre d'années complètes et résumé textuel
+annees_completes  = sum(1 for a, ms in annees_mois_gold.items() if len(ms) == 12)
+annees_partielles = len(annees_mois_gold) - annees_completes
+
+label_annees = f"{annees_completes} année(s) complète(s)"
+if annees_partielles:
+    label_annees += f" + {annees_partielles} année(s) partielle(s)"
+
+# Masse salariale totale
+masse_totale_brute = df_masse_salariale["masse_brute"].sum() if "masse_brute" in df_masse_salariale.columns else None
+agents_total       = df_masse_salariale["nb_agents_uniques"].sum() if "nb_agents_uniques" in df_masse_salariale.columns else None
+
+print(f"Années traitées          : {label_annees}")
+print(f"Période couverte         : {periode_min} à {periode_max}  ({len(set(periodes_gold))} périodes)")
+if nb_mois_derniere < 12:
+    print(f"  ⚠️  Dernière année ({annee_max_gold}) : {nb_mois_derniere}/12 mois"
+          f"  [{', '.join(m[:2] for m in mois_derniere_gold)}]  — données en cours de collecte")
+else:
+    print(f"  ✓ Dernière année ({annee_max_gold}) : 12/12 mois disponibles")
+print(f"Masse salariale          : {len(df_masse_salariale):,} lignes agrégées"
+      + (f"  |  total brut : {masse_totale_brute:,.0f} FCFA" if masse_totale_brute else ""))
+print(f"Effectifs                : {len(df_effectifs):,} lignes agrégées"
+      + (f"  |  agents cumulés : {agents_total:,}" if agents_total else ""))
 print(f"\nExports CSV : s3://{BUCKET_STAGING}/{PREFIX_EXPORTS}/")
 print()
 print("=" * 70)
