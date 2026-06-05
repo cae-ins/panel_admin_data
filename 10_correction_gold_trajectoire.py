@@ -39,6 +39,8 @@
 #     ├── panel_trajectoire_clean.parquet   Panel nettoyé complet
 #     ├── rapport_corrections.csv           Détail par matricule corrigé
 #     ├── rapport_anomalies_calendaires.csv Anomalies de dates détectées
+#     ├── rapport_egalites_vote.csv         Cas d'égalité au vote (ex æquo)
+#     ├── rapport_egalites_vote.txt         Synthèse des cas d'égalité
 #     └── rapport_synthese.txt              Synthèse lisible des corrections
 #
 #   + Upload S3 : s3://gold/panel_admin/trajectoire-pro/
@@ -213,6 +215,77 @@ def valeur_modale(df_group: pl.DataFrame, col: str) -> str | None:
     if len(comptage) == 0:
         return None
     return comptage[col][0]
+
+
+def detecter_egalites_vote(
+    base: pl.DataFrame,
+    col: str,
+    filtre_plausibilite: pl.Expr | None = None,
+) -> pl.DataFrame:
+    """
+    Détecte les matricules pour lesquels le vote majoritaire est
+    AMBIGU, c.-à-d. au moins deux valeurs distinctes arrivent à
+    égalité sur la fréquence maximale (ex æquo).
+
+    Pour ces matricules, la règle de départage ("première valeur
+    chronologique") n'est PAS garantie par l'implémentation actuelle :
+    le résultat dépend de l'ordre non déterministe du group_by.
+    Ce rapport sert à quantifier le phénomène avant de décider d'une
+    politique de départage.
+
+    Paramètres
+    ----------
+    col : colonne invariante à analyser (ex. "sexe", "_dn_dt", "_ps_dt").
+    filtre_plausibilite : expression booléenne optionnelle appliquée
+        AVANT le décompte, pour reproduire exactement l'ensemble de
+        valeurs sur lequel le vote est calculé (mêmes bornes que la
+        correction). Si None, on garde toutes les valeurs non nulles.
+
+    Retour
+    ------
+    DataFrame avec une ligne par matricule en situation d'égalité :
+      matricule, n_max (fréquence maximale partagée),
+      n_valeurs_ex_aequo (combien de valeurs à cette fréquence),
+      valeurs_ex_aequo (liste triée, en texte).
+    """
+    sous = base.filter(pl.col(col).is_not_null())
+    if filtre_plausibilite is not None:
+        sous = sous.filter(filtre_plausibilite)
+
+    # Comptage de chaque valeur par matricule
+    comptage = (
+        sous
+        .group_by(["matricule", col])
+        .agg(pl.len().alias("n"))
+    )
+
+    # Pour chaque matricule : fréquence max, et nombre de valeurs
+    # qui atteignent cette fréquence max
+    egalites = (
+        comptage
+        .group_by("matricule")
+        .agg([
+            pl.col("n").max().alias("n_max"),
+            # nombre de valeurs dont le compte == max
+            (pl.col("n") == pl.col("n").max()).sum().alias("n_valeurs_ex_aequo"),
+            # nombre total de valeurs distinctes observées
+            pl.len().alias("n_valeurs_distinctes"),
+            # liste des valeurs à fréquence max, triée (départage reproductible)
+            pl.col(col)
+              .filter(pl.col("n") == pl.col("n").max())
+              .sort()
+              .cast(pl.Utf8)
+              .alias("_valeurs_max"),
+        ])
+        # Égalité = au moins 2 valeurs distinctes partagent la fréquence max
+        .filter(pl.col("n_valeurs_ex_aequo") > 1)
+        .with_columns(
+            pl.col("_valeurs_max").list.join(" | ").alias("valeurs_ex_aequo")
+        )
+        .drop("_valeurs_max")
+        .sort("matricule")
+    )
+    return egalites
 
 
 # ============================================================
@@ -424,6 +497,61 @@ print("[5/7] Correction des colonnes invariantes...", flush=True)
 print()
 
 rapport_corrections = []
+
+# ----- 5.0 DÉTECTION DES CAS D'ÉGALITÉ DE VOTE (ex æquo) -----
+# On mesure, AVANT de corriger, combien de matricules ont un vote
+# ambigu (≥ 2 valeurs à la fréquence maximale). Pour ces cas, la
+# règle de départage n'est pas garantie déterministe : ce rapport
+# permettra de décider ultérieurement d'une politique explicite.
+# Les filtres de plausibilité reproduisent ceux du vote (5.2 et 5.3).
+
+print("  5.0 — Détection des cas d'égalité de vote...", flush=True)
+
+egalites_par_col = {}
+
+egalites_par_col["sexe"] = detecter_egalites_vote(base, "sexe")
+
+egalites_par_col["date_naissance"] = detecter_egalites_vote(
+    base, "_dn_dt",
+    filtre_plausibilite=(
+        (pl.col("_dn_dt") >= pl.lit(DATE_NAISS_MIN)) &
+        (pl.col("_dn_dt") <= pl.lit(DATE_NAISS_MAX))
+    ),
+)
+
+egalites_par_col["prise_service"] = detecter_egalites_vote(
+    base, "_ps_dt",
+    filtre_plausibilite=(pl.col("_ps_dt") >= pl.lit(PRISE_SERVICE_MIN)),
+)
+
+# Assembler le rapport détaillé (une ligne par matricule × colonne)
+rapport_egalites_parts = []
+for nom_col, df_eg in egalites_par_col.items():
+    n_eg = len(df_eg)
+    pct = 100 * n_eg / n_matricules if n_matricules > 0 else 0
+    print(f"    {nom_col:<16} : {n_eg:>8,} matricules en égalité  ({pct:.2f} %)")
+    if n_eg > 0:
+        rapport_egalites_parts.append(
+            df_eg.with_columns(pl.lit(nom_col).alias("colonne")).select([
+                "colonne", "matricule", "n_max",
+                "n_valeurs_ex_aequo", "n_valeurs_distinctes",
+                "valeurs_ex_aequo",
+            ])
+        )
+
+if rapport_egalites_parts:
+    df_egalites = pl.concat(rapport_egalites_parts, how="vertical").sort(
+        ["colonne", "matricule"]
+    )
+else:
+    df_egalites = pl.DataFrame(schema={
+        "colonne": pl.Utf8, "matricule": pl.Utf8, "n_max": pl.UInt32,
+        "n_valeurs_ex_aequo": pl.UInt32, "n_valeurs_distinctes": pl.UInt32,
+        "valeurs_ex_aequo": pl.Utf8,
+    })
+
+print(f"    Total lignes de rapport d'égalité : {len(df_egalites):,}")
+print()
 
 # ----- 5.1 CORRECTION DU SEXE -----
 
@@ -809,7 +937,76 @@ if len(df_anomalies) > 0:
         Body=csv_bytes_ano,
     )
 
-# ── 7.4 Rapport de synthèse textuel ──
+# ── 7.4 Rapport des cas d'égalité de vote (ex æquo) ──
+# CSV : détail par matricule × colonne
+chemin_egalites_csv = DOSSIER_SORTIE / "rapport_egalites_vote.csv"
+df_egalites.write_csv(str(chemin_egalites_csv))
+print(f"  ✓ {chemin_egalites_csv.name}  ({len(df_egalites):,} cas d'égalité)")
+
+csv_bytes_eg = df_egalites.write_csv().encode("utf-8")
+s3.put_object(
+    Bucket=BUCKET_GOLD,
+    Key=f"{PREFIX_DESTINATION}/rapport_egalites_vote.csv",
+    Body=csv_bytes_eg,
+)
+
+# TXT : synthèse lisible des cas d'égalité
+chemin_egalites_txt = DOSSIER_SORTIE / "rapport_egalites_vote.txt"
+with open(chemin_egalites_txt, "w", encoding="utf-8") as f:
+    f.write("=" * 70 + "\n")
+    f.write("RAPPORT — CAS D'ÉGALITÉ AU VOTE MAJORITAIRE (EX ÆQUO)\n")
+    f.write("=" * 70 + "\n")
+    f.write(f"Date d'exécution : {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
+    f.write(f"Source           : s3://{BUCKET_GOLD}/{KEY_PANEL_SOURCE}\n")
+    f.write(f"Matricules       : {n_matricules:,}\n")
+    f.write("\n")
+    f.write("CONTEXTE\n")
+    f.write("-" * 70 + "\n")
+    f.write(
+        "  Un cas d'égalité survient lorsqu'au moins deux valeurs distinctes\n"
+        "  d'une colonne invariante atteignent la MÊME fréquence maximale pour\n"
+        "  un matricule. Le vote majoritaire ne peut alors pas trancher de\n"
+        "  façon non ambiguë, et la règle de départage actuelle n'est pas\n"
+        "  déterministe. Ce rapport quantifie le phénomène pour décider d'une\n"
+        "  politique de départage explicite.\n"
+    )
+    f.write("\n")
+    f.write("SYNTHÈSE PAR COLONNE\n")
+    f.write("-" * 70 + "\n\n")
+    for nom_col, df_eg in egalites_par_col.items():
+        n_eg = len(df_eg)
+        pct = 100 * n_eg / n_matricules if n_matricules > 0 else 0
+        f.write(f"  {nom_col}\n")
+        f.write(f"    Matricules en égalité : {n_eg:>8,}  ({pct:.2f} %)\n")
+        if n_eg > 0:
+            # Répartition par nombre de valeurs ex æquo
+            repart = (
+                df_eg.group_by("n_valeurs_ex_aequo")
+                     .agg(pl.len().alias("n_matricules"))
+                     .sort("n_valeurs_ex_aequo")
+            )
+            for row in repart.iter_rows(named=True):
+                f.write(
+                    f"      {row['n_valeurs_ex_aequo']:>2} valeurs ex æquo : "
+                    f"{row['n_matricules']:>6,} matricules\n"
+                )
+        f.write("\n")
+    f.write("-" * 70 + "\n")
+    f.write(f"  TOTAL lignes de rapport (matricule × colonne) : {len(df_egalites):,}\n")
+    f.write("=" * 70 + "\n")
+    f.write("Détail complet : rapport_egalites_vote.csv\n")
+    f.write("=" * 70 + "\n")
+
+print(f"  ✓ {chemin_egalites_txt.name}")
+
+with open(chemin_egalites_txt, "rb") as f:
+    s3.put_object(
+        Bucket=BUCKET_GOLD,
+        Key=f"{PREFIX_DESTINATION}/rapport_egalites_vote.txt",
+        Body=f.read(),
+    )
+
+# ── 7.5 Rapport de synthèse textuel ──
 chemin_synthese = DOSSIER_SORTIE / "rapport_synthese.txt"
 with open(chemin_synthese, "w", encoding="utf-8") as f:
     f.write("=" * 70 + "\n")
@@ -862,6 +1059,17 @@ with open(chemin_synthese, "w", encoding="utf-8") as f:
     f.write("\n")
 
     f.write("-" * 70 + "\n")
+    f.write("CAS D'ÉGALITÉ AU VOTE (EX ÆQUO — DÉPARTAGE AMBIGU)\n")
+    f.write("-" * 70 + "\n\n")
+    for nom_col, df_eg in egalites_par_col.items():
+        n_eg = len(df_eg)
+        pct = 100 * n_eg / n_matricules if n_matricules > 0 else 0
+        f.write(f"  {nom_col:<16} : {n_eg:>8,} matricules  ({pct:.2f} %)\n")
+    f.write(f"  {'TOTAL (lignes)':<16} : {len(df_egalites):>8,}\n")
+    f.write("  → détail : rapport_egalites_vote.csv / rapport_egalites_vote.txt\n")
+    f.write("\n")
+
+    f.write("-" * 70 + "\n")
     f.write("MOBILITÉ PROFESSIONNELLE\n")
     f.write("-" * 70 + "\n\n")
     f.write(f"  Changement d'organisme  : {int((trajectoire['n_organismes'] > 1).sum()):>8,} agents\n")
@@ -878,12 +1086,16 @@ with open(chemin_synthese, "w", encoding="utf-8") as f:
     f.write(f"    {DOSSIER_SORTIE}/panel_trajectoire_clean.parquet\n")
     f.write(f"    {DOSSIER_SORTIE}/rapport_corrections.csv\n")
     f.write(f"    {DOSSIER_SORTIE}/rapport_anomalies_calendaires.csv\n")
+    f.write(f"    {DOSSIER_SORTIE}/rapport_egalites_vote.csv\n")
+    f.write(f"    {DOSSIER_SORTIE}/rapport_egalites_vote.txt\n")
     f.write(f"    {DOSSIER_SORTIE}/rapport_synthese.txt\n")
     f.write(f"\n")
     f.write(f"  S3 :\n")
     f.write(f"    s3://{BUCKET_GOLD}/{PREFIX_DESTINATION}/panel_trajectoire_clean.parquet\n")
     f.write(f"    s3://{BUCKET_GOLD}/{PREFIX_DESTINATION}/rapport_corrections.csv\n")
     f.write(f"    s3://{BUCKET_GOLD}/{PREFIX_DESTINATION}/rapport_anomalies_calendaires.csv\n")
+    f.write(f"    s3://{BUCKET_GOLD}/{PREFIX_DESTINATION}/rapport_egalites_vote.csv\n")
+    f.write(f"    s3://{BUCKET_GOLD}/{PREFIX_DESTINATION}/rapport_egalites_vote.txt\n")
     f.write("\n")
     f.write("=" * 70 + "\n")
     f.write("✓ CORRECTION TERMINÉE\n")

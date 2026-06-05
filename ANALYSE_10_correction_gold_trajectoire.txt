@@ -1,0 +1,274 @@
+======================================================================
+DOCUMENT D'ANALYSE — 10_correction_gold_trajectoire.py
+Correction Gold : Trajectoires professionnelles
+======================================================================
+
+
+1. À QUOI SERT CE SCRIPT ? (en une phrase)
+----------------------------------------------------------------------
+
+Ce script prend le panel complet des agents (une ligne = un agent x un
+mois) et corrige les erreurs de saisie sur les informations qui ne
+devraient JAMAIS changer pour une même personne (sexe, date de
+naissance, date de prise de service), afin de produire un panel propre
+et fiable pour suivre les trajectoires professionnelles dans le temps.
+
+  >> IDÉE CENTRALE : une information « invariante » (par exemple la date
+     de naissance) doit être IDENTIQUE sur toutes les lignes d'un même
+     matricule. Si ce n'est pas le cas, c'est une erreur de saisie. La
+     méthode consiste à faire VOTER toutes les lignes de l'agent et à
+     retenir la valeur MAJORITAIRE.
+
+
+2. LE VOCABULAIRE MÉTIER
+----------------------------------------------------------------------
+
+  Matricule          : Identifiant unique d'un agent. Clé de regroupement.
+  Période/mois_annee : Le mois observé (ex. 012023). Un agent apparaît
+                       sur plusieurs périodes.
+  Panel              : Tableau longitudinal : un agent suivi sur plusieurs
+                       mois -> plusieurs lignes par agent.
+  Colonne invariante : Donnée qui ne doit pas changer dans le temps :
+                       sexe, date_naissance, prise_service.
+  Gold               : Niveau « propre, prêt à l'analyse » de
+                       l'architecture (bronze -> silver -> gold).
+  Valeur modale      : La valeur la plus fréquente d'un groupe (le « vote
+                       majoritaire »).
+
+
+3. VUE D'ENSEMBLE DU PIPELINE (7 étapes)
+----------------------------------------------------------------------
+
+  SOURCE : s3://gold/panel_admin/panel_complet.parquet
+     |
+  [1] Chargement ........... lecture du panel + vérification des colonnes
+  [2] Parsing des dates .... texte -> vraies dates (multi-formats)
+  [3] Diagnostic ........... combien d'agents ont des valeurs incohérentes ?
+  [4] Anomalies calend. .... détection des dates impossibles (âge<16, futur)
+  [5] Correction ........... détection des ex æquo + vote majoritaire
+  [6] Indicateurs .......... âge, ancienneté, mobilité, contrôle des résidus
+  [7] Écriture ............. panel propre + 4 rapports, en local + S3
+     |
+  SORTIE : panel_trajectoire_clean.parquet + rapports
+
+Le script est 100 % autonome (« isolé ») : il ne dépend d'aucun autre
+module du pipeline, et utilise UNIQUEMENT Polars (pas de Pandas).
+
+
+4. DÉTAIL DES ÉTAPES
+----------------------------------------------------------------------
+
+ÉTAPE 1 — Chargement du panel complet
+  - Télécharge le Parquet depuis S3/MinIO en mémoire (lire_parquet_s3).
+  - GARDE-FOU : si une colonne indispensable manque (sexe,
+    date_naissance, prise_service, matricule, mois_annee), le script
+    s'arrête avec une erreur explicite. On ne corrige jamais à l'aveugle.
+  - Affiche les volumes : observations, matricules uniques, étendue
+    temporelle (première -> dernière période).
+
+ÉTAPE 2 — Parsing des dates
+  Les dates arrivent en TEXTE, dans des formats hétérogènes ; il faut
+  les transformer en vraies dates pour pouvoir comparer.
+  - parse_date_multi essaie plusieurs formats dans l'ordre
+    (YYYY-MM-DD, DD/MM/YYYY, DD-MM-YYYY, ...) via pl.coalesce : on prend
+    le premier format qui réussit, sinon null.
+  - parse_mois_annee transforme mois_annee (MMYYYY ou YYYYMM) en premier
+    jour du mois.
+  - Colonnes parsées = temporaires, préfixées par « _ » : _dn_dt, _ps_dt,
+    _ma_dt. Convention : tout ce qui commence par « _ » sera supprimé à la
+    fin.
+  - Un taux de parsing est affiché par colonne, pour repérer un format
+    mal géré.
+
+ÉTAPE 3 — Diagnostic de cohérence intra-individu
+  Étape de MESURE du problème, AVANT toute correction.
+  Pour chaque colonne invariante, on regroupe par matricule et on compte
+  le nombre de valeurs distinctes :
+    0   -> aucune valeur (que des null) -> rien à corriger
+    1   -> cohérent (toujours la même valeur)  [OK]
+    >1  -> INCOHÉRENT -> erreur de saisie à corriger  [X]
+  Le script affiche aussi la répartition fine des cas incohérents
+  (combien d'agents ont 2, 3, ... valeurs). Chiffres stockés dans
+  diagnostics[col] pour la synthèse finale.
+
+ÉTAPE 4 — Détection des anomalies calendaires
+  On vérifie la PLAUSIBILITÉ LOGIQUE des dates via des âges :
+    _age_obs           = mois_annee - date_naissance
+    _age_prise_service = prise_service - date_naissance
+  Contrôles appliqués :
+    - âge négatif (né après l'observation)            -> impossible
+    - âge < 16 ou > 80 à la période                   -> hors plage
+    - prise de service dans le futur (> mois_annee)   -> impossible
+    - âge à la prise de service < 16 ou > 65          -> implausible
+    - naissance >= prise de service                   -> impossible
+    - retraite < prise de service (si colonne)        -> impossible
+  IMPORTANT : cette étape NE MODIFIE RIEN. Elle SIGNALE : les lignes
+  anomales sont collectées dans df_anomalies pour être exportées (audit).
+  La correction se fait à l'étape 5 par le vote.
+
+ÉTAPE 5 — Correction par vote majoritaire  *** LE CŒUR DE LA MÉTHODE ***
+
+  Sous-étape 5.0 — Détection des cas d'égalité (ex æquo), AVANT correction.
+    Avant de corriger, le script mesure pour chaque colonne invariante
+    combien de matricules ont un VOTE AMBIGU : au moins deux valeurs
+    distinctes atteignent la MÊME fréquence maximale. Ce sont les cas où
+    la règle de départage n'est pas fiable (cf. section 7). La détection
+    (fonction detecter_egalites_vote) utilise EXACTEMENT les mêmes filtres
+    de plausibilité que le vote, afin de compter sur le même ensemble de
+    valeurs. Résultat : deux rapports dédiés (rapport_egalites_vote.csv /
+    .txt) qui quantifient le phénomène SANS RIEN MODIFIER — pour décider
+    ensuite d'une politique de départage explicite.
+
+  La même logique de correction est appliquée aux trois colonnes.
+  Exemple avec le SEXE :
+    1. On ne garde que les lignes où le sexe est renseigné (!= null)
+    2. On compte les occurrences de chaque valeur par matricule
+         group_by(["matricule","sexe"]) -> n
+    3. On trie par fréquence décroissante
+         sort(["matricule","n"], descending=[False, True])
+    4. On garde la 1re ligne de chaque matricule = valeur la + fréquente
+         unique(subset=["matricule"], keep="first") -> sexe_corrige
+    5. On rattache cette valeur corrigée à toutes les lignes (join)
+    6. On remplace : si une valeur corrigée existe, on l'applique partout
+
+  GESTION DES ÉGALITÉS — POINT DE VIGILANCE :
+    L'en-tête du script annonce qu'en cas d'égalité parfaite, on retient
+    « la première valeur chronologique ». MAIS l'implémentation actuelle
+    NE LE GARANTIT PAS : le tri ne porte que sur la fréquence (n), sans
+    second critère ; quand deux valeurs ont le même n, leur ordre après
+    group_by n'est ni stable ni chronologique chez Polars. Le départage
+    est donc ARBITRAIRE / NON DÉTERMINISTE. C'est précisément pourquoi la
+    sous-étape 5.0 a été ajoutée : MESURER ces cas avant de décider d'une
+    vraie règle (cf. section 7).
+
+  Spécificité DATES DE NAISSANCE : avant le vote, on EXCLUT les dates
+    aberrantes (hors [1930-01-01, 2010-01-01]). Une date fausse ne peut
+    pas gagner le vote, même si elle est fréquente. Après correction, on
+    met aussi à jour la version texte de la colonne.
+
+  Spécificité PRISE DE SERVICE : même principe, avec un seul filtre de
+    borne basse (>= 1960-01-01).
+
+  À chaque colonne, le script :
+    - compte les lignes corrigées et les matricules affectés ;
+    - construit un détail des corrections (ancienne -> nouvelle valeur,
+      nb de lignes) ajouté à rapport_corrections pour l'audit ;
+    - libère la mémoire (del + gc.collect()).
+
+ÉTAPE 6 — Indicateurs de trajectoire
+  Une fois les données fiabilisées, on calcule les indicateurs :
+    - Par ligne : age_a_la_periode, anciennete_debut (âge à l'embauche),
+      anciennete_a_la_periode (mois_annee - prise_service).
+    - Par agent (table trajectoire) : nombre de périodes observées,
+      première/dernière période et date, durée d'observation en années,
+      et MOBILITÉ : nombre d'organismes, emplois, grades, fonctions,
+      services distincts -> repère qui a CHANGÉ de poste.
+  CONTRÔLE QUALITÉ POST-CORRECTION : on revérifie que le nombre de
+  valeurs distinctes par agent est bien retombé à 1. Les n_encore_incoh_*
+  mesurent les RÉSIDUS — idéalement zéro. Un résidu non nul = cas que le
+  vote n'a pas pu trancher (ex. toutes les valeurs filtrées aberrantes).
+
+ÉTAPE 7 — Écriture des résultats
+  Six fichiers produits, en LOCAL ET sur S3 :
+    panel_trajectoire_clean.parquet
+        Le panel corrigé complet (colonnes « _ » retirées, indicateurs
+        ajoutés).
+    rapport_corrections.csv
+        Détail de chaque correction : colonne, matricule, ancienne ->
+        nouvelle valeur.
+    rapport_anomalies_calendaires.csv
+        Toutes les lignes avec dates impossibles (audit).
+    rapport_egalites_vote.csv
+        Cas d'égalité au vote, par matricule x colonne (n_max, nb valeurs
+        ex æquo, valeurs concernées).
+    rapport_egalites_vote.txt
+        Synthèse lisible des cas d'égalité : comptes et % par colonne,
+        répartition par nombre de valeurs ex æquo.
+    rapport_synthese.txt
+        Synthèse lisible : diagnostic, corrections, anomalies, cas
+        d'égalité, résidus, mobilité.
+  Avant l'écriture, toutes les colonnes temporaires « _... » sont
+  supprimées, puis les indicateurs utiles sont réinjectés.
+
+
+5. LES FONCTIONS UTILITAIRES CLÉS
+----------------------------------------------------------------------
+
+  lire_parquet_s3 / ecrire_parquet_s3
+      Entrées/sorties Parquet depuis/vers MinIO en mémoire.
+  parse_date_multi
+      Texte -> date, en essayant plusieurs formats (best-effort).
+  parse_mois_annee
+      MMYYYY / YYYYMM -> 1er jour du mois.
+  valeur_modale
+      Valeur la plus fréquente d'un groupe (helper du vote).
+  detecter_egalites_vote
+      Détecte les matricules où >= 2 valeurs partagent la fréquence
+      maximale (ex æquo). Sert à quantifier les votes ambigus.
+
+
+6. PRINCIPES DE CONCEPTION (pour expliquer)
+----------------------------------------------------------------------
+
+  1. Diagnostiquer avant de corriger. Les étapes 3 et 4 mesurent ; la
+     correction ne vient qu'à l'étape 5. On sait toujours combien on
+     corrige et pourquoi.
+  2. Le vote majoritaire comme arbitre objectif. On laisse la FRÉQUENCE
+     décider : la valeur correcte est presque toujours la plus fréquente.
+  3. Filtrer les aberrations avant de voter. Une date impossible ne doit
+     pas pouvoir « gagner » : on l'exclut du décompte (bornes).
+  4. Traçabilité totale. Chaque correction est journalisée, chaque
+     anomalie et chaque cas d'égalité sont exportés. Rien n'est corrigé
+     en silence -> auditabilité.
+  5. Vérification de bouclage. L'étape 6 recontrôle que les incohérences
+     ont disparu (résidus). On ne suppose pas, on vérifie.
+  6. Robustesse opérationnelle. Garde-fou sur les colonnes, gestion
+     mémoire explicite, double sortie local + S3, formats de dates
+     multiples tolérés.
+
+
+7. LIMITES ET POINTS D'ATTENTION (pour anticiper les questions)
+----------------------------------------------------------------------
+
+  - Hypothèse de stabilité : la méthode suppose ces attributs réellement
+    invariants. Un vrai changement de sexe à l'état civil, par exemple,
+    serait « corrigé » à tort vers la valeur majoritaire.
+
+  - /!\ CAS D'ÉGALITÉ (EX ÆQUO) — DÉPARTAGE NON DÉTERMINISTE :
+    quand deux valeurs atteignent la même fréquence maximale
+    (typiquement un agent observé sur 2 périodes avec 2 valeurs, ou
+    3 « M » / 3 « H »), le vote ne peut pas trancher. L'en-tête promet
+    « la première valeur chronologique », MAIS le code n'implémente pas
+    cette règle : le tri ne porte que sur la fréquence, donc le résultat
+    est arbitraire et peut varier d'une exécution à l'autre.
+    -> C'est pourquoi la sous-étape 5.0 a été ajoutée : elle DÉNOMBRE ces
+       cas par colonne et les liste dans rapport_egalites_vote.csv / .txt,
+       SANS les corriger. Une fois les volumes connus, on choisira une
+       politique explicite (départage par la valeur la plus ancienne —
+       déterministe — ; par la plus récente ; ou laisser non corrigé et
+       signaler pour revue manuelle).
+
+  - Dates exclues = pas de vote possible : si toutes les dates d'un agent
+    sont hors bornes, aucune valeur corrigée n'est produite (résidu).
+
+  - parse_mois_annee distingue MMYYYY et YYYYMM par essais successifs ;
+    des formats ambigus reposent sur l'ordre des tentatives.
+
+
+8. RÉSUMÉ EN 30 SECONDES (pour une présentation orale)
+----------------------------------------------------------------------
+
+  « Ce script fiabilise le panel des agents. Pour chaque personne, des
+  informations qui ne devraient jamais changer — sexe, date de naissance,
+  date de prise de service — peuvent varier d'un mois à l'autre à cause
+  d'erreurs de saisie. On commence par MESURER ces incohérences et par
+  DÉTECTER les dates impossibles. Puis on CORRIGE PAR VOTE MAJORITAIRE :
+  on retient, pour chaque agent, la valeur la plus fréquente, en ayant
+  pris soin d'écarter au préalable les valeurs aberrantes. On REVÉRIFIE
+  ensuite que les incohérences ont disparu, et on calcule des indicateurs
+  de trajectoire (âge, ancienneté, mobilité). Enfin, on exporte le panel
+  propre ET des rapports d'audit détaillant chaque correction, chaque
+  anomalie et chaque cas d'égalité. Tout est tracé, rien n'est corrigé en
+  silence. »
+
+======================================================================
