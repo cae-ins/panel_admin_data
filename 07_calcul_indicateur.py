@@ -118,9 +118,6 @@ COMPOSANTES_SALAIRE_NOMS = {"124_F2", "228_F2", "271_F2", "425_F2"}
 # Codes poste éligibles pour montant_brut_sans_ind_sans_alloc (sans 421 allocation familiale)
 CODES_POSTE_ELIGIBLES = {"124", "228", "271", "425"}
 
-# Code organisme à exclure de tous les traitements
-CODE_ORGANISME_EXCLUS = "59"
-
 # Fichier de référence barème 2025 (dans staging/panel_admin/references/)
 KEY_ANSTAT_2025 = "panel_admin/references/anstat_2025.txt.xlsx"
 
@@ -570,14 +567,8 @@ base = pl.concat(frames, how="diagonal")
 del frames
 gc.collect()
 print(f"   ✓ Total : {len(base):,} lignes × {len(base.columns)} colonnes")
-
-# Exclusion défensive de l'organisme 59
-if "CODE_ORGANISME" in base.columns:
-    n_avant = len(base)
-    base = base.filter(pl.col("CODE_ORGANISME").cast(pl.Utf8) != CODE_ORGANISME_EXCLUS)
-    n_exclu = n_avant - len(base)
-    if n_exclu > 0:
-        print(f"   Exclusion organisme {CODE_ORGANISME_EXCLUS} : {n_exclu:,} lignes supprimées")
+# Note : l'organisme 59 est inclus dans M1 (Statut conforme barème standard)
+# et exclu de M2 uniquement dans le programme 07b.
 print(f"   Base finale : {len(base):,} lignes\n")
 
 # ============================================================
@@ -613,7 +604,7 @@ base = base.with_columns([
 annees_dispo = sorted(base["ANNEE"].drop_nulls().unique().to_list())
 print(f"   Années disponibles : {annees_dispo}")
 
-ANNEES_ANALYSE = [2024, 2025] if PERIODE_RECENTE else [a for a in annees_dispo if a >= 2015]
+ANNEES_ANALYSE = [a for a in annees_dispo if a >= 2024] if PERIODE_RECENTE else [a for a in annees_dispo if a >= 2015]
 print(f"   Période retenue    : {ANNEES_ANALYSE}")
 
 base = base.filter(pl.col("ANNEE").is_in(ANNEES_ANALYSE))
