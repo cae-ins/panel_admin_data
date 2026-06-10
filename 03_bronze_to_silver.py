@@ -445,17 +445,6 @@ for cle in cles_bronze:
 
         stats_matching_par_periode.append(row_stats)
 
-        # --- Exclusion CODE_ORGANISME = 59 ---
-        if "CODE_ORGANISME" in df.columns:
-            avant_org59 = len(df)
-            df = df.filter(pl.col("CODE_ORGANISME").cast(pl.Utf8) != "59")
-            apres_org59 = len(df)
-            if avant_org59 != apres_org59:
-                print(f"      Exclusion organisme 59 : {avant_org59 - apres_org59:,} lignes supprimées", flush=True)
-            if len(df) == 0:
-                print(f"    ⚠️  Aucune ligne conservée après exclusion organisme 59")
-                continue
-
         # --- Cast numérique ---
         cols_num = ["montant_brut", "montant_net", "retenue_pension",
                     "impot", "charge_patronale"]
