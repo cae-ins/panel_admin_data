@@ -93,11 +93,9 @@ PREFIX_EXPORTS = "panel_admin/exports_gold"
 KEY_BASE_CORRIGEE = f"{PREFIX_PANEL}/base_avec_statut_corrigee.parquet"
 KEY_BASE_AVEC_STATUT = f"{PREFIX_PANEL}/base_avec_statut.parquet"
 
-_mode_label    = "salaire_brut"  if MODE_SALAIRE_BRUT else "revenu_salarial"
-_periode_label = "2024_2025"     if PERIODE_RECENTE   else "2015_recent"
-_zeros_label   = "avec_zeros"    if INCLURE_ZEROS     else "sans_zeros"
-OUTPUT_KEY     = (f"{PREFIX_EXPORTS}/indicateurs_{_mode_label}"
-                  f"_{_periode_label}_{_zeros_label}.xlsx")
+_mode_label  = "salaire_brut" if MODE_SALAIRE_BRUT else "revenu_salarial"
+_zeros_label = "avec_zeros"  if INCLURE_ZEROS     else "sans_zeros"
+# OUTPUT_KEY sera défini dynamiquement après chargement des données (années réelles)
 
 # Libellés mois français
 MOIS_FR = {
@@ -426,12 +424,20 @@ base_agrege_m2 = pl.DataFrame()
 if M2_ACTIVE:
     n_av_m2 = len(base_avec_statut)
     base_gv_m2 = base_avec_statut.filter(pl.col("Statut_Total") == "Conforme au barème")
+    # Exclure organisme 59 de M2 — code 59 est inclus dans M1 (barème standard)
+    # mais exclu de M2 (barème total, montant_brut_total)
+    if "CODE_ORGANISME" in base_gv_m2.columns:
+        _n_av_59_m2 = len(base_gv_m2)
+        base_gv_m2 = base_gv_m2.filter(pl.col("CODE_ORGANISME").cast(pl.Utf8) != "59")
+        _n_ex_59_m2 = _n_av_59_m2 - len(base_gv_m2)
+        if _n_ex_59_m2 > 0:
+            print(f"   M2 — Exclusion organisme 59 : {_n_ex_59_m2:,} lignes retirées")
     # Cast montant_brut_total en Float64
     base_gv_m2 = base_gv_m2.with_columns(
         pl.col("montant_brut_total").cast(pl.Float64, strict=False)
     )
     pct_m2 = 100 * len(base_gv_m2) / n_av_m2 if n_av_m2 > 0 else 0.0
-    print(f"\n   Méthodo 2 — Statut_Total Conforme : {len(base_gv_m2):,} ({pct_m2:.1f}%)")
+    print(f"\n   Méthodo 2 — Statut_Total Conforme (hors org. 59) : {len(base_gv_m2):,} ({pct_m2:.1f}%)")
 print()
 
 # ── Contrôle intégrité des conformes IMPUTÉS uniquement ─────────────
@@ -553,10 +559,11 @@ if "ANNEE" not in base_gv.columns:
 # ── Filtre période récente (PERIODE_RECENTE = True → 2024-2025) ──────────────
 if PERIODE_RECENTE:
     _annees_vals   = base_gv["ANNEE"].drop_nulls().unique().to_list()
-    _annees_cibles = [2024, 2025] if (_annees_vals and max(_annees_vals) > 100) else [24, 25]
+    _seuil_annee   = 2024 if (_annees_vals and max(_annees_vals) > 100) else 24
+    _annees_cibles = [a for a in _annees_vals if a >= _seuil_annee]
     _n_avant = len(base_gv)
     base_gv = base_gv.filter(pl.col("ANNEE").is_in(_annees_cibles))
-    print(f"   Filtre période récente 2024-2025 : {_n_avant:,} → {len(base_gv):,} lignes (M1)")
+    print(f"   Filtre période ≥ {_seuil_annee} : {_n_avant:,} → {len(base_gv):,} lignes (M1)")
     if M2_ACTIVE and len(base_gv_m2) > 0:
         if "ANNEE" not in base_gv_m2.columns and "mois_annee" in base_gv_m2.columns:
             base_gv_m2 = base_gv_m2.with_columns(
@@ -564,11 +571,17 @@ if PERIODE_RECENTE:
             )
         _n_avant_m2 = len(base_gv_m2)
         base_gv_m2 = base_gv_m2.filter(pl.col("ANNEE").is_in(_annees_cibles))
-        print(f"   Filtre période récente 2024-2025 : {_n_avant_m2:,} → {len(base_gv_m2):,} lignes (M2)")
+        print(f"   Filtre période ≥ {_seuil_annee} : {_n_avant_m2:,} → {len(base_gv_m2):,} lignes (M2)")
 
 ANNEES_ANALYSE = sorted(base_gv["ANNEE"].drop_nulls().unique().to_list())
 print(f"   Années retenues    : {ANNEES_ANALYSE}")
 print()
+
+# Nom du fichier de sortie — dérivé dynamiquement des années réelles
+_annee_min = min(ANNEES_ANALYSE) if ANNEES_ANALYSE else 2024
+_annee_max = max(ANNEES_ANALYSE) if ANNEES_ANALYSE else 2024
+OUTPUT_KEY = (f"{PREFIX_EXPORTS}/indicateurs_{_mode_label}"
+              f"_{_annee_min}_{_annee_max}_{_zeros_label}.xlsx")
 
 # ============================================================
 # 3. AGRÉGATION → REVENU TOTAL
@@ -1056,7 +1069,8 @@ if "ANNEE" not in _bms.columns and "mois_annee" in _bms.columns:
 
 # Filtre période récente 2024-2025 (cohérent avec le reste de l'analyse)
 if PERIODE_RECENTE and "ANNEE" in _bms.columns:
-    _annees_multi = [2024, 2025] if (ANNEES_ANALYSE and max(ANNEES_ANALYSE) > 100) else [24, 25]
+    _seuil_multi  = 2024 if (ANNEES_ANALYSE and max(ANNEES_ANALYSE) > 100) else 24
+    _annees_multi = [a for a in ANNEES_ANALYSE if a >= _seuil_multi]
     _bms = _bms.filter(pl.col("ANNEE").is_in(_annees_multi))
 
 # Exclure les NF (non-fonctionnaires) des stats multi-postes
@@ -1170,7 +1184,7 @@ if BAREME_DISPONIBLE and M2_ACTIVE and len(base_gv_m2) > 0:
             pl.col("mois_annee").str.slice(2, 4).cast(pl.Int32, strict=False).alias("ANNEE")
         )
 
-    for annee in [2024, 2025]:
+    for annee in ANNEES_ANALYSE:
         if "ANNEE" in base_gv_m2.columns and annee not in base_gv_m2["ANNEE"].drop_nulls().unique().to_list():
             print(f"   ⚠️  Année {annee} absente de la période — ignorée")
             continue
@@ -1239,7 +1253,7 @@ if BAREME_DISPONIBLE and M2_ACTIVE:
     if len(indic_bareme_sexe_m2) > 0:
         ecrire_feuille(wb, "REVENU_Total_Bar_Sexe",  indic_bareme_sexe_m2)
 
-    for annee in [2024, 2025]:
+    for annee in ANNEES_ANALYSE:
         if annee not in anstat_data_par_annee:
             print(f"   ⚠️  MODELE_ANSTAT_{annee} ignorée (données absentes)")
             continue
