@@ -7,7 +7,7 @@
 #   annees_experience = (période d'observation − prise_service) / 365,25
 #
 # Ventilations produites : global, année, sexe, situation matrimoniale,
-# grade, secteur (code et organisme), emploi, fonction, service et CITP.
+# grade et CITP.
 # Deux analyses ciblent les années d'expérience révolues 10 et 15.
 #
 # Source  : s3://gold/panel_admin/panel_complet.parquet
@@ -16,7 +16,7 @@
 # Structure du classeur produit :
 #   SOMMAIRE        — définitions M1/M2 + navigation cliquable
 #   Métadonnées     — méthode, périmètre, exclusions
-#   15 feuilles    — 13 ventilations et 2 analyses d'expérience ciblée
+#   8 feuilles     — 6 ventilations et 2 analyses d'expérience ciblée
 #                     classes de 5 ans : [0-5[, [5-10[, … [40-45[, [45+
 #
 # VARIABLES SALAIRE (cf. 07b_calcul_indicateurs.py)
@@ -79,23 +79,6 @@ OUTDIR   = Path("analyse_experience_out")   # copie locale (inspection)
 CACHE    = OUTDIR / "_cache_compact.parquet"
 FICHIER_XLSX = OUTDIR / "salaire_experience.xlsx"
 
-COLS_SRC = [
-    "matricule", "annee", "mois", "prise_service", "sexe",
-    "montant_brut_sans_ind_sans_alloc",     # M1
-    "montant_brut_total",                   # M2
-    # dimensions
-    "CODE_ORGANISME", "organisme",
-    "CODE_EMPLOI", "emploi",
-    "CODE_GRADE", "GRADE",
-    "statut_fonctionnaire",
-    "CODE_FONCTION", "fonction",
-    "CODE_SERVICE", "service",
-    "CODE_AFFECTATION", "lieu_affectation",
-    "CODE_POSTE",
-    "Code_CITP", "Metier_CITP",
-    "situation_matrimoniale",
-]
-
 METRIQUES = {
     "M1_sans_alloc": "m1",   # montant_brut_sans_ind_sans_alloc
     "M2_brut_total": "m2",   # montant_brut_total
@@ -114,15 +97,8 @@ GROUPES = [
     ("ParAnnee",                 ["annee"],                   "Par année d'observation",                       "Évolution dans le temps"),
     ("ParSexe",                  ["sexe"],                    "Par sexe",                                      "Démographie"),
     ("ParSituationMatrimoniale", ["situation_matrimoniale"],  "Par situation matrimoniale",                    "Démographie"),
-    ("ParGrade",                 ["GRADE"],                   "Par grade normalisé",                           "Grade & statut"),
-    ("ParSecteur",               ["secteur"],                 "Code organisme et libellé concaténés",          "Secteur"),
-    ("ParEmploi",                ["emploi"],                  "Par emploi",                                    "Emploi, fonction & service"),
-    ("ParCodeEmploi",            ["CODE_EMPLOI"],             "Par code emploi",                               "Emploi, fonction & service"),
-    ("ParFonction",              ["fonction"],                "Par fonction",                                  "Emploi, fonction & service"),
-    ("ParCodeFonction",          ["CODE_FONCTION"],           "Par code fonction",                             "Emploi, fonction & service"),
-    ("ParService",               ["service"],                 "Par service",                                   "Emploi, fonction & service"),
-    ("ParCodeService",           ["CODE_SERVICE"],            "Par code service",                              "Emploi, fonction & service"),
-    ("ParCITP",                  ["Code_CITP", "Metier_CITP"], "Par code et libellé CITP (métier)",             "Emploi, fonction & service"),
+    ("ParGrade",                 ["GRADE"],                   "Par grade normalisé",                           "Grade"),
+    ("ParCITP",                  ["Code_CITP", "Metier_CITP"], "Par code et libellé CITP (métier)",             "Classification CITP"),
 ]
 
 # ============================================================
@@ -186,31 +162,6 @@ def expr_borne_inf(largeur: int) -> pl.Expr:
     return ((pl.col("annees_experience") / largeur).floor() * largeur).clip(0, plafond(largeur))
 
 
-def ajouter_secteur(lf: pl.LazyFrame) -> pl.LazyFrame:
-    """Libellé stable pour réunir le code organisme et son nom."""
-    code = pl.col("code_organisme").cast(pl.Utf8).fill_null("").str.strip_chars()
-    nom = pl.col("organisme").cast(pl.Utf8).fill_null("").str.strip_chars()
-    return lf.with_columns(
-        pl.when((code != "") & (nom != ""))
-          .then(pl.concat_str([code, nom], separator=" — "))
-          .when(code != "").then(code)
-          .when(nom != "").then(nom)
-          .otherwise(pl.lit("(NC)"))
-          .alias("secteur")
-    )
-
-
-def _groupe_interne(groupe: list[str]) -> list[str]:
-    return ["code_organisme", "organisme"] if groupe == ["secteur"] else groupe
-
-
-def _finir_secteur(df: pl.DataFrame, groupe: list[str], classe: bool) -> pl.DataFrame:
-    if groupe != ["secteur"]:
-        return df
-    df = ajouter_secteur(df.lazy()).collect()
-    colonnes = (["classe_experience"] if classe else []) + ["secteur"] + list(_COLS_NUMERIQUES_ORDRE)
-    return df.select(colonnes)
-
 # ============================================================
 # TÉLÉCHARGEMENT + CACHE LOCAL COMPACT
 # ============================================================
@@ -254,20 +205,7 @@ def construire_cache(chemin_parquet: Path, force: bool) -> None:
             pl.col("annees_experience"),
             pl.col("montant_brut_sans_ind_sans_alloc").cast(pl.Float64).alias("m1"),
             pl.col("montant_brut_total").cast(pl.Float64).alias("m2"),
-            pl.col("CODE_ORGANISME").cast(pl.Utf8).alias("code_organisme"),
-            pl.col("organisme").cast(pl.Utf8),
-            pl.col("CODE_EMPLOI").cast(pl.Utf8),
-            pl.col("emploi").cast(pl.Utf8),
-            pl.col("CODE_GRADE").cast(pl.Utf8),
             pl.col("GRADE").cast(pl.Utf8),
-            pl.col("statut_fonctionnaire").cast(pl.Utf8),
-            pl.col("CODE_FONCTION").cast(pl.Utf8),
-            pl.col("fonction").cast(pl.Utf8),
-            pl.col("CODE_SERVICE").cast(pl.Utf8),
-            pl.col("service").cast(pl.Utf8),
-            pl.col("CODE_AFFECTATION").cast(pl.Utf8),
-            pl.col("lieu_affectation").cast(pl.Utf8),
-            pl.col("CODE_POSTE").cast(pl.Utf8),
             pl.col("Code_CITP").cast(pl.Utf8),
             pl.col("Metier_CITP").cast(pl.Utf8),
             pl.col("situation_matrimoniale").cast(pl.Utf8),
@@ -322,19 +260,18 @@ def _base_valide(lf: pl.LazyFrame, col_val: str) -> pl.LazyFrame:
 
 def tableau_stats(lf: pl.LazyFrame, largeur: int, metrique: str, groupe: list[str]) -> pl.DataFrame:
     col_val = METRIQUES[metrique]
-    groupe_calc = _groupe_interne(groupe)
     base = (
         _base_valide(lf, col_val)
         .with_columns(
             [expr_classe(largeur).alias("classe_experience"), expr_borne_inf(largeur).alias("_borne")]
-            + [pl.col(c).cast(pl.Utf8).fill_null("" if groupe == ["secteur"] else "(NC)").alias(c)
-               for c in groupe_calc if c != "annee"]
+            + [pl.col(c).cast(pl.Utf8).fill_null("(NC)").alias(c)
+               for c in groupe if c != "annee"]
         )
     )
-    par = ["_borne", "classe_experience"] + groupe_calc
-    tre = ["_borne"] + groupe_calc
+    par = ["_borne", "classe_experience"] + groupe
+    tre = ["_borne"] + groupe
 
-    df = (
+    return (
         base
         .group_by(par)
         .agg(_aggregats(col_val))
@@ -342,24 +279,21 @@ def tableau_stats(lf: pl.LazyFrame, largeur: int, metrique: str, groupe: list[st
         .drop("_borne")
         .collect()
     )
-    return _finir_secteur(df, groupe, classe=True)
 
 
 def tableau_annee_exacte(lf: pl.LazyFrame, metrique: str, annees: int,
                          groupe: list[str]) -> pl.DataFrame:
     """Années révolues : 10 signifie [10, 11[, 15 signifie [15, 16[."""
     col_val = METRIQUES[metrique]
-    groupe_calc = _groupe_interne(groupe)
     base = (_base_valide(lf, col_val)
             .filter((pl.col("annees_experience") >= annees) &
                     (pl.col("annees_experience") < annees + 1)))
-    if groupe_calc:
-        df = (base.with_columns([
-                    pl.col(c).cast(pl.Utf8).fill_null("" if groupe == ["secteur"] else "(NC)").alias(c)
-                    for c in groupe_calc if c != "annee"
+    if groupe:
+        return (base.with_columns([
+                    pl.col(c).cast(pl.Utf8).fill_null("(NC)").alias(c)
+                    for c in groupe if c != "annee"
                 ])
-                .group_by(groupe_calc).agg(_aggregats(col_val)).sort(groupe_calc).collect())
-        return _finir_secteur(df, groupe, classe=False)
+                .group_by(groupe).agg(_aggregats(col_val)).sort(groupe).collect())
     return base.select(_aggregats(col_val)).collect()
 
 # ============================================================
@@ -372,19 +306,6 @@ ENTETES = {
     "sexe": "Sexe",
     "situation_matrimoniale": "Situation matrimoniale",
     "GRADE": "Grade",
-    "CODE_GRADE": "Code grade",
-    "statut_fonctionnaire": "Statut",
-    "organisme": "Secteur / organisme",
-    "secteur": "Secteur (code — organisme)",
-    "code_organisme": "Code organisme",
-    "lieu_affectation": "Lieu d'affectation",
-    "CODE_POSTE": "Code poste",
-    "emploi": "Emploi",
-    "CODE_EMPLOI": "Code emploi",
-    "fonction": "Fonction",
-    "CODE_FONCTION": "Code fonction",
-    "service": "Service",
-    "CODE_SERVICE": "Code service",
     "Code_CITP": "Code CITP",
     "Metier_CITP": "Métier (CITP)",
     "n_obs": "Observations",
@@ -559,7 +480,6 @@ def ecrire_metadonnees(wb):
         ("Expérience négative", "période < prise de service → exclues du calcul."),
         ("prise_service manquante", "exclue du calcul d'expérience."),
         ("Statistiques", "n_obs = observations (agent-mois) ; n_agents = matricules distincts du groupe ; salaire moyen/médian, P25, P75, min, max (FCFA)."),
-        ("Secteur", "Concaténation du CODE_ORGANISME et du libellé organisme du panel. Si un seul est renseigné, sa valeur est conservée ; sinon (NC). Ce regroupement est distinct du barème ANSTAT."),
         ("10 et 15 ans", "Expérience en années révolues : 10 ans = [10, 11[, 15 ans = [15, 16[. Les statistiques suivent les mêmes exclusions et unités que les autres feuilles."),
     ]
     r = 4
@@ -650,8 +570,7 @@ def main() -> None:
         desc = f"Agents ayant {annees} années d'expérience révolues [{annees}, {annees + 1}["
         blocs = []
         for metrique in METRIQUES:
-            for libelle, groupe in (("Ensemble", []), ("Par année", ["annee"]),
-                                   ("Par secteur", ["secteur"])):
+            for libelle, groupe in (("Ensemble", []), ("Par année", ["annee"])):
                 df = tableau_annee_exacte(lf, metrique, annees, groupe)
                 blocs.append((f"{LIB_METRIQUE[metrique]} — {libelle}", df))
         blocs_par_feuille[nom_feuille] = (f"Expérience : {annees} ans révolus", desc, blocs)
