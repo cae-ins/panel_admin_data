@@ -2,7 +2,7 @@
 # PANEL ADMIN — ÉTAPE 11 : SALAIRE DÉSAGRÉGÉ PAR ANNÉES D'EXPÉRIENCE
 # ============================================================
 # Désagrège le salaire par tranches d'années d'expérience
-# (classes de 5 ans) calculées depuis la date de prise de service.
+# (classes de 5 ans) calculées depuis la date de prise de service corrigée.
 #
 #   annees_experience = (période d'observation − prise_service) / 365,25
 #
@@ -10,7 +10,7 @@
 # grade et CITP.
 # Deux analyses ciblent les années d'expérience révolues 10 et 15.
 #
-# Source  : s3://gold/panel_admin/panel_complet.parquet
+# Source  : s3://gold/panel_admin/trajectoire-pro/panel_trajectoire_clean.parquet
 # Sortie  : s3://staging/panel_admin/exports_gold/salaire_experience.xlsx
 #
 # Structure du classeur produit :
@@ -66,7 +66,7 @@ MINIO_SECRET_KEY = os.getenv("MINIO_SECRET_KEY")
 BUCKET_GOLD    = os.getenv("BUCKET_GOLD", "gold")
 BUCKET_STAGING = os.getenv("BUCKET_STAGING", "staging")
 
-KEY_PANEL      = "panel_admin/panel_complet.parquet"
+KEY_PANEL      = "panel_admin/trajectoire-pro/panel_trajectoire_clean.parquet"
 PREFIX_EXPORTS = "panel_admin/exports_gold"
 OUTPUT_KEY     = f"{PREFIX_EXPORTS}/salaire_experience.xlsx"
 
@@ -76,7 +76,7 @@ CLASSE_PLAFOND  = 45         # au-delà : "45+"
 DAYS_PER_YEAR   = 365.25
 
 OUTDIR   = Path("analyse_experience_out")   # copie locale (inspection)
-CACHE    = OUTDIR / "_cache_compact.parquet"
+CACHE    = OUTDIR / "_cache_trajectoire_clean.parquet"
 FICHIER_XLSX = OUTDIR / "salaire_experience.xlsx"
 
 METRIQUES = {
@@ -167,10 +167,10 @@ def expr_borne_inf(largeur: int) -> pl.Expr:
 # ============================================================
 
 def telecharger_panel() -> Path:
-    """Télécharge panel_complet.parquet (Gold) dans un fichier temporaire local."""
+    """Télécharge le panel trajectoire nettoyé dans un fichier temporaire local."""
     info = s3.head_object(Bucket=BUCKET_GOLD, Key=KEY_PANEL)
     taille = info["ContentLength"]
-    tmp = Path(tempfile.gettempdir()) / "panel_complet.parquet"
+    tmp = Path(tempfile.gettempdir()) / "panel_trajectoire_clean.parquet"
     print(f"  Téléchargement de s3://{BUCKET_GOLD}/{KEY_PANEL}  ({taille/1024**2:.1f} MB)")
     t0 = time.time()
     s3.download_file(BUCKET_GOLD, KEY_PANEL, str(tmp))
@@ -427,7 +427,7 @@ def ecrire_sommaire(wb, sections):
     for cle, lib in [
         ("M1", "montant_brut_sans_ind_sans_alloc — population « Statut conforme (barème) » ; codes postes 124+228+271+425 ; HORS indemnités et HORS allocation familiale (421)."),
         ("M2", "montant_brut_total — population « Statut_Total conforme (barème) » ; Feuille 1, tous codes postes confondus."),
-        ("Expérience", "annees_experience = (période d'observation − prise_service) / 365,25 ; classes de 5 ans. Feuilles 10 et 15 ans : années révolues [10, 11[ et [15, 16[."),
+        ("Expérience", "Calculée depuis la prise_service corrigée du panel trajectoire : (période d'observation − prise_service) / 365,25. Classes de 5 ans ; feuilles 10 et 15 ans : [10, 11[ et [15, 16[."),
         ("Source", f"s3://{BUCKET_GOLD}/{KEY_PANEL} (2015→2026)."),
         ("Exclusions", "salaires ≤ 0 exclus par métrique ; expérience négative et prise_service manquante exclues."),
     ]:
@@ -473,7 +473,7 @@ def ecrire_metadonnees(wb):
         ("M1", "Méthodo 1 — Population « Statut conforme (barème) ». Variable : montant_brut_sans_ind_sans_alloc (codes postes 124+228+271+425, hors allocation familiale 421)."),
         ("M2", "Méthodo 2 — Population « Statut_Total conforme (barème) ». Variable : montant_brut_total (Feuille 1, tous codes postes confondus)."),
         ("Source", f"s3://{BUCKET_GOLD}/{KEY_PANEL} — lecture ; sortie dans s3://{BUCKET_STAGING}/{OUTPUT_KEY}."),
-        ("Calcul expérience", "annees_experience = (période d'observation − prise_service) / 365,25 ; arrondi à la classe de 5 ans inférieure."),
+        ("Calcul expérience", "annees_experience = (période d'observation − prise_service corrigée) / 365,25 ; classement dans la tranche de 5 ans inférieure. L'indicateur anciennete_a_la_periode arrondi du panel n'est pas utilisé pour les seuils exacts."),
         ("Classes (5 ans)", "[0-5[, [5-10[, [10-15[, [15-20[, [20-25[, [25-30[, [30-35[, [35-40[, [40-45[, [45+."),
         ("Exclusions M1", "montant_brut_sans_ind_sans_alloc ≤ 0 ou null."),
         ("Exclusions M2", "montant_brut_total ≤ 0 ou null."),
@@ -528,7 +528,7 @@ def main() -> None:
     ap = argparse.ArgumentParser(description="Salaire désagrégé par années d'expérience.")
     ap.add_argument("--force", action="store_true", help="Reconstruire le cache local")
     ap.add_argument("--garder-parquet", action="store_true",
-                    help="Ne pas supprimer le panel_complet.parquet téléchargé")
+                    help="Ne pas supprimer le panel trajectoire nettoyé téléchargé")
     ap.add_argument("--sans-upload", action="store_true",
                     help="Créer seulement la copie Excel locale, sans remplacer la sortie MinIO")
     args = ap.parse_args()
