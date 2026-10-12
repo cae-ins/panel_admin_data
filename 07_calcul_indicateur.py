@@ -27,7 +27,7 @@
 # Paramètres configurables :
 #   MODE_SALAIRE_BRUT : True  = agrégation par cle_unique (salaire brut)
 #                       False = agrégation par matricule (revenu salarial)
-#   PERIODE_RECENTE   : True  = années récentes uniquement (2024-2025)
+#   PERIODE_RECENTE   : True  = années récentes (2024 et suivantes)
 #                       False = période complète (2015 → dernière année)
 #   INCLURE_ZEROS     : True  = inclure salaires = 0 ou NA
 #                       False = salaire strictement > 0
@@ -67,8 +67,9 @@ load_dotenv(".env")
 # True = Salaire brut (cle_unique) | False = Revenu salarial (matricule)
 MODE_SALAIRE_BRUT = True
 
-# True = 2024-2025 | False = 2015 → dernière année disponible
-PERIODE_RECENTE   = True
+# Calculer les statuts sur toutes les années du panel pour que l'étape 11
+# puisse analyser toute la période disponible après une reprise depuis 06.
+PERIODE_RECENTE   = False
 
 # True = inclure zéros | False = salaire strictement > 0
 INCLURE_ZEROS     = True
@@ -142,7 +143,7 @@ s3 = boto3.client(
 
 print("=" * 70)
 print("STATUT BARÈME — Calcul du statut (Conforme/Inférieur/Supérieur)")
-print(f"  Période : {'2024-2025' if PERIODE_RECENTE else '2015 → récent'}")
+print(f"  Période : {'2024 → récent' if PERIODE_RECENTE else '2015 → récent'}")
 print("=" * 70)
 print()
 

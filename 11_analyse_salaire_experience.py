@@ -10,7 +10,8 @@
 # grade et CITP.
 # Deux analyses ciblent les années d'expérience révolues 10 et 15.
 #
-# Source  : s3://gold/panel_admin/trajectoire-pro/panel_trajectoire_clean.parquet
+# Sources : panel_trajectoire_clean.parquet (expérience corrigée) et
+#           base_avec_statut_corrigee.parquet (salaires et statuts après 07a).
 # Sortie  : s3://staging/panel_admin/exports_gold/salaire_experience.xlsx
 #
 # Structure du classeur produit :
@@ -21,15 +22,15 @@
 #
 # VARIABLES SALAIRE (cf. 07b_calcul_indicateurs.py)
 # -------------------------------------------------
-#   M1 = montant_brut_sans_ind_sans_alloc
-#        Population « Statut conforme (barème) » ; codes postes
+#   M1 = montant_brut_sans_ind_sans_alloc (après imputation de l'étape 07a)
+#        Population « Statut = Conforme au barème » ; codes postes
 #        124+228+271+425 ; HORS indemnités et HORS allocation familiale (421).
-#   M2 = montant_brut_total
-#        Population « Statut_Total conforme (barème) » ; Feuille 1,
+#   M2 = montant_brut_total (après imputation de l'étape 07a)
+#        Population « Statut_Total = Conforme au barème » ; Feuille 1,
 #        tous codes postes confondus.
 #
 # Usage :
-#   python 11_analyse_salaire_experience.py            # réutilise le cache local si présent
+#   python 11_analyse_salaire_experience.py            # réutilise le cache local si à jour
 #   python 11_analyse_salaire_experience.py --force    # reconstruit le cache
 #   python 11_analyse_salaire_experience.py --sans-upload  # vérification locale
 #
@@ -67,6 +68,7 @@ BUCKET_GOLD    = os.getenv("BUCKET_GOLD", "gold")
 BUCKET_STAGING = os.getenv("BUCKET_STAGING", "staging")
 
 KEY_PANEL      = "panel_admin/trajectoire-pro/panel_trajectoire_clean.parquet"
+KEY_STATUTS    = "panel_admin/base_avec_statut_corrigee.parquet"
 PREFIX_EXPORTS = "panel_admin/exports_gold"
 OUTPUT_KEY     = f"{PREFIX_EXPORTS}/salaire_experience.xlsx"
 
@@ -76,7 +78,7 @@ CLASSE_PLAFOND  = 45         # au-delà : "45+"
 DAYS_PER_YEAR   = 365.25
 
 OUTDIR   = Path("analyse_experience_out")   # copie locale (inspection)
-CACHE    = OUTDIR / "_cache_trajectoire_clean.parquet"
+CACHE    = OUTDIR / "_cache_trajectoire_statuts_conformes.parquet"
 FICHIER_XLSX = OUTDIR / "salaire_experience.xlsx"
 
 METRIQUES = {
@@ -166,29 +168,63 @@ def expr_borne_inf(largeur: int) -> pl.Expr:
 # TÉLÉCHARGEMENT + CACHE LOCAL COMPACT
 # ============================================================
 
-def telecharger_panel() -> Path:
-    """Télécharge le panel trajectoire nettoyé dans un fichier temporaire local."""
-    info = s3.head_object(Bucket=BUCKET_GOLD, Key=KEY_PANEL)
+def telecharger_source(key: str, nom_local: str) -> Path:
+    """Télécharge une sortie existante du pipeline Gold."""
+    info = s3.head_object(Bucket=BUCKET_GOLD, Key=key)
     taille = info["ContentLength"]
-    tmp = Path(tempfile.gettempdir()) / "panel_trajectoire_clean.parquet"
-    print(f"  Téléchargement de s3://{BUCKET_GOLD}/{KEY_PANEL}  ({taille/1024**2:.1f} MB)")
+    tmp = Path(tempfile.gettempdir()) / nom_local
+    print(f"  Téléchargement de s3://{BUCKET_GOLD}/{key}  ({taille/1024**2:.1f} MB)")
     t0 = time.time()
-    s3.download_file(BUCKET_GOLD, KEY_PANEL, str(tmp))
+    s3.download_file(BUCKET_GOLD, key, str(tmp))
     print(f"  ✓ Téléchargé en {time.time()-t0:.1f}s → {tmp}")
     return tmp
 
 
-def construire_cache(chemin_parquet: Path, force: bool) -> None:
-    if CACHE.exists() and not force:
-        print(f"  ↺ Cache local réutilisé : {CACHE}  (--force pour reconstruire)")
-        return
-
+def construire_cache(chemin_parquet: Path, chemin_statuts: Path) -> None:
     OUTDIR.mkdir(parents=True, exist_ok=True)
     t0 = time.time()
 
+    statuts = pl.scan_parquet(str(chemin_statuts))
+    colonnes_requises = {"matricule", "mois_annee", "annee", "Statut", "Statut_Total",
+                        "montant_brut_sans_ind_sans_alloc", "montant_brut_total"}
+    manquantes = colonnes_requises - set(statuts.collect_schema().names())
+    if manquantes:
+        raise ValueError(f"Colonnes absentes de {KEY_STATUTS} : {sorted(manquantes)}")
+
+    annees_panel = set(pl.scan_parquet(str(chemin_parquet))
+                      .filter(pl.col("annee").is_in(ANNEES))
+                      .select(pl.col("annee").unique()).collect().get_column("annee").to_list())
+    annees_statuts = set(statuts.select(pl.col("annee").unique())
+                         .collect().get_column("annee").to_list())
+    annees_absentes = sorted(annees_panel - annees_statuts)
+    if annees_absentes:
+        raise ValueError(
+            f"Statuts absents pour les années {annees_absentes} dans {KEY_STATUTS}. "
+            "Relancer les étapes 07 et 07a sur toutes les années avant l'étape 11."
+        )
+
+    cles = ["matricule", "mois_annee"]
+    doublons = (statuts.group_by(cles).agg(pl.len().alias("n"))
+                .filter(pl.col("n") > 1).select(pl.len()).collect().item())
+    if doublons:
+        raise ValueError(f"{KEY_STATUTS} contient {doublons:,} clés agent-mois dupliquées")
+
+    n_statuts = statuts.select(pl.len()).collect().item()
+    statuts = statuts.select([
+        pl.col("matricule").cast(pl.Utf8),
+        pl.col("mois_annee").cast(pl.Utf8),
+        pl.col("Statut"), pl.col("Statut_Total"),
+        pl.col("montant_brut_sans_ind_sans_alloc").cast(pl.Float64).alias("m1"),
+        pl.col("montant_brut_total").cast(pl.Float64).alias("m2"),
+    ])
     lf = (
         pl.scan_parquet(str(chemin_parquet))
         .filter(pl.col("annee").is_in(ANNEES))
+        .with_columns([
+            pl.col("matricule").cast(pl.Utf8),
+            pl.col("mois_annee").cast(pl.Utf8),
+        ])
+        .join(statuts, on=cles, how="inner")
         .with_columns([
             parse_date_multi("prise_service").alias("_ps_dt"),
             pl.date(pl.col("annee").cast(pl.Int32),
@@ -203,8 +239,8 @@ def construire_cache(chemin_parquet: Path, force: bool) -> None:
             pl.col("annee").cast(pl.Int32),
             pl.col("sexe").cast(pl.Utf8),
             pl.col("annees_experience"),
-            pl.col("montant_brut_sans_ind_sans_alloc").cast(pl.Float64).alias("m1"),
-            pl.col("montant_brut_total").cast(pl.Float64).alias("m2"),
+            pl.col("m1"), pl.col("m2"),
+            pl.col("Statut"), pl.col("Statut_Total"),
             pl.col("GRADE").cast(pl.Utf8),
             pl.col("Code_CITP").cast(pl.Utf8),
             pl.col("Metier_CITP").cast(pl.Utf8),
@@ -216,7 +252,12 @@ def construire_cache(chemin_parquet: Path, force: bool) -> None:
     lf.sink_parquet(str(CACHE), compression="zstd")
 
     n = pl.scan_parquet(str(CACHE)).select(pl.len()).collect().item()
+    if n == 0:
+        CACHE.unlink()
+        raise ValueError("Aucune observation commune aux deux sources Gold")
     print(f"  ✓ Cache écrit : {CACHE}  ({n:,} lignes, {time.time()-t0:.1f}s)")
+    print(f"    Observations avec statut sans correspondance trajectoire ou hors période : "
+          f"{n_statuts - n:,}")
 
 
 def statistiques_qualite(chemin_parquet: Path) -> None:
@@ -253,7 +294,9 @@ def _aggregats(col_val: str) -> list[pl.Expr]:
 
 
 def _base_valide(lf: pl.LazyFrame, col_val: str) -> pl.LazyFrame:
+    statut = "Statut" if col_val == "m1" else "Statut_Total"
     return (lf
+        .filter(pl.col(statut) == "Conforme au barème")
         .filter(pl.col("annees_experience").is_not_null() & (pl.col("annees_experience") >= 0))
         .filter(pl.col(col_val).is_not_null() & (pl.col(col_val) > 0)))
 
@@ -415,7 +458,7 @@ def ecrire_feuille_groupe(wb, nom_feuille, titre, description, blocs):
     ws.sheet_properties.tabColor = "2E75B6"
 
 
-def ecrire_sommaire(wb, sections):
+def ecrire_sommaire(wb, sections, annees_couvertes):
     ws = wb.create_sheet("SOMMAIRE")
     ws.merge_cells("A1:F1")
     _cell(ws, 1, 1, "SOMMAIRE — Salaire par années d'expérience (classes de 5 ans)",
@@ -428,8 +471,8 @@ def ecrire_sommaire(wb, sections):
         ("M1", "montant_brut_sans_ind_sans_alloc — population « Statut conforme (barème) » ; codes postes 124+228+271+425 ; HORS indemnités et HORS allocation familiale (421)."),
         ("M2", "montant_brut_total — population « Statut_Total conforme (barème) » ; Feuille 1, tous codes postes confondus."),
         ("Expérience", "Calculée depuis la prise_service corrigée du panel trajectoire : (période d'observation − prise_service) / 365,25. Classes de 5 ans ; feuilles 10 et 15 ans : [10, 11[ et [15, 16[."),
-        ("Source", f"s3://{BUCKET_GOLD}/{KEY_PANEL} (2015→2026)."),
-        ("Exclusions", "salaires ≤ 0 exclus par métrique ; expérience négative et prise_service manquante exclues."),
+        ("Sources", f"s3://{BUCKET_GOLD}/{KEY_PANEL} (expérience) ; s3://{BUCKET_GOLD}/{KEY_STATUTS} (statuts et salaires). Années couvertes : {annees_couvertes}."),
+        ("Exclusions", "Seules les observations présentes dans les deux sources et conformes au barème pour la métrique sont retenues ; salaires ≤ 0, expérience négative et prise_service manquante exclus."),
     ]:
         _cell(ws, r, 1, cle, font=Font(bold=True))
         _cell(ws, r, 2, lib, align=_ALIGN_WRAP)
@@ -465,18 +508,19 @@ def ecrire_sommaire(wb, sections):
     ws.sheet_properties.tabColor = "1F4E78"
 
 
-def ecrire_metadonnees(wb):
+def ecrire_metadonnees(wb, annees_couvertes):
     ws = wb.create_sheet("Métadonnées")
     _titre_feuille(ws, "MÉTADONNÉES", 4)
     _lien(ws, 2, 1, "← Retour au sommaire", "SOMMAIRE")
     lignes = [
         ("M1", "Méthodo 1 — Population « Statut conforme (barème) ». Variable : montant_brut_sans_ind_sans_alloc (codes postes 124+228+271+425, hors allocation familiale 421)."),
         ("M2", "Méthodo 2 — Population « Statut_Total conforme (barème) ». Variable : montant_brut_total (Feuille 1, tous codes postes confondus)."),
-        ("Source", f"s3://{BUCKET_GOLD}/{KEY_PANEL} — lecture ; sortie dans s3://{BUCKET_STAGING}/{OUTPUT_KEY}."),
+        ("Sources", f"s3://{BUCKET_GOLD}/{KEY_PANEL} (prise_service corrigée) ; s3://{BUCKET_GOLD}/{KEY_STATUTS} (statuts et montants après imputation 07a). Jointure matricule × mois_annee ; seules les périodes communes sont analysées. Sortie : s3://{BUCKET_STAGING}/{OUTPUT_KEY}."),
+        ("Années couvertes", annees_couvertes),
         ("Calcul expérience", "annees_experience = (période d'observation − prise_service corrigée) / 365,25 ; classement dans la tranche de 5 ans inférieure. L'indicateur anciennete_a_la_periode arrondi du panel n'est pas utilisé pour les seuils exacts."),
         ("Classes (5 ans)", "[0-5[, [5-10[, [10-15[, [15-20[, [20-25[, [25-30[, [30-35[, [35-40[, [40-45[, [45+."),
-        ("Exclusions M1", "montant_brut_sans_ind_sans_alloc ≤ 0 ou null."),
-        ("Exclusions M2", "montant_brut_total ≤ 0 ou null."),
+        ("Exclusions M1", "Statut différent de « Conforme au barème » ; montant_brut_sans_ind_sans_alloc ≤ 0 ou null."),
+        ("Exclusions M2", "Statut_Total différent de « Conforme au barème » ; montant_brut_total ≤ 0 ou null."),
         ("Expérience négative", "période < prise de service → exclues du calcul."),
         ("prise_service manquante", "exclue du calcul d'expérience."),
         ("Statistiques", "n_obs = observations (agent-mois) ; n_agents = matricules distincts du groupe ; salaire moyen/médian, P25, P75, min, max (FCFA)."),
@@ -495,7 +539,8 @@ def ecrire_metadonnees(wb):
     ws.sheet_properties.tabColor = "8EA9C1"
 
 
-def exporter(blocs_par_feuille: dict, ordre_sommaire: list, publier: bool = True) -> None:
+def exporter(blocs_par_feuille: dict, ordre_sommaire: list,
+             annees_couvertes: str, publier: bool = True) -> None:
     OUTDIR.mkdir(parents=True, exist_ok=True)
     wb = Workbook()
     wb.remove(wb.active)
@@ -503,12 +548,12 @@ def exporter(blocs_par_feuille: dict, ordre_sommaire: list, publier: bool = True
     sections: dict[str, list] = {}
     for section, nom, titre, desc, n_lignes in ordre_sommaire:
         sections.setdefault(section, []).append((nom, titre, desc, n_lignes))
-    ecrire_sommaire(wb, sections)          # SOMMAIRE créé en premier
+    ecrire_sommaire(wb, sections, annees_couvertes)  # SOMMAIRE créé en premier
 
     for nom, (titre, desc, blocs) in blocs_par_feuille.items():
         ecrire_feuille_groupe(wb, nom, titre, desc, blocs)
 
-    ecrire_metadonnees(wb)
+    ecrire_metadonnees(wb, annees_couvertes)
 
     wb.save(FICHIER_XLSX)
     print(f"  ✓ Excel local : {FICHIER_XLSX}")
@@ -535,22 +580,35 @@ def main() -> None:
 
     print("=" * 70)
     print(" ÉTAPE 11 — SALAIRE PAR ANNÉES D'EXPÉRIENCE (classes de 5 ans)")
-    print(f" Source : s3://{BUCKET_GOLD}/{KEY_PANEL}")
+    print(f" Source expérience : s3://{BUCKET_GOLD}/{KEY_PANEL}")
+    print(f" Source conformité : s3://{BUCKET_GOLD}/{KEY_STATUTS}")
     print(f" Sortie : {FICHIER_XLSX if args.sans_upload else f's3://{BUCKET_STAGING}/{OUTPUT_KEY}'}")
     print("=" * 70)
 
-    if CACHE.exists() and not args.force:
+    # Les sorties amont sont lues telles quelles : aucune étape 06/07/07a/10 relancée.
+    sources = [KEY_PANEL, KEY_STATUTS]
+    dates_sources = [s3.head_object(Bucket=BUCKET_GOLD, Key=key)["LastModified"].timestamp()
+                     for key in sources]
+    if CACHE.exists() and not args.force and CACHE.stat().st_mtime >= max(dates_sources):
         print(f"  ↺ Cache local réutilisé : {CACHE}  (--force pour reconstruire)")
     else:
-        chemin = telecharger_panel()
+        chemins = []
         try:
-            statistiques_qualite(chemin)
-            construire_cache(chemin, force=True)
+            chemins.append(telecharger_source(KEY_PANEL, "panel_trajectoire_clean_11.parquet"))
+            chemins.append(telecharger_source(KEY_STATUTS, "base_avec_statut_corrigee_11.parquet"))
+            statistiques_qualite(chemins[0])
+            construire_cache(chemins[0], chemins[1])
         finally:
-            if not args.garder_parquet and chemin.exists():
-                chemin.unlink()
+            if not args.garder_parquet:
+                for chemin in chemins:
+                    if chemin.exists():
+                        chemin.unlink()
 
     lf = pl.scan_parquet(str(CACHE))
+    annees_couvertes = (lf.select(pl.col("annee").unique().sort())
+                       .collect().get_column("annee").to_list())
+    print(f"  Années communes aux deux sources : {annees_couvertes}")
+    libelle_annees = ", ".join(map(str, annees_couvertes))
 
     blocs_par_feuille: dict[str, tuple] = {}
     ordre_sommaire: list[tuple] = []
@@ -578,7 +636,8 @@ def main() -> None:
                                len(blocs[0][1])))
         print(f"  · {nom_feuille} : {blocs[0][1]['n_obs'][0]:,} observations (M1)")
 
-    exporter(blocs_par_feuille, ordre_sommaire, publier=not args.sans_upload)
+    exporter(blocs_par_feuille, ordre_sommaire, libelle_annees,
+             publier=not args.sans_upload)
 
     print("\n" + "=" * 70)
     print(" APERÇU — Global · M1 sans allocation familiale")

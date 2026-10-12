@@ -2,7 +2,7 @@
 # PANEL ADMIN — ORCHESTRATEUR PRINCIPAL
 # ============================================================
 # Lance l'ensemble du pipeline de consolidation et d'analyse
-# de la masse salariale administrative 2015-2025.
+# de la masse salariale administrative depuis 2015.
 #
 # Pipeline :
 #   01  Pré-analyse des colonnes (staging)
@@ -13,15 +13,19 @@
 #   04  Validation Silver (contrôles qualité)
 #   05  Silver → Gold     (agrégations masse salariale + effectifs)
 #   06  Compilation panel individu × période
-#   07  Calcul des indicateurs salaires
+#   07  Calcul des statuts barème M1/M2 (toutes années)
+#   07a Imputation hors-barème, statuts et montants corrigés
+#   10  Correction de la prise de service et des trajectoires
+#   11  Analyse salaire × années d'expérience (Excel → staging/exports_gold)
+#   07b Calcul des indicateurs salaires
 #   08  Fichier Excel avec sommaire structuré
 #   09  Chargement panel Gold → PostgreSQL (alimente Superset)
-#   11  Analyse salaire × années d'expérience (Excel → staging/exports_gold)
+#   L'ordre après 07a suit les dépendances de 11.
 #
 # Modes d'exécution :
 #   python orchestrateur.py                → pipeline complet
 #   python orchestrateur.py --depuis 03    → reprend à partir de l'étape 03
-#   python orchestrateur.py --etapes 06 07 08   → étapes spécifiques uniquement
+#   python orchestrateur.py --etapes 06 07 07a 10 11 → expérience uniquement
 #   python orchestrateur.py --dry-run      → affiche le plan sans exécuter
 #
 # En cas d'échec d'une étape, le pipeline s'arrête et affiche
@@ -108,18 +112,50 @@ ETAPES = [
     },
     {
         "id":          "07",
-        "nom":         "Calcul indicateurs",
+        "nom":         "Calcul statuts barème",
         "script":      "07_calcul_indicateur.py",
-        "description": "Indicateurs salaires : P25/P75, grade, sexe, CITP, "
-                       "multi-postes, salaire brut par composantes",
+        "description": "Produit base_avec_statut.parquet (M1 : Statut ; M2 : Statut_Total) "
+                       "pour toutes les années disponibles.",
+        "optionnelle": False,
+    },
+    {
+        "id":          "07a",
+        "nom":         "Imputation hors-barème",
+        "script":      "07a_imputer_hors_bareme.py",
+        "description": "Produit base_avec_statut_corrigee.parquet avec statuts et "
+                       "montants après imputation.",
+        "optionnelle": False,
+    },
+    {
+        "id":          "10",
+        "nom":         "Correction trajectoires",
+        "script":      "10_correction_gold_trajectoire.py",
+        "description": "Produit panel_trajectoire_clean.parquet depuis panel_complet.parquet "
+                       "avec prise_service corrigée.",
+        "optionnelle": False,
+    },
+    {
+        "id":          "11",
+        "nom":         "Salaire × années d'expérience",
+        "script":      "11_analyse_salaire_experience.py",
+        "description": "Croise la date de prise de service corrigée (10) avec les statuts "
+                       "et montants corrigés (07a). Retient Statut conforme pour M1 "
+                       "et Statut_Total conforme pour M2 ; produit salaire_experience.xlsx.",
+        "optionnelle": False,
+    },
+    {
+        "id":          "07b",
+        "nom":         "Calcul indicateurs salaires",
+        "script":      "07b_calcul_indicateurs.py",
+        "description": "Produit les indicateurs salariaux M1/M2 à partir des "
+                       "observations conformes au barème.",
         "optionnelle": False,
     },
     {
         "id":          "08",
         "nom":         "Excel avec sommaire",
         "script":      "08_creation_fichier_excel_avec_sommaire.py",
-        "description": "Fichier Excel navigable avec sommaire 4 sections "
-                       "(CITP, Grade, Sexe, Multi-postes)",
+        "description": "Fichier Excel navigable avec sommaire des indicateurs salariaux.",
         "optionnelle": False,
     },
     {
@@ -128,16 +164,6 @@ ETAPES = [
         "script":      "09_charger_panel_pg.py",
         "description": "Charge panel_complet.parquet (Gold) dans la table panel "
                        "de PostgreSQL via DuckDB. Prérequis pour le dashboard Superset.",
-        "optionnelle": False,
-    },
-    {
-        "id":          "11",
-        "nom":         "Salaire × années d'expérience",
-        "script":      "11_analyse_salaire_experience.py",
-        "description": "Désagrège le salaire par classes d'expérience de 5 ans "
-                       "(calculée depuis la date de prise de service), par grade, sexe, "
-                       "statut, organisme/secteur, emploi, fonction, service, poste, CITP. "
-                       "Produit salaire_experience.xlsx (M1 + M2) dans staging/exports_gold.",
         "optionnelle": False,
     },
 ]
@@ -195,7 +221,7 @@ def verifier_scripts(etapes: list[dict], repertoire: str) -> list[str]:
 # ============================================================
 
 parser = argparse.ArgumentParser(
-    description="Orchestrateur du pipeline Panel Admin 2015-2025",
+    description="Orchestrateur du pipeline Panel Admin (jusqu'à l'étape 11)",
     formatter_class=argparse.RawDescriptionHelpFormatter,
     epilog="""
 Exemples :
@@ -280,7 +306,7 @@ if manquants and not args.dry_run:
 
 print()
 print(separateur())
-print("  PANEL ADMIN — ORCHESTRATEUR PIPELINE 2015-2025")
+print("  PANEL ADMIN — ORCHESTRATEUR PIPELINE (depuis 2015)")
 print(f"  Démarrage : {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
 print(f"  Répertoire : {args.repertoire}")
 print(separateur())

@@ -11,13 +11,18 @@
 #        → gold/panel_admin/base_avec_statut.parquet
 #   07a  Imputation hors-barème (forward/backward fill)
 #        → gold/panel_admin/base_avec_statut_corrigee.parquet
+#   10   Correction des trajectoires depuis panel_complet.parquet
+#        → gold/panel_admin/trajectoire-pro/panel_trajectoire_clean.parquet
+#   11   Salaire par expérience des observations conformes M1/M2
+#        → staging/panel_admin/exports_gold/salaire_experience.xlsx
 #   07b  Calcul indicateurs salaires (conformes M1 + M2)
 #        → staging/.../indicateurs_salaire_brut_2024_2025_avec_zeros.xlsx
 #   08   Fichier Excel avec sommaire structuré (5 sections + ANSTAT)
 #        → staging/.../indicateurs_salaire_brut_2024_2025_SOMMAIRE.xlsx
 #   09   Chargement panel Gold → PostgreSQL (alimente Superset)
 #        → table `panel` dans datalab_db
-#        Script partagé depuis le dossier Gold parent (../09_charger_panel_pg.py)
+#        Script présent dans ce dossier (09_charger_panel_pg.py)
+#   L'ordre après 07a suit les dépendances de 11.
 #
 # Modes d'exécution :
 #   python orchestrateur.py                        → pipeline complet
@@ -60,7 +65,7 @@ ETAPES = [
         "script":      "07_calcul_indicateur.py",
         "description": "M1 : Statut (montant_brut_sans_ind_sans_alloc vs [min_bareme, max_bareme]). "
                        "M2 : Statut_Total (montant_brut_total vs [min_total, max_total]). "
-                       "Référentiel anstat_2025 — cluster secteur × grade. "
+                       "Toutes années ; référentiel anstat_2025 — cluster secteur × grade. "
                        "Produit base_avec_statut.parquet.",
         "optionnelle": False,
     },
@@ -71,6 +76,22 @@ ETAPES = [
         "description": "Forward/backward fill M1 + M2 pour les agents avec 1–5 mois "
                        "hors-barème. Restaure la valeur originale si l'imputation "
                        "dépasse les bornes. Produit base_avec_statut_corrigee.parquet.",
+        "optionnelle": False,
+    },
+    {
+        "id":          "10",
+        "nom":         "Correction trajectoires",
+        "script":      "10_correction_gold_trajectoire.py",
+        "description": "Corrige prise_service dans panel_complet.parquet et produit "
+                       "panel_trajectoire_clean.parquet.",
+        "optionnelle": False,
+    },
+    {
+        "id":          "11",
+        "nom":         "Salaire × années d'expérience",
+        "script":      "11_analyse_salaire_experience.py",
+        "description": "Joint le panel trajectoire corrigé (10) et les statuts/"
+                       "montants corrigés (07a). Analyse M1 et M2 conformes au barème.",
         "optionnelle": False,
     },
     {
@@ -96,7 +117,7 @@ ETAPES = [
     {
         "id":          "09",
         "nom":         "Chargement panel → PostgreSQL",
-        "script":      "../09_charger_panel_pg.py",   # script partagé dans le dossier Gold parent
+        "script":      "09_charger_panel_pg.py",
         "description": "Charge panel_complet.parquet (Gold) dans la table `panel` "
                        "de PostgreSQL (datalab_db) via DuckDB. "
                        "Prérequis pour le dashboard Superset.",
@@ -157,11 +178,11 @@ def verifier_scripts(etapes: list[dict], repertoire: str) -> list[str]:
 # ============================================================
 
 parser = argparse.ArgumentParser(
-    description="Orchestrateur pipeline No_allocation_Familiale (étapes 06 → 08)",
+    description="Orchestrateur pipeline No_allocation_Familiale (étapes 06 → 11)",
     formatter_class=argparse.RawDescriptionHelpFormatter,
     epilog="""
 Exemples :
-  python orchestrateur.py                        # pipeline complet (06 → 08)
+  python orchestrateur_No_AF.py                   # pipeline complet (06 → 11)
   python orchestrateur.py --depuis 07            # reprend à l'étape 07
   python orchestrateur.py --etapes 07b 08        # étapes spécifiques
   python orchestrateur.py --dry-run              # affiche le plan sans exécuter
@@ -238,7 +259,7 @@ if manquants and not args.dry_run:
 
 print()
 print(separateur())
-print("  PANEL ADMIN — ORCHESTRATEUR No_allocation_Familiale (06 → 08)")
+print("  PANEL ADMIN — ORCHESTRATEUR No_allocation_Familiale (06 → 11)")
 print(f"  Démarrage  : {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
 print(f"  Répertoire : {args.repertoire}")
 print(separateur())
@@ -356,6 +377,8 @@ if nb_echec == 0 and not ids_sautes:
     print("  Fichiers et tables produits :")
     print("    gold/panel_admin/panel_complet.parquet")
     print("    gold/panel_admin/base_avec_statut_corrigee.parquet")
+    print("    gold/panel_admin/trajectoire-pro/panel_trajectoire_clean.parquet")
+    print("    staging/panel_admin/exports_gold/salaire_experience.xlsx")
     print("    staging/panel_admin/exports_gold/indicateurs_salaire_brut_2024_2025_SOMMAIRE.xlsx")
     print("    PostgreSQL : datalab_db.panel  (alimenté par l'étape 09)")
 elif nb_echec == 0 and ids_sautes:
