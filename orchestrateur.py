@@ -16,6 +16,7 @@
 #   07  Calcul des indicateurs salaires
 #   08  Fichier Excel avec sommaire structuré
 #   09  Chargement panel Gold → PostgreSQL (alimente Superset)
+#   11  Analyse salaire × années d'expérience (Excel → staging/exports_gold)
 #
 # Modes d'exécution :
 #   python orchestrateur.py                → pipeline complet
@@ -127,6 +128,16 @@ ETAPES = [
         "script":      "09_charger_panel_pg.py",
         "description": "Charge panel_complet.parquet (Gold) dans la table panel "
                        "de PostgreSQL via DuckDB. Prérequis pour le dashboard Superset.",
+        "optionnelle": False,
+    },
+    {
+        "id":          "11",
+        "nom":         "Salaire × années d'expérience",
+        "script":      "11_analyse_salaire_experience.py",
+        "description": "Désagrège le salaire par classes d'expérience de 5 ans "
+                       "(calculée depuis la date de prise de service), par grade, sexe, "
+                       "statut, organisme/secteur, emploi, fonction, service, poste, CITP. "
+                       "Produit salaire_experience.xlsx (M1 + M2) dans staging/exports_gold.",
         "optionnelle": False,
     },
 ]
