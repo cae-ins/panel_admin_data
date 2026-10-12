@@ -6,10 +6,9 @@
 #
 #   annees_experience = (période d'observation − prise_service) / 365,25
 #
-# Ventilations produites : global, par année, par sexe, par grade,
-# par statut, par organisme/secteur, par emploi, par fonction,
-# par service, par lieu d'affectation, par poste, par CITP,
-# par situation matrimoniale.
+# Ventilations produites : global, année, sexe, situation matrimoniale,
+# grade, secteur (code et organisme), emploi, fonction, service et CITP.
+# Deux analyses ciblent les années d'expérience révolues 10 et 15.
 #
 # Source  : s3://gold/panel_admin/panel_complet.parquet
 # Sortie  : s3://staging/panel_admin/exports_gold/salaire_experience.xlsx
@@ -17,7 +16,7 @@
 # Structure du classeur produit :
 #   SOMMAIRE        — définitions M1/M2 + navigation cliquable
 #   Métadonnées     — méthode, périmètre, exclusions
-#   18 feuilles     — une par ventilation (bloc M1 puis bloc M2)
+#   15 feuilles    — 13 ventilations et 2 analyses d'expérience ciblée
 #                     classes de 5 ans : [0-5[, [5-10[, … [40-45[, [45+
 #
 # VARIABLES SALAIRE (cf. 07b_calcul_indicateurs.py)
@@ -32,6 +31,7 @@
 # Usage :
 #   python 11_analyse_salaire_experience.py            # réutilise le cache local si présent
 #   python 11_analyse_salaire_experience.py --force    # reconstruit le cache
+#   python 11_analyse_salaire_experience.py --sans-upload  # vérification locale
 #
 # Dépendances :
 #   pip install polars boto3 python-dotenv openpyxl pyarrow
@@ -43,15 +43,17 @@ import tempfile
 import time
 from pathlib import Path
 
-from dotenv import load_dotenv
+from dotenv import load_dotenv, find_dotenv
 import boto3
 from botocore.client import Config
 import polars as pl
 from openpyxl import Workbook
 from openpyxl.styles import Font, PatternFill, Alignment
+from openpyxl.worksheet.table import Table, TableStyleInfo
 from openpyxl.utils import get_column_letter
 
-load_dotenv(".env")
+# Cherche .env dans le dossier courant puis en remontant les parents
+load_dotenv(find_dotenv(usecwd=True))
 
 # ============================================================
 # CONFIGURATION
@@ -98,6 +100,8 @@ METRIQUES = {
     "M1_sans_alloc": "m1",   # montant_brut_sans_ind_sans_alloc
     "M2_brut_total": "m2",   # montant_brut_total
 }
+_COLS_NUMERIQUES_ORDRE = ("n_obs", "n_agents", "salaire_moyen", "salaire_median",
+                           "p25", "p75", "min", "max")
 
 LIB_METRIQUE = {
     "M1_sans_alloc": "M1 — montant_brut_sans_ind_sans_alloc  (hors indemnités, hors allocation familiale)",
@@ -111,12 +115,7 @@ GROUPES = [
     ("ParSexe",                  ["sexe"],                    "Par sexe",                                      "Démographie"),
     ("ParSituationMatrimoniale", ["situation_matrimoniale"],  "Par situation matrimoniale",                    "Démographie"),
     ("ParGrade",                 ["GRADE"],                   "Par grade normalisé",                           "Grade & statut"),
-    ("ParCodeGrade",             ["CODE_GRADE"],              "Par code grade",                                "Grade & statut"),
-    ("ParStatut",                ["statut_fonctionnaire"],    "Par statut / catégorie de fonctionnaire",       "Grade & statut"),
-    ("ParOrganisme",             ["organisme"],               "Par secteur / organisme (libellé)",             "Secteur / organisme"),
-    ("ParCodeOrganisme",         ["code_organisme"],          "Par code organisme",                            "Secteur / organisme"),
-    ("ParLieuAffectation",       ["lieu_affectation"],        "Par lieu d'affectation",                        "Secteur / organisme"),
-    ("ParCodePoste",             ["CODE_POSTE"],              "Par code poste",                                "Secteur / organisme"),
+    ("ParSecteur",               ["secteur"],                 "Code organisme et libellé concaténés",          "Secteur"),
     ("ParEmploi",                ["emploi"],                  "Par emploi",                                    "Emploi, fonction & service"),
     ("ParCodeEmploi",            ["CODE_EMPLOI"],             "Par code emploi",                               "Emploi, fonction & service"),
     ("ParFonction",              ["fonction"],                "Par fonction",                                  "Emploi, fonction & service"),
@@ -129,6 +128,14 @@ GROUPES = [
 # ============================================================
 # CLIENT S3
 # ============================================================
+
+if not all([MINIO_ENDPOINT, MINIO_ACCESS_KEY, MINIO_SECRET_KEY]):
+    raise SystemExit(
+        "❌ Identifiants MinIO introuvables.\n"
+        "   Créez un fichier .env dans le dossier du script (voir .env.example) :\n"
+        "     MINIO_ENDPOINT, MINIO_ACCESS_KEY, MINIO_SECRET_KEY\n"
+        "   ou exportez ces variables d'environnement avant de relancer."
+    )
 
 s3 = boto3.client(
     "s3",
@@ -177,6 +184,32 @@ def expr_classe(largeur: int) -> pl.Expr:
 
 def expr_borne_inf(largeur: int) -> pl.Expr:
     return ((pl.col("annees_experience") / largeur).floor() * largeur).clip(0, plafond(largeur))
+
+
+def ajouter_secteur(lf: pl.LazyFrame) -> pl.LazyFrame:
+    """Libellé stable pour réunir le code organisme et son nom."""
+    code = pl.col("code_organisme").cast(pl.Utf8).fill_null("").str.strip_chars()
+    nom = pl.col("organisme").cast(pl.Utf8).fill_null("").str.strip_chars()
+    return lf.with_columns(
+        pl.when((code != "") & (nom != ""))
+          .then(pl.concat_str([code, nom], separator=" — "))
+          .when(code != "").then(code)
+          .when(nom != "").then(nom)
+          .otherwise(pl.lit("(NC)"))
+          .alias("secteur")
+    )
+
+
+def _groupe_interne(groupe: list[str]) -> list[str]:
+    return ["code_organisme", "organisme"] if groupe == ["secteur"] else groupe
+
+
+def _finir_secteur(df: pl.DataFrame, groupe: list[str], classe: bool) -> pl.DataFrame:
+    if groupe != ["secteur"]:
+        return df
+    df = ajouter_secteur(df.lazy()).collect()
+    colonnes = (["classe_experience"] if classe else []) + ["secteur"] + list(_COLS_NUMERIQUES_ORDRE)
+    return df.select(colonnes)
 
 # ============================================================
 # TÉLÉCHARGEMENT + CACHE LOCAL COMPACT
@@ -268,37 +301,66 @@ def statistiques_qualite(chemin_parquet: Path) -> None:
 # AGRÉGATIONS
 # ============================================================
 
+def _aggregats(col_val: str) -> list[pl.Expr]:
+    return [
+        pl.len().alias("n_obs"),
+        pl.col("matricule").n_unique().alias("n_agents"),
+        pl.col(col_val).mean().round(0).alias("salaire_moyen"),
+        pl.col(col_val).median().round(0).alias("salaire_median"),
+        pl.col(col_val).quantile(0.25, interpolation="linear").round(0).alias("p25"),
+        pl.col(col_val).quantile(0.75, interpolation="linear").round(0).alias("p75"),
+        pl.col(col_val).min().round(0).alias("min"),
+        pl.col(col_val).max().round(0).alias("max"),
+    ]
+
+
+def _base_valide(lf: pl.LazyFrame, col_val: str) -> pl.LazyFrame:
+    return (lf
+        .filter(pl.col("annees_experience").is_not_null() & (pl.col("annees_experience") >= 0))
+        .filter(pl.col(col_val).is_not_null() & (pl.col(col_val) > 0)))
+
+
 def tableau_stats(lf: pl.LazyFrame, largeur: int, metrique: str, groupe: list[str]) -> pl.DataFrame:
     col_val = METRIQUES[metrique]
+    groupe_calc = _groupe_interne(groupe)
     base = (
-        lf
-        .filter(pl.col("annees_experience").is_not_null() & (pl.col("annees_experience") >= 0))
-        .filter(pl.col(col_val).is_not_null() & (pl.col(col_val) > 0))
+        _base_valide(lf, col_val)
         .with_columns(
             [expr_classe(largeur).alias("classe_experience"), expr_borne_inf(largeur).alias("_borne")]
-            + [pl.col(c).cast(pl.Utf8).fill_null("(NC)").alias(c) for c in groupe]
+            + [pl.col(c).cast(pl.Utf8).fill_null("" if groupe == ["secteur"] else "(NC)").alias(c)
+               for c in groupe_calc if c != "annee"]
         )
     )
-    par = ["_borne", "classe_experience"] + groupe
-    tre = ["_borne"] + groupe
+    par = ["_borne", "classe_experience"] + groupe_calc
+    tre = ["_borne"] + groupe_calc
 
-    return (
+    df = (
         base
         .group_by(par)
-        .agg([
-            pl.len().alias("n_obs"),
-            pl.col("matricule").n_unique().alias("n_agents"),
-            pl.col(col_val).mean().round(0).alias("salaire_moyen"),
-            pl.col(col_val).median().round(0).alias("salaire_median"),
-            pl.col(col_val).quantile(0.25, interpolation="linear").round(0).alias("p25"),
-            pl.col(col_val).quantile(0.75, interpolation="linear").round(0).alias("p75"),
-            pl.col(col_val).min().round(0).alias("min"),
-            pl.col(col_val).max().round(0).alias("max"),
-        ])
+        .agg(_aggregats(col_val))
         .sort(tre)
         .drop("_borne")
         .collect()
     )
+    return _finir_secteur(df, groupe, classe=True)
+
+
+def tableau_annee_exacte(lf: pl.LazyFrame, metrique: str, annees: int,
+                         groupe: list[str]) -> pl.DataFrame:
+    """Années révolues : 10 signifie [10, 11[, 15 signifie [15, 16[."""
+    col_val = METRIQUES[metrique]
+    groupe_calc = _groupe_interne(groupe)
+    base = (_base_valide(lf, col_val)
+            .filter((pl.col("annees_experience") >= annees) &
+                    (pl.col("annees_experience") < annees + 1)))
+    if groupe_calc:
+        df = (base.with_columns([
+                    pl.col(c).cast(pl.Utf8).fill_null("" if groupe == ["secteur"] else "(NC)").alias(c)
+                    for c in groupe_calc if c != "annee"
+                ])
+                .group_by(groupe_calc).agg(_aggregats(col_val)).sort(groupe_calc).collect())
+        return _finir_secteur(df, groupe, classe=False)
+    return base.select(_aggregats(col_val)).collect()
 
 # ============================================================
 # ÉCRITURE EXCEL (SOMMAIRE + FEUILLES)
@@ -313,6 +375,7 @@ ENTETES = {
     "CODE_GRADE": "Code grade",
     "statut_fonctionnaire": "Statut",
     "organisme": "Secteur / organisme",
+    "secteur": "Secteur (code — organisme)",
     "code_organisme": "Code organisme",
     "lieu_affectation": "Lieu d'affectation",
     "CODE_POSTE": "Code poste",
@@ -343,6 +406,8 @@ _FONT_SOUS   = Font(bold=True, color="1F4E78")
 _FONT_LIEN   = Font(color="0563C1", underline="single")
 _ALIGN_C     = Alignment(horizontal="center", vertical="center")
 _ALIGN_WRAP  = Alignment(wrap_text=True, vertical="top")
+_FORMAT_ENTIER = '#,##0'
+_COLS_NUMERIQUES = set(_COLS_NUMERIQUES_ORDRE)
 
 
 def _cell(ws, r, c, v, font=None, fill=None, align=None):
@@ -361,29 +426,54 @@ def _titre_feuille(ws, texte, n_cols):
 
 def _lien(ws, r, c, texte, cible):
     cible_safe = cible.replace("'", "''")
-    _cell(ws, r, c, f'=HYPERLINK("#{cible_safe}!A1","{texte}")', font=_FONT_LIEN)
+    cell = _cell(ws, r, c, texte, font=_FONT_LIEN)
+    cell.hyperlink = f"#'{cible_safe}'!A1"
 
 
-def _ecrire_bloc(ws, r, sous_titre, df) -> int:
+def _ecrire_bloc(ws, r, sous_titre, df, nom_table) -> int:
     n_cols = len(df.columns)
     ws.merge_cells(start_row=r, start_column=1, end_row=r, end_column=max(n_cols, 4))
     _cell(ws, r, 1, sous_titre, font=_FONT_SOUS, fill=_FILL_SOUS,
           align=Alignment(vertical="center", wrap_text=True))
     ws.row_dimensions[r].height = 20
     r += 1
+    ligne_entete = r
     for j, c in enumerate(df.columns, start=1):
-        _cell(ws, r, j, ENTETES.get(c, c), font=_FONT_ENTETE, fill=_FILL_ENTETE, align=_ALIGN_C)
+        _cell(ws, r, j, ENTETES.get(c, c), font=_FONT_ENTETE, fill=_FILL_ENTETE,
+              align=Alignment(horizontal="center", vertical="center", wrap_text=True))
+    ws.row_dimensions[r].height = 32
     r += 1
     for ligne in df.iter_rows(named=False):
         for j, v in enumerate(ligne, start=1):
-            ws.cell(row=r, column=j, value=v)
+            cell = ws.cell(row=r, column=j, value=v)
+            if df.columns[j - 1] in _COLS_NUMERIQUES:
+                cell.number_format = _FORMAT_ENTIER
+                cell.alignment = Alignment(horizontal="right", vertical="center")
         r += 1
+    if r > ligne_entete + 1:
+        table = Table(displayName=nom_table, ref=f"A{ligne_entete}:{get_column_letter(n_cols)}{r - 1}")
+        table.tableStyleInfo = TableStyleInfo(name="TableStyleMedium2", showRowStripes=True)
+        ws.add_table(table)
     return r
 
 
-def _ajuster_largeurs(ws, n_cols):
-    for j in range(1, n_cols + 1):
-        ws.column_dimensions[get_column_letter(j)].width = 14
+def _ajuster_largeurs(ws, blocs):
+    largeurs = {}
+    for _, df in blocs:
+        for j, c in enumerate(df.columns, start=1):
+            if c in _COLS_NUMERIQUES:
+                largeur = 20 if c in {"salaire_moyen", "salaire_median"} else 18
+            elif c == "annee":
+                largeur = 12
+            elif c == "classe_experience":
+                largeur = 22
+            else:
+                valeurs = df.get_column(c).drop_nulls().head(500).to_list()
+                largeur = min(56, max(ENTETES.get(c, c).__len__(),
+                                      *(len(str(v)) for v in valeurs)) + 2)
+            largeurs[j] = max(largeurs.get(j, 0), largeur)
+    for j, largeur in largeurs.items():
+        ws.column_dimensions[get_column_letter(j)].width = largeur
 
 
 def ecrire_feuille_groupe(wb, nom_feuille, titre, description, blocs):
@@ -393,11 +483,15 @@ def ecrire_feuille_groupe(wb, nom_feuille, titre, description, blocs):
     _lien(ws, 2, 1, "← Retour au sommaire", "SOMMAIRE")
     _cell(ws, 3, 1, description, font=Font(italic=True, color="595959"))
     r = 5
-    for sous_titre, df in blocs:
-        r = _ecrire_bloc(ws, r, sous_titre, df)
+    for i, (sous_titre, df) in enumerate(blocs, start=1):
+        r = _ecrire_bloc(ws, r, sous_titre, df, f"T{nom_feuille}{i}")
         r += 1
-    _ajuster_largeurs(ws, n_cols)
-    ws.freeze_panes = "A5"
+    _ajuster_largeurs(ws, blocs)
+    ws.freeze_panes = "B7"
+    ws.sheet_view.showGridLines = False
+    ws.sheet_properties.pageSetUpPr.fitToPage = True
+    ws.page_setup.fitToWidth = 1
+    ws.sheet_properties.tabColor = "2E75B6"
 
 
 def ecrire_sommaire(wb, sections):
@@ -412,7 +506,7 @@ def ecrire_sommaire(wb, sections):
     for cle, lib in [
         ("M1", "montant_brut_sans_ind_sans_alloc — population « Statut conforme (barème) » ; codes postes 124+228+271+425 ; HORS indemnités et HORS allocation familiale (421)."),
         ("M2", "montant_brut_total — population « Statut_Total conforme (barème) » ; Feuille 1, tous codes postes confondus."),
-        ("Expérience", "annees_experience = (période d'observation − prise_service) / 365,25 ; classes de 5 ans : [0-5[, [5-10[, … [40-45[, [45+."),
+        ("Expérience", "annees_experience = (période d'observation − prise_service) / 365,25 ; classes de 5 ans. Feuilles 10 et 15 ans : années révolues [10, 11[ et [15, 16[."),
         ("Source", f"s3://{BUCKET_GOLD}/{KEY_PANEL} (2015→2026)."),
         ("Exclusions", "salaires ≤ 0 exclus par métrique ; expérience négative et prise_service manquante exclues."),
     ]:
@@ -446,6 +540,8 @@ def ecrire_sommaire(wb, sections):
     ws.column_dimensions["C"].width = 62
     ws.column_dimensions["D"].width = 14
     ws.freeze_panes = "A3"
+    ws.sheet_view.showGridLines = False
+    ws.sheet_properties.tabColor = "1F4E78"
 
 
 def ecrire_metadonnees(wb):
@@ -463,7 +559,8 @@ def ecrire_metadonnees(wb):
         ("Expérience négative", "période < prise de service → exclues du calcul."),
         ("prise_service manquante", "exclue du calcul d'expérience."),
         ("Statistiques", "n_obs = observations (agent-mois) ; n_agents = matricules distincts du groupe ; salaire moyen/médian, P25, P75, min, max (FCFA)."),
-        ("Note secteur", "« Secteur / organisme » = champ organisme du panel (libellé). Le SECTEUR ANSTAT (Barême Général, ENS SUP, …) provient de la grille salariale et nécessite une jointure référentielle."),
+        ("Secteur", "Concaténation du CODE_ORGANISME et du libellé organisme du panel. Si un seul est renseigné, sa valeur est conservée ; sinon (NC). Ce regroupement est distinct du barème ANSTAT."),
+        ("10 et 15 ans", "Expérience en années révolues : 10 ans = [10, 11[, 15 ans = [15, 16[. Les statistiques suivent les mêmes exclusions et unités que les autres feuilles."),
     ]
     r = 4
     for cle, val in lignes:
@@ -474,9 +571,11 @@ def ecrire_metadonnees(wb):
         r += 1
     ws.column_dimensions["A"].width = 24
     ws.column_dimensions["B"].width = 100
+    ws.sheet_view.showGridLines = False
+    ws.sheet_properties.tabColor = "8EA9C1"
 
 
-def exporter(blocs_par_feuille: dict, ordre_sommaire: list) -> None:
+def exporter(blocs_par_feuille: dict, ordre_sommaire: list, publier: bool = True) -> None:
     OUTDIR.mkdir(parents=True, exist_ok=True)
     wb = Workbook()
     wb.remove(wb.active)
@@ -494,12 +593,12 @@ def exporter(blocs_par_feuille: dict, ordre_sommaire: list) -> None:
     wb.save(FICHIER_XLSX)
     print(f"  ✓ Excel local : {FICHIER_XLSX}")
 
-    # Upload vers MinIO
-    s3.upload_file(
-        str(FICHIER_XLSX), BUCKET_STAGING, OUTPUT_KEY,
-        ExtraArgs={"ContentType": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"},
-    )
-    print(f"  ✓ Uploadé : s3://{BUCKET_STAGING}/{OUTPUT_KEY}")
+    if publier:
+        s3.upload_file(
+            str(FICHIER_XLSX), BUCKET_STAGING, OUTPUT_KEY,
+            ExtraArgs={"ContentType": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"},
+        )
+        print(f"  ✓ Uploadé : s3://{BUCKET_STAGING}/{OUTPUT_KEY}")
 
 # ============================================================
 # MAIN
@@ -510,12 +609,14 @@ def main() -> None:
     ap.add_argument("--force", action="store_true", help="Reconstruire le cache local")
     ap.add_argument("--garder-parquet", action="store_true",
                     help="Ne pas supprimer le panel_complet.parquet téléchargé")
+    ap.add_argument("--sans-upload", action="store_true",
+                    help="Créer seulement la copie Excel locale, sans remplacer la sortie MinIO")
     args = ap.parse_args()
 
     print("=" * 70)
     print(" ÉTAPE 11 — SALAIRE PAR ANNÉES D'EXPÉRIENCE (classes de 5 ans)")
     print(f" Source : s3://{BUCKET_GOLD}/{KEY_PANEL}")
-    print(f" Sortie : s3://{BUCKET_STAGING}/{OUTPUT_KEY}")
+    print(f" Sortie : {FICHIER_XLSX if args.sans_upload else f's3://{BUCKET_STAGING}/{OUTPUT_KEY}'}")
     print("=" * 70)
 
     if CACHE.exists() and not args.force:
@@ -544,7 +645,21 @@ def main() -> None:
         ordre_sommaire.append((section, nom_feuille, nom_feuille, desc, len(blocs[0][1])))
         print(f"  · {nom_feuille} : {len(blocs[0][1])} lignes (M1)")
 
-    exporter(blocs_par_feuille, ordre_sommaire)
+    for annees in (10, 15):
+        nom_feuille = f"Experience{annees}Ans"
+        desc = f"Agents ayant {annees} années d'expérience révolues [{annees}, {annees + 1}["
+        blocs = []
+        for metrique in METRIQUES:
+            for libelle, groupe in (("Ensemble", []), ("Par année", ["annee"]),
+                                   ("Par secteur", ["secteur"])):
+                df = tableau_annee_exacte(lf, metrique, annees, groupe)
+                blocs.append((f"{LIB_METRIQUE[metrique]} — {libelle}", df))
+        blocs_par_feuille[nom_feuille] = (f"Expérience : {annees} ans révolus", desc, blocs)
+        ordre_sommaire.append(("Expérience ciblée", nom_feuille, f"{annees} ans révolus", desc,
+                               len(blocs[0][1])))
+        print(f"  · {nom_feuille} : {blocs[0][1]['n_obs'][0]:,} observations (M1)")
+
+    exporter(blocs_par_feuille, ordre_sommaire, publier=not args.sans_upload)
 
     print("\n" + "=" * 70)
     print(" APERÇU — Global · M1 sans allocation familiale")
@@ -553,8 +668,8 @@ def main() -> None:
         print(blocs_par_feuille["Global"][2][0][1])
 
     print("\n" + "=" * 70)
-    print(f" ✅ TERMINÉ — {len(blocs_par_feuille)} ventilations × 2 métriques")
-    print(f"    s3://{BUCKET_STAGING}/{OUTPUT_KEY}")
+    print(f" ✅ TERMINÉ — {len(GROUPES)} ventilations, 2 cohortes × 2 métriques")
+    print(f"    {FICHIER_XLSX if args.sans_upload else f's3://{BUCKET_STAGING}/{OUTPUT_KEY}'}")
     print("=" * 70 + "\n")
 
 
