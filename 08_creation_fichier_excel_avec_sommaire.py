@@ -71,9 +71,10 @@ PREFIX_EXPORTS = "panel_admin/exports_gold"
 _mode_label    = "salaire_brut"  if MODE_SALAIRE_BRUT else "revenu_salarial"
 _periode_label = "2024_2025"     if PERIODE_RECENTE   else "2015_recent"
 _zeros_label   = "avec_zeros"    if INCLURE_ZEROS     else "sans_zeros"
-_base_name     = f"indicateurs_{_mode_label}_{_periode_label}_{_zeros_label}"
-INPUT_KEY      = f"{PREFIX_EXPORTS}/{_base_name}.xlsx"
-OUTPUT_KEY     = f"{PREFIX_EXPORTS}/{_base_name}_SOMMAIRE.xlsx"
+_input_name    = f"indicateurs_{_mode_label}_{_periode_label}_{_zeros_label}"
+_output_name   = f"indicateurs_{_mode_label}_{_periode_label}"
+INPUT_KEY      = f"{PREFIX_EXPORTS}/{_input_name}.xlsx"
+OUTPUT_KEY     = f"{PREFIX_EXPORTS}/{_output_name}_SOMMAIRE.xlsx"
 
 # Classification CITP grands groupes
 CITP_GRANDS_GROUPES = {
@@ -158,9 +159,13 @@ dt_citp         = lire_feuille("REVENU_CITP_Detail")
 dt_grade        = lire_feuille("REVENU_Grade_Detail")
 dt_grade_sexe   = lire_feuille("REVENU_Grade_Sexe")
 dt_multi        = lire_feuille("MULTI_Par_Grade_NbPostes")
-dt_bareme       = lire_feuille("REVENU_Bareme_Detail")
-dt_bareme_grade = lire_feuille("REVENU_Bareme_Grade")
-dt_bareme_sexe  = lire_feuille("REVENU_Bareme_Sexe")
+dt_bareme       = lire_feuille("REVENU_Total_Bareme")
+dt_bareme_grade = lire_feuille("REVENU_Total_Bar_Grade")
+dt_bareme_sexe  = lire_feuille("REVENU_Total_Bar_Sexe")
+# Table effectifs uniques par groupe sur la période (branche No_allocation_Familiale)
+dt_eff_uniques      = lire_feuille("EFFECTIFS_UNIQUES_PERIODE")
+dt_eff_m1_par_annee = lire_feuille("EFFECTIFS_M1_PAR_ANNEE")
+dt_eff_m2_par_annee = lire_feuille("EFFECTIFS_M2_PAR_ANNEE")
 
 # Feuilles MODELE_ANSTAT par année — produites directement par 07
 dt_anstat: dict[int, pl.DataFrame | None] = {}
@@ -246,6 +251,66 @@ def ajuster_largeurs(ws, largeurs: dict[int, int]) -> None:
 print("🔨 Préparation des données par section...")
 
 
+def get_eff_annee(dt_eff: pl.DataFrame | None, groupe_type: str,
+                  groupe_valeur: str, annee: int) -> int:
+    """Retourne le nb d'agents uniques M1 ou M2 pour un groupe et une année."""
+    if dt_eff is None:
+        return 0
+    rows = dt_eff.filter(
+        (pl.col("groupe_type")   == groupe_type) &
+        (pl.col("groupe_valeur") == str(groupe_valeur)) &
+        (pl.col("ANNEE")         == annee)
+    )
+    if len(rows) == 0:
+        return 0
+    return int(rows["nb_agents_uniques"][0])
+
+
+def rev_moyen_annee(dt: pl.DataFrame | None, filtre_col: str,
+                    filtre_val: str, annee: int) -> float:
+    """Moyenne pondérée du revenu moyen pour un groupe et une année."""
+    if dt is None or "ANNEE" not in dt.columns:
+        return 0.0
+    sub = dt.filter(
+        (pl.col(filtre_col) == filtre_val) &
+        (pl.col("ANNEE") == annee)
+    )
+    if len(sub) == 0 or "Effectif" not in sub.columns or "Revenu_moyen" not in sub.columns:
+        return 0.0
+    total_eff = sub["Effectif"].sum()
+    if total_eff == 0:
+        return 0.0
+    return round(float((sub["Effectif"] * sub["Revenu_moyen"]).sum() / total_eff))
+
+
+def get_eff_unique(groupe_type: str, groupe_valeur: str) -> int:
+    """Retourne le nb d'agents uniques pour un groupe depuis EFFECTIFS_UNIQUES_PERIODE."""
+    if dt_eff_uniques is None:
+        return 0
+    rows = dt_eff_uniques.filter(
+        (pl.col("groupe_type") == groupe_type) &
+        (pl.col("groupe_valeur") == str(groupe_valeur))
+    )
+    if len(rows) == 0:
+        return 0
+    return int(rows["nb_agents_uniques"][0])
+
+
+def get_eff_unique_citp_gg(grand_groupe: int) -> int:
+    """Retourne le nb d'agents uniques pour un grand groupe CITP."""
+    if dt_eff_uniques is None or dt_citp is None:
+        return 0
+    # On agrège les codes CITP appartenant au grand groupe
+    codes_gg = []
+    if dt_citp is not None and "Code_CITP" in dt_citp.columns and "GRAND_GROUPE" in dt_citp.columns:
+        codes_gg = (dt_citp.filter(pl.col("GRAND_GROUPE") == grand_groupe)
+                    ["Code_CITP"].unique().to_list())
+    total = 0
+    for code in codes_gg:
+        total += get_eff_unique("CITP", code)
+    return total
+
+
 def extract_grand_groupe(code_citp) -> int | None:
     if code_citp is None:
         return None
@@ -266,8 +331,12 @@ if dt_citp is not None and "Code_CITP" in dt_citp.columns:
     )
     for gg in range(1, 10):
         sub = dt_citp.filter(pl.col("GRAND_GROUPE") == gg)
+        # Effectif = agents uniques sur la période (pas somme mensuelle)
+        eff = get_eff_unique_citp_gg(gg) if dt_eff_uniques is not None else (
+            int(sub["Effectif"].sum()) if len(sub) > 0 else 0
+        )
         stats_citp[gg] = {
-            "effectif_total": int(sub["Effectif"].sum()) if len(sub) > 0 else 0,
+            "effectif_total": eff,
             "nb_metiers":     sub["Code_CITP"].n_unique() if len(sub) > 0 else 0,
         }
     print(f"  ✓ CITP : {sum(1 for v in stats_citp.values() if v['effectif_total'] > 0)} grands groupes avec données")
@@ -277,7 +346,10 @@ stats_grade: dict[str, dict] = {}
 if dt_grade is not None and "GRADE_PRINCIPAL" in dt_grade.columns:
     for grade_val in sorted(dt_grade["GRADE_PRINCIPAL"].unique().to_list()):
         sub = dt_grade.filter(pl.col("GRADE_PRINCIPAL") == grade_val)
-        eff_total = int(sub["Effectif"].sum())
+        # Effectif = agents uniques sur la période (pas somme mensuelle)
+        eff_total = get_eff_unique("GRADE", grade_val) if dt_eff_uniques is not None else (
+            int(sub["Effectif"].sum())
+        )
         rev_pond = (
             float((sub["Effectif"] * sub["Revenu_moyen"]).sum() / sub["Effectif"].sum())
             if sub["Effectif"].sum() > 0 else 0.0
@@ -293,7 +365,10 @@ stats_sexe: dict[str, dict] = {}
 if dt_grade_sexe is not None and "SEXE_STD" in dt_grade_sexe.columns:
     for sexe_val in dt_grade_sexe["SEXE_STD"].unique().to_list():
         sub = dt_grade_sexe.filter(pl.col("SEXE_STD") == sexe_val)
-        eff_total = int(sub["Effectif"].sum())
+        # Effectif = agents uniques sur la période (pas somme mensuelle)
+        eff_total = get_eff_unique("SEXE", sexe_val) if dt_eff_uniques is not None else (
+            int(sub["Effectif"].sum())
+        )
         rev_pond = (
             float((sub["Effectif"] * sub["Revenu_moyen"]).sum() / sub["Effectif"].sum())
             if sub["Effectif"].sum() > 0 else 0.0
@@ -307,7 +382,7 @@ if dt_grade_sexe is not None and "SEXE_STD" in dt_grade_sexe.columns:
 # --- Section 4 : Multi-postes ---
 grades_multi: list[str] = []
 if dt_multi is not None and "GRADE_PRINCIPAL" in dt_multi.columns:
-    grades_multi = sorted(dt_multi["GRADE_PRINCIPAL"].unique().to_list())
+    grades_multi = sorted(dt_multi["GRADE_PRINCIPAL"].drop_nulls().unique().to_list())
     print(f"  ✓ Multi-postes : {len(grades_multi)} grades")
 
 # --- Section 5 : Barème ---
@@ -317,7 +392,10 @@ if BAREME_DISPONIBLE and "bareme" in dt_bareme.columns:
     baremes_liste = sorted(dt_bareme["bareme"].drop_nulls().unique().to_list())
     for b in baremes_liste:
         sub = dt_bareme.filter(pl.col("bareme") == b)
-        eff = int(sub["Effectif"].sum()) if "Effectif" in sub.columns else 0
+        # Effectif = agents uniques sur la période (pas somme mensuelle)
+        eff = get_eff_unique("BAREME", b) if dt_eff_uniques is not None else (
+            int(sub["Effectif"].sum()) if "Effectif" in sub.columns else 0
+        )
         rev = (
             float((sub["Effectif"] * sub["Revenu_moyen"]).sum() / sub["Effectif"].sum())
             if "Effectif" in sub.columns and sub["Effectif"].sum() > 0 else 0.0
@@ -351,184 +429,175 @@ wb.remove(wb.active)
 # FEUILLE SOMMAIRE
 # ============================================================
 
-print("📋 Création du SOMMAIRE...")
-ws_som = wb.create_sheet("SOMMAIRE")
+def creer_sommaire_annee(wb: Workbook, annee: int) -> None:
+    """Crée la feuille SOMMAIRE_{annee} avec les données filtrées sur cette année."""
+    nom_feuille = f"SOMMAIRE_{annee}"
+    ws_som = wb.create_sheet(nom_feuille)
 
-titre_global = (
-    f"INDICATEURS SALAIRES — "
-    f"{'Salaire brut' if MODE_SALAIRE_BRUT else 'Revenu salarial'} | "
-    f"{'2024-2025' if PERIODE_RECENTE else '2015 à récent'} | "
-    f"{'avec zéros' if INCLURE_ZEROS else 'sans zéros'}"
-)
-merge_titre(ws_som, titre_global, row=1, n_cols=5, fill=FILL_TITLE, font=FONT_TITLE)
-ws_som.cell(row=2, column=1,
-            value="Cliquez sur une section pour accéder aux détails").font = Font(italic=True)
-ws_som.merge_cells("A2:E2")
+    titre_global = (
+        f"INDICATEURS SALAIRES {annee} — "
+        f"{'Salaire brut' if MODE_SALAIRE_BRUT else 'Revenu salarial'}"
+    )
+    merge_titre(ws_som, titre_global, row=1, n_cols=5, fill=FILL_TITLE, font=FONT_TITLE)
+    ws_som.cell(row=2, column=1,
+                value="Cliquez sur une section pour accéder aux détails").font = Font(italic=True)
+    ws_som.merge_cells("A2:E2")
 
-current_row = 4
+    current_row = 4
 
-# ────────────────────────────────────────────────────────────
-# SECTION 1 : CITP
-# ────────────────────────────────────────────────────────────
-if dt_citp is not None:
-    merge_titre(ws_som, "📊 SECTION 1 : CLASSIFICATION PAR GRAND GROUPE CITP",
-                row=current_row, n_cols=5, fill=FILL_SUBTITLE, font=FONT_SUBTITLE)
-    current_row += 1
-    ecrire_entetes(ws_som, ["Code", "Grand Groupe CITP", "Effectif total", "Nb métiers", ""],
-                   current_row)
-    current_row += 1
-
-    for gg in range(1, 10):
-        titre_gg   = CITP_GRANDS_GROUPES[gg]
-        eff        = stats_citp.get(gg, {}).get("effectif_total", 0)
-        nb_m       = stats_citp.get(gg, {}).get("nb_metiers", 0)
-        sheet_name = f"CITP_GG{gg}"
-        ws_som.cell(row=current_row, column=1, value=gg)
-        lien_interne(ws_som, current_row, 2, titre_gg, sheet_name)
-        ws_som.cell(row=current_row, column=3, value=eff)
-        ws_som.cell(row=current_row, column=4, value=nb_m)
+    # ── Section 1 : CITP — M1 conformes ─────────────────────────────────
+    if dt_citp is not None and "ANNEE" in dt_citp.columns:
+        merge_titre(ws_som,
+                    f"📊 SECTION 1 : CLASSIFICATION PAR GRAND GROUPE CITP — {annee}",
+                    row=current_row, n_cols=5, fill=FILL_SUBTITLE, font=FONT_SUBTITLE)
         current_row += 1
-
-    current_row += 2
-
-# ────────────────────────────────────────────────────────────
-# SECTION 2 : GRADE
-# ────────────────────────────────────────────────────────────
-if dt_grade is not None:
-    merge_titre(ws_som, "📊 SECTION 2 : CLASSIFICATION PAR GRADE",
-                row=current_row, n_cols=5, fill=FILL_SUBTITLE, font=FONT_SUBTITLE)
-    current_row += 1
-    ecrire_entetes(ws_som, ["Grade", "Description", "Effectif total", "Revenu moyen", ""],
-                   current_row)
-    current_row += 1
-
-    for grade_val in sorted(stats_grade.keys()):
-        cat = (
-            "Catégorie A" if grade_val.startswith("A") else
-            "Catégorie B" if grade_val.startswith("B") else
-            "Catégorie C" if grade_val.startswith("C") else
-            "Catégorie D" if grade_val.startswith("D") else "Autre"
-        )
-        sheet_name = f"GRADE_{grade_val}"
-        lien_interne(ws_som, current_row, 1, grade_val, sheet_name)
-        ws_som.cell(row=current_row, column=2, value=cat)
-        ws_som.cell(row=current_row, column=3, value=stats_grade[grade_val]["effectif_total"])
-        ws_som.cell(row=current_row, column=4, value=stats_grade[grade_val]["revenu_moyen_ponde"])
+        ecrire_entetes(ws_som, ["Code", "Grand Groupe CITP", "Effectif (M1)", "Nb métiers", ""],
+                       current_row)
         current_row += 1
+        dt_citp_an = dt_citp.filter(pl.col("ANNEE") == annee)
+        for gg in range(1, 10):
+            sub_gg = dt_citp_an.filter(pl.col("GRAND_GROUPE") == gg) if "GRAND_GROUPE" in dt_citp_an.columns else dt_citp_an
+            codes_gg = sub_gg["Code_CITP"].drop_nulls().unique().to_list() if "Code_CITP" in sub_gg.columns else []
+            eff = sum(get_eff_annee(dt_eff_m1_par_annee, "CITP", str(c), annee) for c in codes_gg)
+            nb_m = len(codes_gg)
+            sheet_name = f"CITP_GG{gg}"
+            ws_som.cell(row=current_row, column=1, value=gg)
+            lien_interne(ws_som, current_row, 2, CITP_GRANDS_GROUPES[gg], sheet_name)
+            ws_som.cell(row=current_row, column=3, value=eff)
+            ws_som.cell(row=current_row, column=4, value=nb_m)
+            current_row += 1
+        current_row += 2
 
-    current_row += 2
-
-# ────────────────────────────────────────────────────────────
-# SECTION 3 : SEXE
-# ────────────────────────────────────────────────────────────
-if dt_grade_sexe is not None:
-    merge_titre(ws_som, "📊 SECTION 3 : CLASSIFICATION PAR SEXE",
-                row=current_row, n_cols=5, fill=FILL_SUBTITLE, font=FONT_SUBTITLE)
-    current_row += 1
-    ecrire_entetes(ws_som, ["Sexe", "Description", "Effectif total", "Revenu moyen", ""],
-                   current_row)
-    current_row += 1
-
-    for sexe_val in sorted(stats_sexe.keys()):
-        desc = (
-            "Agents masculins" if sexe_val == "Homme" else
-            "Agents féminins"  if sexe_val == "Femme" else
-            "Non renseigné"
-        )
-        sheet_name = f"SEXE_{sexe_val}"
-        lien_interne(ws_som, current_row, 1, sexe_val, sheet_name)
-        ws_som.cell(row=current_row, column=2, value=desc)
-        ws_som.cell(row=current_row, column=3, value=stats_sexe[sexe_val]["effectif_total"])
-        ws_som.cell(row=current_row, column=4, value=stats_sexe[sexe_val]["revenu_moyen_ponde"])
+    # ── Section 2 : Grade — M1 conformes ─────────────────────────────────
+    if dt_grade is not None and "ANNEE" in dt_grade.columns:
+        merge_titre(ws_som,
+                    f"📊 SECTION 2 : CLASSIFICATION PAR GRADE — {annee}",
+                    row=current_row, n_cols=5, fill=FILL_SUBTITLE, font=FONT_SUBTITLE)
         current_row += 1
-
-    current_row += 2
-
-# ────────────────────────────────────────────────────────────
-# SECTION 4 : MULTI-POSTES
-# ────────────────────────────────────────────────────────────
-if dt_multi is not None:
-    merge_titre(ws_som, "📊 SECTION 4 : MULTI-POSTES PAR GRADE",
-                row=current_row, n_cols=5, fill=FILL_SUBTITLE, font=FONT_SUBTITLE)
-    current_row += 1
-    ecrire_entetes(ws_som, ["Grade", "Description", "Mono-postes", "Multi-postes", ""],
-                   current_row)
-    current_row += 1
-
-    for grade_val in grades_multi:
-        sub   = dt_multi.filter(pl.col("GRADE_PRINCIPAL") == grade_val)
-        mono  = int(sub["1"].sum()) if "1" in sub.columns else 0
-        multi = sum(
-            int(sub[c].sum()) if c in sub.columns else 0
-            for c in ["2", "3", "4", "5+"]
-        )
-        cat = (
-            "Catégorie A" if grade_val.startswith("A") else
-            "Catégorie B" if grade_val.startswith("B") else
-            "Catégorie C" if grade_val.startswith("C") else
-            "Catégorie D" if grade_val.startswith("D") else "Autre"
-        )
-        sheet_name = f"MULTI_{grade_val}"
-        lien_interne(ws_som, current_row, 1, grade_val, sheet_name)
-        ws_som.cell(row=current_row, column=2, value=cat)
-        ws_som.cell(row=current_row, column=3, value=mono)
-        ws_som.cell(row=current_row, column=4, value=multi)
+        ecrire_entetes(ws_som, ["Grade", "Description", "Effectif (M1)", "Revenu moyen (M1)", ""],
+                       current_row)
         current_row += 1
+        grades_an = sorted(dt_grade["GRADE_PRINCIPAL"].unique().to_list()) if "GRADE_PRINCIPAL" in dt_grade.columns else []
+        for grade_val in grades_an:
+            eff = get_eff_annee(dt_eff_m1_par_annee, "GRADE", grade_val, annee)
+            rev = rev_moyen_annee(dt_grade, "GRADE_PRINCIPAL", grade_val, annee)
+            cat = (
+                "Catégorie A" if grade_val.startswith("A") else
+                "Catégorie B" if grade_val.startswith("B") else
+                "Catégorie C" if grade_val.startswith("C") else
+                "Catégorie D" if grade_val.startswith("D") else "Autre"
+            )
+            sheet_name = f"GRADE_{grade_val}"
+            lien_interne(ws_som, current_row, 1, grade_val, sheet_name)
+            ws_som.cell(row=current_row, column=2, value=cat)
+            ws_som.cell(row=current_row, column=3, value=eff)
+            ws_som.cell(row=current_row, column=4, value=rev)
+            current_row += 1
+        current_row += 2
 
-    current_row += 2
-
-# ────────────────────────────────────────────────────────────
-# SECTION 5 : BARÈME / GRILLE SALARIALE
-# ────────────────────────────────────────────────────────────
-if BAREME_DISPONIBLE:
-    merge_titre(ws_som, "📊 SECTION 5 : CLASSIFICATION PAR BARÈME / GRILLE SALARIALE",
-                row=current_row, n_cols=5, fill=FILL_SUBTITLE, font=FONT_SUBTITLE)
-    current_row += 1
-    ecrire_entetes(ws_som, ["Barème / Grille salariale", "Effectif total", "Revenu moyen",
-                             "Détail grade", "Détail sexe"],
-                   current_row)
-    current_row += 1
-
-    for b in baremes_liste:
-        sheet_det   = f"BAREME_{re.sub(r'[^A-Za-z0-9]', '_', b)[:25]}"
-        sheet_grade = f"BAREME_G_{re.sub(r'[^A-Za-z0-9]', '_', b)[:20]}"
-        sheet_sexe  = f"BAREME_S_{re.sub(r'[^A-Za-z0-9]', '_', b)[:20]}"
-        lien_interne(ws_som, current_row, 1, b, sheet_det)
-        ws_som.cell(row=current_row, column=2,
-                    value=stats_bareme.get(b, {}).get("effectif_total", ""))
-        ws_som.cell(row=current_row, column=3,
-                    value=stats_bareme.get(b, {}).get("revenu_moyen_ponde", ""))
-        lien_interne(ws_som, current_row, 4, "→ par grade", sheet_grade)
-        lien_interne(ws_som, current_row, 5, "→ par sexe",  sheet_sexe)
+    # ── Section 3 : Sexe — M1 conformes ─────────────────────────────────
+    if dt_grade_sexe is not None and "ANNEE" in dt_grade_sexe.columns:
+        merge_titre(ws_som,
+                    f"📊 SECTION 3 : CLASSIFICATION PAR SEXE — {annee}",
+                    row=current_row, n_cols=5, fill=FILL_SUBTITLE, font=FONT_SUBTITLE)
         current_row += 1
+        ecrire_entetes(ws_som, ["Sexe", "Description", "Effectif (M1)", "Revenu moyen (M1)", ""],
+                       current_row)
+        current_row += 1
+        sexes_an = sorted(dt_grade_sexe["SEXE_STD"].unique().to_list()) if "SEXE_STD" in dt_grade_sexe.columns else []
+        for sexe_val in sexes_an:
+            eff = get_eff_annee(dt_eff_m1_par_annee, "SEXE", sexe_val, annee)
+            rev = rev_moyen_annee(dt_grade_sexe, "SEXE_STD", sexe_val, annee)
+            desc = (
+                "Agents masculins" if sexe_val == "Homme" else
+                "Agents féminins"  if sexe_val == "Femme" else "Non renseigné"
+            )
+            sheet_name = f"SEXE_{sexe_val}"
+            lien_interne(ws_som, current_row, 1, sexe_val, sheet_name)
+            ws_som.cell(row=current_row, column=2, value=desc)
+            ws_som.cell(row=current_row, column=3, value=eff)
+            ws_som.cell(row=current_row, column=4, value=rev)
+            current_row += 1
+        current_row += 2
 
-    current_row += 2
+    # ── Section 4 : Multi-postes — TOUS agents ───────────────────────────
+    if dt_multi is not None and "ANNEE" in dt_multi.columns:
+        merge_titre(ws_som,
+                    f"📊 SECTION 4 : MULTI-POSTES PAR GRADE — {annee}",
+                    row=current_row, n_cols=5, fill=FILL_SUBTITLE, font=FONT_SUBTITLE)
+        current_row += 1
+        ecrire_entetes(ws_som, ["Grade", "Description", "Mono-postes", "Multi-postes", ""],
+                       current_row)
+        current_row += 1
+        grades_multi_an = sorted(dt_multi["GRADE_PRINCIPAL"].drop_nulls().unique().to_list()) if "GRADE_PRINCIPAL" in dt_multi.columns else []
+        for grade_val in grades_multi_an:
+            sub = dt_multi.filter(
+                (pl.col("GRADE_PRINCIPAL") == grade_val) & (pl.col("ANNEE") == annee)
+            )
+            mono  = int(sub["1"].sum()) if "1" in sub.columns else 0
+            multi = sum(int(sub[c].sum()) if c in sub.columns else 0 for c in ["2","3","4","5+"])
+            cat = (
+                "Catégorie A" if grade_val.startswith("A") else
+                "Catégorie B" if grade_val.startswith("B") else
+                "Catégorie C" if grade_val.startswith("C") else
+                "Catégorie D" if grade_val.startswith("D") else "Autre"
+            )
+            sheet_name = f"MULTI_{grade_val}"
+            lien_interne(ws_som, current_row, 1, grade_val, sheet_name)
+            ws_som.cell(row=current_row, column=2, value=cat)
+            ws_som.cell(row=current_row, column=3, value=mono)
+            ws_som.cell(row=current_row, column=4, value=multi)
+            current_row += 1
+        current_row += 2
 
-# ────────────────────────────────────────────────────────────
-# ANNEXE : MODÈLE ANSTAT (une ligne par année)
-# ────────────────────────────────────────────────────────────
-if ANSTAT_DISPONIBLE:
-    merge_titre(ws_som, "📋 ANNEXE : MODÈLE STATISTIQUE ANSTAT — Par année",
-                row=current_row, n_cols=5,
-                fill=FILL_ANSTAT, font=FONT_ANSTAT)
-    current_row += 1
-    ecrire_entetes(ws_som, ["Année", "Lien vers la feuille", "", "", ""], current_row)
-    current_row += 1
+    # ── Section 5 : Barème — M2 conformes ───────────────────────────────
+    if BAREME_DISPONIBLE and dt_bareme is not None and "ANNEE" in dt_bareme.columns:
+        merge_titre(ws_som,
+                    f"📊 SECTION 5 : CLASSIFICATION PAR BARÈME / GRILLE SALARIALE — {annee}",
+                    row=current_row, n_cols=5, fill=FILL_SUBTITLE, font=FONT_SUBTITLE)
+        current_row += 1
+        ecrire_entetes(ws_som, ["Barème / Grille salariale", "Effectif (M2)",
+                                 "Revenu moyen (M2)", "Détail grade", "Détail sexe"],
+                       current_row)
+        current_row += 1
+        for b in baremes_liste:
+            eff = get_eff_annee(dt_eff_m2_par_annee, "BAREME", b, annee)
+            rev = rev_moyen_annee(dt_bareme, "bareme", b, annee)
+            sheet_det   = f"BAREME_{re.sub(r'[^A-Za-z0-9]', '_', b)[:25]}"
+            sheet_grade = f"BAREME_G_{re.sub(r'[^A-Za-z0-9]', '_', b)[:20]}"
+            sheet_sexe  = f"BAREME_S_{re.sub(r'[^A-Za-z0-9]', '_', b)[:20]}"
+            lien_interne(ws_som, current_row, 1, b, sheet_det)
+            ws_som.cell(row=current_row, column=2, value=eff)
+            ws_som.cell(row=current_row, column=3, value=rev)
+            lien_interne(ws_som, current_row, 4, "→ par grade", sheet_grade)
+            lien_interne(ws_som, current_row, 5, "→ par sexe",  sheet_sexe)
+            current_row += 1
+        current_row += 2
 
-    for annee in ANNEES_ANSTAT:
-        if dt_anstat.get(annee) is None:
-            continue
+    # ── Annexe ANSTAT ────────────────────────────────────────────────────
+    if ANSTAT_DISPONIBLE and dt_anstat.get(annee) is not None:
+        merge_titre(ws_som, f"📋 ANNEXE : MODÈLE STATISTIQUE ANSTAT — {annee}",
+                    row=current_row, n_cols=5, fill=FILL_ANSTAT, font=FONT_ANSTAT)
+        current_row += 1
+        ecrire_entetes(ws_som, ["Année", "Lien vers la feuille", "", "", ""], current_row)
+        current_row += 1
         sheet_name_anstat = f"MODELE_ANSTAT_{annee}"
         ws_som.cell(row=current_row, column=1, value=annee)
         lien_interne(ws_som, current_row, 2,
                      f"Voir le modèle ANSTAT {annee} →", sheet_name_anstat)
         current_row += 1
 
-    current_row += 1
+    ajuster_largeurs(ws_som, {1: 55, 2: 20, 3: 18, 4: 18, 5: 18})
+    print(f"  ✓ {nom_feuille} créé")
 
-# Formatage colonnes sommaire
-ajuster_largeurs(ws_som, {1: 45, 2: 20, 3: 18, 4: 18, 5: 18})
-print("  ✓ SOMMAIRE créé\n")
+
+print("📋 Création des sommaires annuels...")
+for _annee_som in [2024, 2025]:
+    if dt_grade is not None and "ANNEE" in dt_grade.columns and _annee_som in dt_grade["ANNEE"].unique().to_list():
+        creer_sommaire_annee(wb, _annee_som)
+    else:
+        print(f"  ⚠️  Année {_annee_som} absente des données — SOMMAIRE_{_annee_som} ignoré")
+print()
 
 # ============================================================
 # FEUILLES DE DÉTAIL
