@@ -75,6 +75,7 @@ PREFIX_PANEL   = "panel_admin"
 #   montant_brut_total (existant) = sum(montant_brut) tous postes / tous organismes
 #   → utilisé pour les indicateurs secteur / barème (Méthodologie 2)
 NOMS_F2_BAREME = {"124_F2", "228_F2", "271_F2", "425_F2"}  # sans 421 allocation familiale
+NOMS_F2_REPRESENTATION = {"461_F2", "462_F2", "463_F2", "464_F2"}
 
 # --- CLIENT S3 (MinIO) ---
 s3 = boto3.client(
@@ -145,6 +146,7 @@ COLONNES_PANEL = [
     "montant_brut_total",    # Somme montant_brut sur TOUS les postes
     "montant_brut_sans_ind_sans_alloc",   # Somme F2 : {124,228,271,425} — sans 421 allocation familiale
     "montant_brut_total_composantes_F2",    # Somme de TOUTES les colonnes *_F2 — Méthodologie 2 secteur/barème
+    "montant_representation_461_464",      # Composantes F2 à déduire du brut total pour M2
     "montant_net_total",     # Somme montant_net sur TOUS les postes
 
     # --- Traçabilité imputation salaires (03c_imputer_salaires_silver) ---
@@ -218,6 +220,7 @@ def construire_panel_annee(df: pl.DataFrame) -> pl.DataFrame:
     agg_brut_total  = None
     agg_brut_bareme = None
     agg_brut_Total  = None   # montant_brut_total_composantes_F2 = somme toutes *_F2 (Méthodologie 2)
+    agg_representation = None
     agg_net_total   = None
 
     if cles_agg:
@@ -371,6 +374,22 @@ def construire_panel_annee(df: pl.DataFrame) -> pl.DataFrame:
                 pl.sum_horizontal([pl.col(c) for c in cols_f2_composantes])
                 .alias("_sum_composantes_f2")
             )
+            cols_representation = [c for c in cols_f2_composantes
+                                   if c.upper() in NOMS_F2_REPRESENTATION]
+            if cols_representation:
+                agg_representation = (
+                    df_avec_sum
+                    .with_columns(pl.sum_horizontal([pl.col(c) for c in cols_representation])
+                                  .alias("_representation_row"))
+                    .group_by(cles_agg)
+                    .agg(pl.col("_representation_row").sum()
+                         .alias("montant_representation_461_464"))
+                )
+                print(f"    Postes de représentation M2 détectés : {sorted(cols_representation)}",
+                      flush=True)
+            else:
+                print("    ⚠️  Postes 461 à 464 absents des composantes F2 : déduction M2 fixée à 0",
+                      flush=True)
             # Vérification post-cast : combien de lignes ont une somme F2 > 0 ?
             n_f2_ok = int(df_avec_sum["_sum_composantes_f2"].drop_nulls().len())
             n_f2_nz = int((df_avec_sum["_sum_composantes_f2"].fill_null(0) > 0).sum())
@@ -503,7 +522,7 @@ def construire_panel_annee(df: pl.DataFrame) -> pl.DataFrame:
             print(f"\n    {'─'*65}", flush=True)
             print(f"    → montant_brut_total_composantes_F2 = sum({len(cols_f2_composantes)} composantes *_F2) "
                   f"[Option A — conservé tel quel]", flush=True)
-            print(f"    → Analyses Méthodo 2 : montant_brut_total (Feuille 1) sera utilisé",
+            print(f"    → Méthodo 2 : brut Feuille 1 conservé ; étape 11 déduit les postes 461 à 464",
                   flush=True)
             print(f"    {'─'*65}", flush=True)
 
@@ -588,7 +607,8 @@ def construire_panel_annee(df: pl.DataFrame) -> pl.DataFrame:
     # Les nouvelles colonnes agrégées (NB_POSTES, montant_brut_total, etc.)
     # ne sont pas encore dans df — elles seront jointes après déduplication.
     _cols_calculees = ("NB_POSTES", "montant_brut_total", "montant_brut_sans_ind_sans_alloc",
-                       "montant_brut_total_composantes_F2", "montant_net_total")
+                       "montant_brut_total_composantes_F2", "montant_representation_461_464",
+                       "montant_net_total")
     cols_silver    = [c for c in COLONNES_PANEL
                       if c in df.columns and c not in _cols_calculees]
     cols_absentes  = [c for c in COLONNES_PANEL
@@ -624,6 +644,10 @@ def construire_panel_annee(df: pl.DataFrame) -> pl.DataFrame:
         else:
             print("    ⚠️  montant_brut_total_composantes_F2 non calculé (aucune colonne *_F2 détectée)",
                   flush=True)
+        if agg_representation is not None:
+            df = df.join(agg_representation, on=cles_agg, how="left")
+        else:
+            df = df.with_columns(pl.lit(0.0).alias("montant_representation_461_464"))
         if agg_net_total is not None:
             df = df.join(agg_net_total, on=cles_agg, how="left")
 

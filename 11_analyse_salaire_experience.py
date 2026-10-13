@@ -14,6 +14,8 @@
 #           base_avec_statut_corrigee.parquet (salaires et statuts après 07a).
 # Exclusions communes M1/M2 : barèmes GREFFE, MAGISTRAT,
 # para militaire, CORPS DIPL et CORPS PREF.
+# Exclusion commune M1/M2 : organisme 59 (dans cette analyse ; 07b ne
+# l'exclut que du M2).
 # Sortie  : s3://staging/panel_admin/exports_gold/salaire_experience.xlsx
 #
 # Structure du classeur produit :
@@ -27,9 +29,12 @@
 #   M1 = montant_brut_sans_ind_sans_alloc (après imputation de l'étape 07a)
 #        Population « Statut = Conforme au barème » ; codes postes
 #        124+228+271+425 ; HORS indemnités et HORS allocation familiale (421).
-#   M2 = montant_brut_total (après imputation de l'étape 07a)
-#        Population « Statut_Total = Conforme au barème » ; Feuille 1,
-#        tous codes postes confondus.
+#   M2 = montant_brut_total (après 07a) moins le total des codes F2
+#        461+462+463+464, conservé en étape 06.
+#        Population « Statut_Total = Conforme au barème » ; ce statut reste
+#        calculé en étape 07 sur le montant_brut_total avant déduction.
+#        Si 07a a imputé le brut, les codes déduits restent ceux du mois cible.
+#        L'organisme 59 est exclu du M2 comme du M1 dans cette analyse.
 #
 # Usage :
 #   python 11_analyse_salaire_experience.py            # réutilise le cache local si à jour
@@ -81,19 +86,19 @@ DAYS_PER_YEAR   = 365.25
 BAREMES_EXCLUS  = ("GREFFE", "MAGISTRAT", "PARA MILITAIRE", "CORPS DIPL", "CORPS PREF")
 
 OUTDIR   = Path("analyse_experience_out")   # copie locale (inspection)
-CACHE    = OUTDIR / "_cache_trajectoire_statuts_sans_baremes_exclus.parquet"
+CACHE    = OUTDIR / "_cache_trajectoire_statuts_m2_hors_representation.parquet"
 FICHIER_XLSX = OUTDIR / "salaire_experience.xlsx"
 
 METRIQUES = {
     "M1_sans_alloc": "m1",   # montant_brut_sans_ind_sans_alloc
-    "M2_brut_total": "m2",   # montant_brut_total
+    "M2_brut_total": "m2",   # montant_brut_total corrigé en 07a, hors codes 461 à 464
 }
 _COLS_NUMERIQUES_ORDRE = ("n_obs", "n_agents", "salaire_moyen", "salaire_median",
                            "p25", "p75", "min", "max")
 
 LIB_METRIQUE = {
     "M1_sans_alloc": "M1 — montant_brut_sans_ind_sans_alloc  (hors indemnités, hors allocation familiale)",
-    "M2_brut_total": "M2 — montant_brut_total  (Feuille 1, tous codes postes)",
+    "M2_brut_total": "M2 — brut total hors postes 461 à 464  (représentation)",
 }
 
 # Ventilations : (nom de feuille, colonnes de groupe, description, section)
@@ -188,11 +193,25 @@ def construire_cache(chemin_parquet: Path, chemin_statuts: Path) -> None:
     t0 = time.time()
 
     statuts = pl.scan_parquet(str(chemin_statuts))
+    noms_statuts = statuts.collect_schema().names()
     colonnes_requises = {"matricule", "mois_annee", "annee", "bareme", "Statut", "Statut_Total",
-                        "montant_brut_sans_ind_sans_alloc", "montant_brut_total"}
-    manquantes = colonnes_requises - set(statuts.collect_schema().names())
+                        "montant_brut_sans_ind_sans_alloc", "montant_brut_total",
+                        "montant_representation_461_464"}
+    manquantes = colonnes_requises - set(noms_statuts)
     if manquantes:
-        raise ValueError(f"Colonnes absentes de {KEY_STATUTS} : {sorted(manquantes)}")
+        raise ValueError(
+            f"Colonnes absentes de {KEY_STATUTS} : {sorted(manquantes)}. "
+            "Relancer les étapes 06, 07 et 07a pour calculer M2 hors postes 461 à 464."
+        )
+
+    # Colonne organisme : l'organisme 59 est exclu du M2 (cf. 07b).
+    col_org = next((c for c in ("CODE_ORGANISME", "code_organisme", "organisme")
+                    if c in noms_statuts), None)
+    if col_org:
+        org_expr = pl.col(col_org).cast(pl.Utf8).fill_null("(NC)").alias("_organisme")
+    else:
+        org_expr = pl.lit("(NC)", dtype=pl.Utf8).alias("_organisme")
+        print("    ⚠️  Colonne organisme absente — exclusion de 59 impossible (M2)", flush=True)
 
     annees_panel = set(pl.scan_parquet(str(chemin_parquet))
                       .filter(pl.col("annee").is_in(ANNEES))
@@ -219,7 +238,9 @@ def construire_cache(chemin_parquet: Path, chemin_statuts: Path) -> None:
         pl.col("bareme").cast(pl.Utf8).str.strip_chars().str.to_uppercase().alias("_bareme_filtre"),
         pl.col("Statut"), pl.col("Statut_Total"),
         pl.col("montant_brut_sans_ind_sans_alloc").cast(pl.Float64).alias("m1"),
-        pl.col("montant_brut_total").cast(pl.Float64).alias("m2"),
+        (pl.col("montant_brut_total").cast(pl.Float64)
+         - pl.col("montant_representation_461_464").cast(pl.Float64)).alias("m2"),
+        org_expr,
     ])
     jointure = (
         pl.scan_parquet(str(chemin_parquet))
@@ -257,6 +278,7 @@ def construire_cache(chemin_parquet: Path, chemin_statuts: Path) -> None:
             pl.col("annees_experience"),
             pl.col("m1"), pl.col("m2"),
             pl.col("Statut"), pl.col("Statut_Total"),
+            pl.col("_organisme"),
             pl.col("GRADE").cast(pl.Utf8),
             pl.col("Code_CITP").cast(pl.Utf8),
             pl.col("Metier_CITP").cast(pl.Utf8),
@@ -274,6 +296,18 @@ def construire_cache(chemin_parquet: Path, chemin_statuts: Path) -> None:
     print(f"  ✓ Cache écrit : {CACHE}  ({n:,} lignes, {time.time()-t0:.1f}s)")
     print(f"    Observations avec statut sans correspondance trajectoire ou hors période : "
           f"{n_statuts - n - exclus['n_obs'].sum():,}")
+
+    n_org59_m1 = (pl.scan_parquet(str(CACHE))
+                  .filter((pl.col("_organisme") == "59")
+                          & (pl.col("Statut") == "Conforme au barème")
+                          & pl.col("m1").is_not_null() & (pl.col("m1") > 0))
+                  .select(pl.len()).collect().item())
+    n_org59_m2 = (pl.scan_parquet(str(CACHE))
+                  .filter((pl.col("_organisme") == "59")
+                          & (pl.col("Statut_Total") == "Conforme au barème")
+                          & pl.col("m2").is_not_null() & (pl.col("m2") > 0))
+                  .select(pl.len()).collect().item())
+    print(f"    Organisme 59 exclu des statistiques — M1 : {n_org59_m1:,} obs, M2 : {n_org59_m2:,} obs")
 
 
 def statistiques_qualite(chemin_parquet: Path) -> None:
@@ -314,7 +348,9 @@ def _base_valide(lf: pl.LazyFrame, col_val: str) -> pl.LazyFrame:
     return (lf
         .filter(pl.col(statut) == "Conforme au barème")
         .filter(pl.col("annees_experience").is_not_null() & (pl.col("annees_experience") >= 0))
-        .filter(pl.col(col_val).is_not_null() & (pl.col(col_val) > 0)))
+        .filter(pl.col(col_val).is_not_null() & (pl.col(col_val) > 0))
+        # Organisme 59 exclu des deux métriques (cohérent avec l'exclusion 07b).
+        .filter(pl.col("_organisme") != "59"))
 
 
 def tableau_stats(lf: pl.LazyFrame, largeur: int, metrique: str, groupe: list[str]) -> pl.DataFrame:
@@ -484,11 +520,11 @@ def ecrire_sommaire(wb, sections, annees_couvertes):
     r = 3
     _cell(ws, r, 1, "DÉFINITIONS DES VARIABLES", font=_FONT_SOUS); r += 1
     for cle, lib in [
-        ("M1", "montant_brut_sans_ind_sans_alloc — population « Statut conforme (barème) » ; codes postes 124+228+271+425 ; HORS indemnités et HORS allocation familiale (421)."),
-        ("M2", "montant_brut_total — population « Statut_Total conforme (barème) » ; Feuille 1, tous codes postes confondus."),
+        ("M1", "montant_brut_sans_ind_sans_alloc — population « Statut conforme (barème) » ; codes postes 124+228+271+425 ; HORS indemnités et HORS allocation familiale (421). Organisme 59 exclu."),
+        ("M2", "Montant brut total après correction 07a moins les postes F2 461+462+463+464 ; population « Statut_Total conforme (barème) ». Le statut a été calculé sur le brut avant déduction. Organisme 59 exclu."),
         ("Expérience", "Calculée depuis la prise_service corrigée du panel trajectoire : (période d'observation − prise_service) / 365,25. Classes de 5 ans ; feuilles 10 et 15 ans : [10, 11[ et [15, 16[."),
         ("Sources", f"s3://{BUCKET_GOLD}/{KEY_PANEL} (expérience) ; s3://{BUCKET_GOLD}/{KEY_STATUTS} (statuts et salaires). Années couvertes : {annees_couvertes}."),
-        ("Exclusions", "Observations communes et conformes au barème pour la métrique ; salaires ≤ 0, expérience négative et prise_service manquante exclus."),
+        ("Exclusions", "Observations communes et conformes au barème pour la métrique ; salaires ≤ 0, expérience négative et prise_service manquante exclus ; organisme 59 exclu (M1 et M2)."),
         ("Barèmes exclus", "GREFFE, MAGISTRAT, para militaire, CORPS DIPL et CORPS PREF sont retirés de toutes les statistiques M1 et M2."),
     ]:
         _cell(ws, r, 1, cle, font=Font(bold=True))
@@ -530,14 +566,14 @@ def ecrire_metadonnees(wb, annees_couvertes):
     _titre_feuille(ws, "MÉTADONNÉES", 4)
     _lien(ws, 2, 1, "← Retour au sommaire", "SOMMAIRE")
     lignes = [
-        ("M1", "Méthodo 1 — Population « Statut conforme (barème) ». Variable : montant_brut_sans_ind_sans_alloc (codes postes 124+228+271+425, hors allocation familiale 421)."),
-        ("M2", "Méthodo 2 — Population « Statut_Total conforme (barème) ». Variable : montant_brut_total (Feuille 1, tous codes postes confondus)."),
+        ("M1", "Méthodo 1 — Population « Statut conforme (barème) ». Variable : montant_brut_sans_ind_sans_alloc (codes postes 124+228+271+425, hors allocation familiale 421). Organisme 59 exclu."),
+        ("M2", "Méthodo 2 — Population « Statut_Total conforme (barème) ». Variable : montant_brut_total après 07a moins les postes F2 461+462+463+464 du mois observé. Statut_Total est calculé en amont sur le brut avant déduction ; en cas d'imputation 07a, les postes déduits restent ceux du mois cible. Organisme 59 exclu (M1 et M2)."),
         ("Sources", f"s3://{BUCKET_GOLD}/{KEY_PANEL} (prise_service corrigée) ; s3://{BUCKET_GOLD}/{KEY_STATUTS} (statuts et montants après imputation 07a). Jointure matricule × mois_annee ; seules les périodes communes sont analysées. Sortie : s3://{BUCKET_STAGING}/{OUTPUT_KEY}."),
         ("Années couvertes", annees_couvertes),
         ("Calcul expérience", "annees_experience = (période d'observation − prise_service corrigée) / 365,25 ; classement dans la tranche de 5 ans inférieure. L'indicateur anciennete_a_la_periode arrondi du panel n'est pas utilisé pour les seuils exacts."),
         ("Classes (5 ans)", "[0-5[, [5-10[, [10-15[, [15-20[, [20-25[, [25-30[, [30-35[, [35-40[, [40-45[, [45+."),
-        ("Exclusions M1", "Statut différent de « Conforme au barème » ; montant_brut_sans_ind_sans_alloc ≤ 0 ou null."),
-        ("Exclusions M2", "Statut_Total différent de « Conforme au barème » ; montant_brut_total ≤ 0 ou null."),
+        ("Exclusions M1", "Statut différent de « Conforme au barème » ; organisme 59 ; montant_brut_sans_ind_sans_alloc ≤ 0 ou null."),
+        ("Exclusions M2", "Statut_Total différent de « Conforme au barème » ; organisme 59 ; M2 après déduction ≤ 0 ou null."),
         ("Barèmes exclus", "GREFFE, MAGISTRAT, para militaire, CORPS DIPL et CORPS PREF ; exclusion commune à M1 et M2 avant les agrégations."),
         ("Expérience négative", "période < prise de service → exclues du calcul."),
         ("prise_service manquante", "exclue du calcul d'expérience."),
@@ -607,7 +643,9 @@ def main() -> None:
     sources = [KEY_PANEL, KEY_STATUTS]
     dates_sources = [s3.head_object(Bucket=BUCKET_GOLD, Key=key)["LastModified"].timestamp()
                      for key in sources]
-    if CACHE.exists() and not args.force and CACHE.stat().st_mtime >= max(dates_sources):
+    if (CACHE.exists() and not args.force
+            and "_organisme" in pl.scan_parquet(str(CACHE)).collect_schema().names()
+            and CACHE.stat().st_mtime >= max(dates_sources)):
         print(f"  ↺ Cache local réutilisé : {CACHE}  (--force pour reconstruire)")
     else:
         chemins = []
