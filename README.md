@@ -35,7 +35,7 @@ Le projet adopte une architecture "Medallion" pour garantir la traçabilité et 
 | [orchestrateur.py](orchestrateur.py) | Point d'entrée du pipeline et reprise des exécutions |
 | [src/pipeline/](src/pipeline/) | Étapes de traitement, modules communs et configuration |
 | [src/pipeline/control_verif/](src/pipeline/control_verif/) | Diagnostics des données |
-| [src/utils/](src/utils/) | Pseudonymisation et lecture des schémas Excel |
+| [src/utils/](src/utils/) | Pseudonymisation, lecture des schémas Excel, création du `.env` |
 | [tests/](tests/) et [src/pipeline/tests/](src/pipeline/tests/) | Tests des utilitaires et des fonctions de calcul |
 | [superset/](superset/) | Vues PostgreSQL et guide de validation pour Superset |
 | [docs/](docs/README.md) | Documentation officielle, guides, communication et archives |
@@ -63,9 +63,93 @@ exécutions ; leur publication reste volontaire.
 pip install -r requirements.txt
 ```
 
-Configurer les variables de connexion à partir de `.env.example`, notamment
-`MINIO_ACCESS_KEY` et `MINIO_SECRET_KEY`. Les scripts ne fournissent pas de
-valeurs de connexion par défaut.
+### Configuration des identifiants (MinIO, PostgreSQL)
+
+Le code ne contient aucun identifiant. Les scripts lisent des variables
+d'environnement (`MINIO_ENDPOINT`, `MINIO_ACCESS_KEY`, `MINIO_SECRET_KEY`,
+`PG_PASSWORD`, etc. ; liste complète dans [.env.example](.env.example)). Chaque
+machine (serveur JupyterLab, poste local) fournit ses propres valeurs sous les
+mêmes noms. Les scripts ne fournissent pas de valeurs de connexion par défaut.
+
+Deux façons de fournir ces variables :
+
+**Option A : un fichier `.env` sur la machine.** Depuis un terminal JupyterLab
+(*File → New → Terminal*), à la racine du dépôt :
+
+```bash
+python src/utils/creer_env.py
+```
+
+Le script reprend les variables de `.env.example` une par une :
+
+- les variables ordinaires proposent une valeur par défaut entre crochets
+  (Entrée pour la garder) ;
+- les secrets (`MINIO_ACCESS_KEY`, `MINIO_SECRET_KEY`, `PG_PASSWORD`,
+  `ANSTAT_SECRET_KEY`) sont saisis sans affichage, avec confirmation. On peut
+  les coller.
+
+Protections :
+
+- aucune commande shell n'est lancée et les secrets ne passent pas en argument :
+  ils n'apparaissent pas dans l'historique du shell ;
+- une valeur contenant un retour à la ligne est refusée, ce qui empêche d'ajouter
+  d'autres variables dans le `.env` ;
+- chaque valeur, puis le fichier complet, est relu par python-dotenv avant
+  écriture. Si la relecture diffère de la saisie, rien n'est écrit ;
+- le `.env` est créé avec les droits `600` (lisible par son seul propriétaire),
+  d'un seul coup. Ctrl+C pendant la saisie n'écrit rien ;
+- un `.env` existant n'est écrasé qu'après confirmation ;
+- l'écran et l'historique de défilement du terminal sont effacés à la fin.
+  Fermer ensuite l'onglet du terminal.
+
+Deux types de valeurs sont refusés, et il faut alors changer le mot de passe
+côté MinIO ou PostgreSQL :
+
+- une valeur contenant `${` : `load_dotenv` la remplacerait par une autre
+  variable ;
+- une valeur finissant par `\` : python-dotenv la lit mal quand d'autres lignes
+  suivent.
+
+Les étapes `00` à `07a` chargent `.env` avec un chemin relatif
+(`load_dotenv(".env")`) : lancer le pipeline **depuis la racine du dépôt**.
+
+**Option B : un Secret Kubernetes injecté dans le pod Jupyter.** Aucun fichier
+secret n'est alors présent sur le disque. Le modèle
+[infra/panel-admin-secret.yaml](infra/panel-admin-secret.yaml) (valeurs
+`change-me` à remplacer hors du dépôt) est déclaré dans le namespace `airflow`.
+Un Secret n'est visible que dans son namespace : il faut en créer une copie dans
+le namespace de JupyterHub, puis l'injecter dans les pods utilisateurs
+(`values.yaml` de JupyterHub) :
+
+```yaml
+singleuser:
+  extraEnv:
+    MINIO_ACCESS_KEY:
+      valueFrom: {secretKeyRef: {name: panel-admin-secrets, key: MINIO_ACCESS_KEY}}
+    MINIO_SECRET_KEY:
+      valueFrom: {secretKeyRef: {name: panel-admin-secrets, key: MINIO_SECRET_KEY}}
+    # idem pour MINIO_ENDPOINT, PG_*, etc.
+```
+
+`load_dotenv` n'écrase pas une variable déjà définie : les deux options peuvent
+coexister, et les variables déjà présentes dans l'environnement l'emportent sur
+le `.env`.
+
+Bonnes pratiques :
+
+- ne jamais versionner un `.env` ni un Secret rempli (`.env` et `**/.env` sont
+  dans `.gitignore`) ;
+- une clé d'accès MinIO par personne ou par usage (*service account* limité aux
+  buckets `staging`, `bronze`, `silver`, `gold`), plutôt que le compte root
+  partagé. On peut ainsi révoquer un accès sans couper les autres ;
+- dans les notebooks, ne jamais taper un mot de passe dans une cellule ni
+  afficher `os.environ` : les sorties restent enregistrées dans le `.ipynb` ;
+- vérification TLS : pour l'instant elle est désactivée partout
+  (`MINIO_VERIFY_SSL=false` dans `.env.example` et dans le Secret). Le client
+  commun (`src/pipeline/common/s3_client.py`) lit `MINIO_VERIFY_SSL`, avec `false`
+  si la variable est absente. Les étapes `00` à `08` (sauf `07c`),
+  `10_correction_gold_trajectoire`, `11` et `plus_age_experience.py` créent leur propre client avec `verify=False` en dur : pour réactiver
+  la vérification, il faudra les faire passer par `create_s3_client()`.
 
 ### Exécution du Pipeline
 Le pipeline peut être lancé intégralement ou par étapes spécifiques via l'orchestrateur. C'est un processus continu destiné à intégrer les nouvelles périodes de données dès leur disponibilité.

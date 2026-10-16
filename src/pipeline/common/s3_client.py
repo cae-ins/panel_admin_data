@@ -60,7 +60,7 @@ def create_s3_client():
             read_timeout=int(os.getenv("S3_READ_TIMEOUT", "120")),
         ),
         region_name=os.getenv("AWS_REGION", "us-east-1"),
-        verify=get_bool_env("MINIO_VERIFY_SSL", True),
+        verify=get_bool_env("MINIO_VERIFY_SSL", False),
     )
 
 
