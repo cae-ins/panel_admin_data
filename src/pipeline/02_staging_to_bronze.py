@@ -20,18 +20,25 @@
 import io
 import os
 import re
-import sys
 import tempfile
 import unicodedata
-from common.s3_client import create_s3_client
-from common.logging_config import setup_pipeline_logging
-from common.polars_s3 import normaliser_nom_colonne
+from math import ceil
+from dotenv import load_dotenv
+import boto3
+from botocore.client import Config
 import warnings
 import polars as pl
 
 warnings.filterwarnings("ignore", message="Could not determine dtype")
 
+load_dotenv(".env")
+
 # --- CONFIGURATION ---
+
+# LORSQU'ON TRAVAILLE DEPUIS SA MACHINE LOCAL
+MINIO_ENDPOINT   = os.getenv("MINIO_ENDPOINT",   "http://192.168.1.230:30137")
+MINIO_ACCESS_KEY = os.getenv("MINIO_ACCESS_KEY", "")
+MINIO_SECRET_KEY = os.getenv("MINIO_SECRET_KEY", "")
 
 BUCKET_STAGING  = os.getenv("BUCKET_STAGING", "staging")
 BUCKET_BRONZE   = os.getenv("BUCKET_BRONZE",  "bronze")
@@ -39,12 +46,35 @@ PREFIX_MENSUELS = "panel_admin/fichiers_mensuels"
 PREFIX_BRONZE   = "panel_admin"
 
 # --- CLIENT S3 (MinIO) ---
-s3 = create_s3_client()
-logger, _ = setup_pipeline_logging("02_staging_to_bronze")
+s3 = boto3.client(
+    "s3",
+    endpoint_url          = MINIO_ENDPOINT,
+    aws_access_key_id     = MINIO_ACCESS_KEY,
+    aws_secret_access_key = MINIO_SECRET_KEY,
+    config                = Config(signature_version="s3v4"),
+    region_name           = "us-east-1",
+    verify                = False,
+)
 
 # ============================================================
 # FONCTIONS UTILITAIRES
 # ============================================================
+
+def normaliser_nom_colonne(nom: str) -> str:
+    """Normalise un nom de colonne : ASCII majuscule, sans caractères spéciaux."""
+    if not nom or isinstance(nom, float):
+        return "colonne_vide"
+    nom = str(nom)
+    nom = re.sub(r"^[A-Z_]+[0-9]+\.", "", nom)
+    nom = nom.upper()
+    nom = re.sub(r"[-/_ ]", "_", nom)
+    nom = re.sub(r"\.", "_", nom)
+    nom = unicodedata.normalize("NFKD", nom)
+    nom = "".join(c for c in nom if not unicodedata.combining(c))
+    nom = re.sub(r"[^A-Z0-9_]", "", nom)
+    nom = re.sub(r"_+", "_", nom)
+    return nom.strip("_")
+
 
 def deduplication_noms(noms: list[str]) -> list[str]:
     """Rend une liste de noms de colonnes unique en suffixant les doublons."""
@@ -92,9 +122,10 @@ def ecrire_parquet_bronze(df: pl.DataFrame, periode: str) -> None:
 # LISTER LES FICHIERS DANS STAGING
 # ============================================================
 
-logger.info("=" * 70)
-logger.info("STAGING → BRONZE : Panel Administratif")
-logger.info("=" * 70)
+print("=" * 70)
+print("STAGING → BRONZE : Panel Administratif")
+print("=" * 70)
+print()
 
 paginator = s3.get_paginator("list_objects_v2")
 pages = paginator.paginate(Bucket=BUCKET_STAGING, Prefix=PREFIX_MENSUELS)
@@ -106,7 +137,7 @@ fichiers_minio = sorted([
     if obj["Key"].lower().endswith(".xlsx")
 ])
 
-logger.info(f"Fichiers dans staging : {len(fichiers_minio)}")
+print(f"Fichiers dans staging : {len(fichiers_minio)}\n")
 
 # ============================================================
 # TRAITEMENT FICHIER PAR FICHIER (Polars → Parquet/bronze)
@@ -118,6 +149,7 @@ nb_err = 0
 for chemin_objet in fichiers_minio:
     periode     = os.path.splitext(os.path.basename(chemin_objet))[0]
     nom_fichier = os.path.basename(chemin_objet)
+    print(f"  [{periode}] ... ", end="", flush=True)
 
     tmp_path = None
     try:
@@ -133,19 +165,16 @@ for chemin_objet in fichiers_minio:
             read_options={"header_row": skip_f1},
         )
 
-        # Détecter la clé composite MATRICULE||CODE_ORGANISME dans F1
-        # AVANT normalisation (la normalisation supprimerait les "||")
-        nom_cle_f1 = next(
-            (c for c in feuille1.columns
-             if re.search(r"MATRICULE.*\|\|", str(c), re.IGNORECASE)),
-            None,
-        )
-        if nom_cle_f1:
-            feuille1 = feuille1.rename({nom_cle_f1: "CLE_UNIQUE"})
-
-        # Normalisation + déduplication (CLE_UNIQUE est déjà protégé)
-        noms_norm = [normaliser_nom_colonne(c) for c in feuille1.columns]
-        feuille1  = feuille1.rename(dict(zip(feuille1.columns, deduplication_noms(noms_norm))))
+        # Normalisation + déduplication des noms de colonnes
+        # Détecter la clé composite MATRICULE||CODE_ORGANISME dans F1 AVANT normalisation
+        # (les || sont supprimés par normaliser_nom_colonne → colonne jamais reconnue comme CLE_UNIQUE)
+        noms_orig = list(feuille1.columns)
+        noms_norm = [normaliser_nom_colonne(c) for c in noms_orig]
+        for i, nom in enumerate(noms_orig):
+            if re.search(r"MATRICULE.*\|\|", str(nom), re.IGNORECASE):
+                noms_norm[i] = "CLE_UNIQUE"
+                break
+        feuille1  = feuille1.rename(dict(zip(noms_orig, deduplication_noms(noms_norm))))
 
         # --- LECTURE FEUILLE 2 (codes numériques) ---
         skip_f2 = detecter_entete(tmp_path, sheet_id=1)
@@ -161,7 +190,6 @@ for chemin_objet in fichiers_minio:
              if re.search(r"MATRICULE.*\|\|", str(c), re.IGNORECASE)),
             None,
         )
-
         if nom_cle_f2:
             feuille2 = feuille2.rename({nom_cle_f2: "CLE_UNIQUE_F2"})
             rename_f2 = {
@@ -170,36 +198,48 @@ for chemin_objet in fichiers_minio:
             }
             feuille2 = feuille2.rename(rename_f2)
 
-            cols_num_f2      = [c for c in feuille2.columns if re.match(r"^\d+_F2$", c)]
-            cols_obligatoires = {"124_F2", "421_F2"}
-
-            if cols_obligatoires.issubset(set(cols_num_f2)):
-                feuille2 = feuille2.filter(
-                    pl.col("124_F2").is_not_null()
-                    & (pl.col("124_F2").cast(pl.Utf8).str.strip_chars() != "")
-                    & pl.col("421_F2").is_not_null()
-                    & (pl.col("421_F2").cast(pl.Utf8).str.strip_chars() != "")
+            # Clé F1 au même format que la clé F2 (MATRICULE||CODE_ORGANISME)
+            if "CLE_UNIQUE" in feuille1.columns:
+                expr_cle_f1 = pl.col("CLE_UNIQUE").cast(pl.Utf8)
+            elif {"MATRICULE", "CODE_ORGANISME"}.issubset(feuille1.columns):
+                expr_cle_f1 = pl.concat_str(
+                    [pl.col("MATRICULE").cast(pl.Utf8), pl.col("CODE_ORGANISME").cast(pl.Utf8)],
+                    separator="||",
                 )
-                logger.info(f"  [{periode}] F2 : {len(feuille2):,} lignes avec 124+421 renseignés")
             else:
-                logger.info(f"  [{periode}] F2 : colonnes 124_F2/421_F2 absentes, F2 ignoré")
-                feuille2 = None
+                raise RuntimeError(
+                    "Feuille 1 sans colonne MATRICULE||CODE_ORGANISME ni MATRICULE + "
+                    "CODE_ORGANISME : impossible de rattacher la Feuille 2"
+                )
 
-            if feuille2 is not None:
-                cle_f1 = "CLE_UNIQUE" if "CLE_UNIQUE" in feuille1.columns else None
+            def _normaliser_cle(expr: pl.Expr) -> pl.Expr:
+                return (expr.str.strip_chars().str.to_uppercase()
+                        .str.replace_all(r"\s*\|\|\s*", "||"))
 
-                if cle_f1:
-                    feuille1 = feuille1.join(
-                        feuille2,
-                        left_on=cle_f1,
-                        right_on="CLE_UNIQUE_F2",
-                        how="inner",
-                    )
-                    logger.info(f"  [{periode}] F1↔F2 : {len(feuille1):,} individus communs")
-                else:
-                    logger.info(f"  [{periode}] CLE_UNIQUE absente de F1, jointure ignorée")
+            feuille1 = feuille1.with_columns(_normaliser_cle(expr_cle_f1).alias("_CLE_JOINTURE_F2"))
+            feuille2 = feuille2.with_columns(
+                _normaliser_cle(pl.col("CLE_UNIQUE_F2").cast(pl.Utf8)).alias("_CLE_JOINTURE_F2"),
+                pl.lit(True).alias("_F2_TROUVEE"),
+            ).drop("CLE_UNIQUE_F2")
+
+            n_doublons_f2 = len(feuille2) - feuille2["_CLE_JOINTURE_F2"].n_unique()
+            if n_doublons_f2 > 0:
+                print(f"\n      ⚠️  Feuille 2 : {n_doublons_f2:,} clés en double "
+                      f"(lignes F1 dupliquées au rattachement)", end="")
+
+            feuille1 = feuille1.join(feuille2, on="_CLE_JOINTURE_F2", how="left")
+            n_f1      = len(feuille1)
+            n_trouves = int(feuille1["_F2_TROUVEE"].fill_null(False).sum())
+            feuille1  = feuille1.drop(["_CLE_JOINTURE_F2", "_F2_TROUVEE"])
+            print(f"F2 rattachée {n_trouves:,}/{n_f1:,} ({100 * n_trouves / n_f1 if n_f1 else 0:.1f}%)  ",
+                  end="", flush=True)
+            if len(feuille2) > 0 and n_trouves == 0:
+                raise RuntimeError(
+                    "Feuille 2 présente mais AUCUNE ligne rattachée à la Feuille 1 "
+                    "(format de la clé MATRICULE||CODE_ORGANISME différent entre les deux onglets)"
+                )
         else:
-            logger.info(f"  [{periode}] F2 : clé MATRICULE||CODE_ORGANISME introuvable, F2 ignoré")
+            print("⚠️  Feuille 2 sans colonne MATRICULE||… — non rattachée  ", end="", flush=True)
 
         # Ajout des métadonnées et cast tout-String (Bronze = brut)
         feuille1 = (
@@ -216,11 +256,11 @@ for chemin_objet in fichiers_minio:
         # --- ÉCRITURE PARQUET SUR BRONZE ---
         ecrire_parquet_bronze(feuille1, periode)
 
-        logger.info(f"  [{periode}] ✓ {len(feuille1):,} lignes × {len(feuille1.columns)} cols")
+        print(f"✓  {len(feuille1):,} lignes × {len(feuille1.columns)} cols")
         nb_ok += 1
 
     except Exception as e:
-        logger.error(f"  [{periode}] ✗ ERREUR : {e}")
+        print(f"✗ ERREUR : {e}")
         nb_err += 1
         if tmp_path and os.path.exists(tmp_path):
             os.unlink(tmp_path)
@@ -229,16 +269,13 @@ for chemin_objet in fichiers_minio:
 # RÉSUMÉ FINAL
 # ============================================================
 
-logger.info("=" * 70)
-logger.info("RÉSUMÉ")
-logger.info("=" * 70)
-logger.info(f"Fichiers traités avec succès : {nb_ok}")
-logger.info(f"Erreurs                      : {nb_err}")
-logger.info(f"Fichiers Parquet disponibles dans : s3://{BUCKET_BRONZE}/{PREFIX_BRONZE}/")
-
-if nb_err > 0:
-    logger.error(f"INGESTION BRONZE INCOMPLÈTE — {nb_err} fichier(s) en erreur")
-    sys.exit(1)
-
-logger.info("✓ INGESTION BRONZE TERMINÉE")
-logger.info("Prochaine étape : exécuter 03_bronze_to_silver.py")
+print()
+print("=" * 70)
+print("RÉSUMÉ")
+print("=" * 70)
+print()
+print(f"Fichiers traités avec succès : {nb_ok}")
+print(f"Erreurs                      : {nb_err}")
+print(f"\nFichiers Parquet disponibles dans : s3://{BUCKET_BRONZE}/{PREFIX_BRONZE}/")
+print("\n✓ INGESTION BRONZE TERMINÉE")
+print("Prochaine étape : exécuter 03_bronze_to_silver.py")

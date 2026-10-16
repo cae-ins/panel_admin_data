@@ -6,47 +6,37 @@
 #   - Normalisation et filtrage des situations administratives
 #   - Enrichissement avec les codes ANSTAT
 #   - Cast des montants en numérique
-#   - Calcul de salaire_brut_f2 = somme des composantes F2
-#     (124_f2 + 228_f2 + 271_f2 + 421_f2 + 425_f2)
 #
 # Ajout vs version initiale :
-#   - Suivi du taux de matching ANSTAT PAR PÉRIODE
-#   - Calcul de salaire_brut_f2 depuis les composantes F2
+#   - Suivi du taux de matching ANSTAT PAR PÉRIODE (CODE_ORGANISME,
+#     CODE_GRADE, CODE_EMPLOI) → rapport CSV dans staging/validation/
 #
 # Source  : s3://bronze/panel_admin/*.parquet
 # Sortie  : s3://silver/panel_admin/YYYY.parquet (un par année)
 #
 # Dépendances :
-#   pip install polars fastexcel boto3 python-dotenv PyYAML
+#   pip install polars fastexcel boto3 python-dotenv
 # ============================================================
 
 import gc
 import io
 import os
 import re
-import sys
 import tempfile
 import unicodedata
-from pathlib import Path
-import yaml
-from common.s3_client import create_s3_client
-from common.logging_config import setup_pipeline_logging
-from common.polars_s3 import lire_parquet_s3, ecrire_parquet_s3, normaliser_nom_colonne
+from dotenv import load_dotenv
+import boto3
+from botocore.client import Config
 import polars as pl
+
+load_dotenv(".env")
 
 # --- CONFIGURATION ---
 
-CONFIG_PATH = Path(__file__).parent / "config" / "pipeline_settings.yaml"
-
-def load_pipeline_settings():
-    if not CONFIG_PATH.exists():
-        raise FileNotFoundError(f"Fichier de configuration introuvable : {CONFIG_PATH}")
-    with open(CONFIG_PATH, "r", encoding="utf-8") as f:
-        return yaml.safe_load(f)
-
-SETTINGS = load_pipeline_settings()
-COLUMN_MAPPING = SETTINGS.get("column_mapping", {})
-SITUATIONS_VALIDES = SETTINGS.get("situations_valides", {})
+# LORSQU'ON TRAVAILLE DEPUIS SA MACHINE LOCAL
+MINIO_ENDPOINT   = os.getenv("MINIO_ENDPOINT",   "http://192.168.1.230:30137")
+MINIO_ACCESS_KEY = os.getenv("MINIO_ACCESS_KEY", "")
+MINIO_SECRET_KEY = os.getenv("MINIO_SECRET_KEY", "")
 
 BUCKET_STAGING = os.getenv("BUCKET_STAGING", "staging")
 BUCKET_BRONZE  = os.getenv("BUCKET_BRONZE",  "bronze")
@@ -59,17 +49,41 @@ PREFIX_VALID   = "panel_admin/validation"
 # Codes dont on suit le taux de matching par période
 CODES_A_SURVEILLER = ["CODE_ORGANISME", "CODE_GRADE", "CODE_EMPLOI"]
 
-# Composantes du salaire brut F2
-# Noms en lowercase après normalisation par le script 02
-COMPOSANTES_F2 = ["124_f2", "228_f2", "271_f2", "421_f2", "425_f2"]
-
 # --- CLIENT S3 (MinIO) ---
-s3 = create_s3_client()
-logger, _ = setup_pipeline_logging("03_bronze_to_silver")
+s3 = boto3.client(
+    "s3",
+    endpoint_url          = MINIO_ENDPOINT,
+    aws_access_key_id     = MINIO_ACCESS_KEY,
+    aws_secret_access_key = MINIO_SECRET_KEY,
+    config                = Config(
+        signature_version = "s3v4",
+        retries           = {"max_attempts": 5, "mode": "adaptive"},
+        connect_timeout   = 30,
+        read_timeout      = 120,
+    ),
+    region_name = "us-east-1",
+    verify      = False,
+)
 
 # ============================================================
 # FONCTIONS UTILITAIRES
 # ============================================================
+
+def lire_parquet_s3(bucket: str, key: str) -> pl.DataFrame:
+    buf = io.BytesIO()
+    s3.download_fileobj(bucket, key, buf)
+    buf.seek(0)
+    return pl.read_parquet(buf)
+
+
+def ecrire_parquet_s3(df: pl.DataFrame, bucket: str, key: str) -> None:
+    buf = io.BytesIO()
+    df.write_parquet(buf, compression="snappy")
+    buf.seek(0)
+    taille = len(buf.getvalue()) / 1024**2
+    s3.put_object(Bucket=bucket, Key=key, Body=buf.getvalue())
+    print(f"  ✓ s3://{bucket}/{key}  ({len(df):,} lignes × {len(df.columns)} cols  {taille:.1f} MB)")
+
 
 def sauvegarder_csv_staging(df: pl.DataFrame, nom_fichier: str) -> None:
     csv_bytes = df.write_csv().encode("utf-8")
@@ -78,7 +92,7 @@ def sauvegarder_csv_staging(df: pl.DataFrame, nom_fichier: str) -> None:
         Key=f"{PREFIX_VALID}/{nom_fichier}",
         Body=csv_bytes,
     )
-    logger.info(f"  ✓ Rapport sauvegardé : {nom_fichier}")
+    print(f"  ✓ Rapport sauvegardé : {nom_fichier}")
 
 
 def normaliser_pour_matching(texte) -> str | None:
@@ -89,7 +103,7 @@ def normaliser_pour_matching(texte) -> str | None:
         return None
     texte = re.sub(r"[-]", " ", texte)
     texte = re.sub(r"[.,;:()\[\]/]", " ", texte)
-    texte = re.sub("[''’]", " ", texte)
+    texte = re.sub("[''\u2019]", " ", texte)
     texte = texte.upper()
     texte = unicodedata.normalize("NFKD", texte)
     texte = "".join(c for c in texte if not unicodedata.combining(c))
@@ -97,12 +111,57 @@ def normaliser_pour_matching(texte) -> str | None:
     return texte if texte else None
 
 
+def normaliser_nom_colonne(nom: str) -> str:
+    if not nom or isinstance(nom, float):
+        return "colonne_vide"
+    nom = str(nom)
+    nom = re.sub(r"^[A-Z_]+[0-9]+\.", "", nom)
+    nom = nom.upper()
+    nom = re.sub(r"[-/_ ]", "_", nom)
+    nom = re.sub(r"\.", "_", nom)
+    nom = unicodedata.normalize("NFKD", nom)
+    nom = "".join(c for c in nom if not unicodedata.combining(c))
+    nom = re.sub(r"[^A-Z0-9_]", "", nom)
+    nom = re.sub(r"_+", "_", nom)
+    return nom.strip("_")
+
+
 def mapper_colonnes(noms_colonnes: list[str]) -> dict[str, str]:
+    mapping = {
+        # Les noms sont déjà normalisés (« || » supprimés) : MATRICULE||CODE ORGANISME
+        # devient MATRICULECODE_ORGANISME ; CLE_UNIQUE vient de 02.
+        "cle_unique":             [r"MATRICULE.*CODE.*ORGANISME", r"^CLE_UNIQUE$"],
+        "matricule":              [r"^MATRICULE$", r"^MATRIC$"],
+        "nom":                    [r"^NOM$", r"^NOM_PRENOM$", r"^NOM_ET_PRENOM$"],
+        "date_naissance":         [r"DATE.*NAISSANCE", r"DATE_NAISS", r"NAISSANCE"],
+        "sexe":                   [r"^SEXE$"],
+        "situation_matrimoniale": [r"SITUATION.*MATRIMONIALE", r"STATUT.*MATRIMONIAL"],
+        "nombre_enfant":          [r"NOMBRE.*ENFANT", r"NBR.*ENFANT"],
+        "situation":              [r"^SITUATION$", r"SITUATION_ADMINISTRATIVE"],
+        "date_debut_situation":   [r"DATE.*DEBUT.*SITUATION", r"DATE_SITUATION"],
+        "montant_brut":           [r"MONTANT_BRUT", r"SALAIRE_BRUT", r"REMUNERATION_BRUTE", r"^BRUT$"],
+        "montant_net":            [r"MONTANT_NET", r"SALAIRE_NET", r"REMUNERATION_NETTE", r"^NET$"],
+        "retenue_pension":        [r"RETENUE.*PENSION", r"^PENSION$", r"COTISATION.*PENSION"],
+        "impot":                  [r"^IMPOT$", r"^IGR$", r"IMPOT.*REVENU"],
+        "charge_patronale":       [r"CHARGE.*PATRONALE", r"CHARGES.*PATRONALES"],
+        "organisme":              [r"^ORGANISME$", r"MINISTERE", r"DIRECTION"],
+        "lieu_affectation":       [r"LIEU.*AFFECTATION", r"^AFFECTATION$"],
+        "service":                [r"^SERVICE$"],
+        "emploi":                 [r"^EMPLOI$", r"^CORPS$", r"CORPS.*EMPLOI"],
+        "fonction":               [r"^FONCTION$"],
+        "grade":                  [r"CLASSE.*ECHELON", r"CLASSE_ECHELON"],
+        "statut_fonctionnaire":   [r"^GRADE$"],
+        "poste":                  [r"^POSTE$", r"LIBELLE.*POSTE"],
+        "prise_service":          [r"PRISE.*SERVICE", r"DATE.*PRISE.*SERVICE"],
+        "date_retraite":          [r"DATE.*RETRAITE"],
+        "age_retraite":           [r"AGE.*RETRAITE"],
+        "mois_annee":             [r"MOIS.*ANNEE", r"^PERIODE$"],
+    }
     correspondance = {}
     for nom in noms_colonnes:
         nom_norm = normaliser_nom_colonne(nom)
         matched  = None
-        for std_name, patterns in COLUMN_MAPPING.items():
+        for std_name, patterns in mapping.items():
             for pattern in patterns:
                 if re.search(pattern, nom_norm, re.IGNORECASE):
                     matched = std_name
@@ -120,8 +179,12 @@ def normaliser_situation(situation) -> str:
     sit = unicodedata.normalize("NFKD", sit)
     sit = "".join(c for c in sit if not unicodedata.combining(c))
     sit = re.sub(r"\s+", " ", sit).strip()
-    
-    for categorie, valeurs in SITUATIONS_VALIDES.items():
+    situations_valides = {
+        "en_activite":      ["EN ACTIVITE", "ACTIVITE"],
+        "regul_indemnites": ["REGUL. INDEMNITES", "REGUL INDEMNITES", "REGULARISATION INDEMNITES"],
+        "demi_solde":       ["DEMI-SOLDE", "DEMI SOLDE", "DEMISOLDE", "1/2 SOLDE"],
+    }
+    for categorie, valeurs in situations_valides.items():
         if sit in valeurs:
             return categorie
     return "autre"
@@ -131,9 +194,10 @@ def normaliser_situation(situation) -> str:
 # CHARGEMENT DES TABLES ANSTAT
 # ============================================================
 
-logger.info("=" * 70)
-logger.info("CHARGEMENT : Tables de codes ANSTAT (depuis staging)")
-logger.info("=" * 70)
+print("=" * 70)
+print("CHARGEMENT : Tables de codes ANSTAT (depuis staging)")
+print("=" * 70)
+print()
 
 paginator = s3.get_paginator("list_objects_v2")
 pages     = paginator.paginate(Bucket=BUCKET_STAGING, Prefix=PREFIX_REFS)
@@ -151,7 +215,7 @@ if fichier_anstat_key is None:
 with tempfile.NamedTemporaryFile(suffix=".xlsx", delete=False) as tmp:
     tmp_anstat = tmp.name
 s3.download_file(BUCKET_STAGING, fichier_anstat_key, tmp_anstat)
-logger.info(f"✓ Fichier ANSTAT téléchargé : {os.path.basename(fichier_anstat_key)}")
+print(f"✓ Fichier ANSTAT téléchargé : {os.path.basename(fichier_anstat_key)}\n")
 
 
 def charger_table_codes(
@@ -241,7 +305,7 @@ for nom_code, cfg in dictionnaires_codes.items():
     extras = [c for c in cfg["table"].columns
               if c not in (cfg["col_code"], "libelle", "libelle_norm")]
     detail = f" + {extras}" if extras else ""
-    logger.info(f"  {nom_code:<25} : {nb:>4} codes{detail}")
+    print(f"  {nom_code:<25} : {nb:>4} codes{detail}")
 
 os.unlink(tmp_anstat)
 
@@ -249,9 +313,11 @@ os.unlink(tmp_anstat)
 # LISTER LES FICHIERS BRONZE (un par mois/période)
 # ============================================================
 
-logger.info("=" * 70)
-logger.info("LECTURE BRONZE")
-logger.info("=" * 70)
+print()
+print("=" * 70)
+print("LECTURE BRONZE")
+print("=" * 70)
+print()
 
 pages_bronze = s3.get_paginator("list_objects_v2").paginate(
     Bucket=BUCKET_BRONZE, Prefix=PREFIX_BRONZE
@@ -263,11 +329,14 @@ cles_bronze = sorted([
     if obj["Key"].endswith(".parquet")
 ])
 
-logger.info(f"Fichiers Parquet Bronze trouvés : {len(cles_bronze)}")
+print(f"Fichiers Parquet Bronze trouvés : {len(cles_bronze)}\n")
 
 # ============================================================
 # TRAITEMENT MOIS PAR MOIS + REGROUPEMENT PAR ANNÉE
 # ============================================================
+# On traite chaque fichier Bronze mensuel individuellement pour
+# pouvoir calculer le taux de matching ANSTAT par période,
+# puis on regroupe par année pour l'écriture Silver.
 
 frames_par_annee: dict[str, list[pl.DataFrame]] = {}
 stats_matching_par_periode: list[dict] = []
@@ -277,15 +346,19 @@ nb_err = 0
 
 for cle in cles_bronze:
     periode = os.path.splitext(os.path.basename(cle))[0]
+    # Extraire l'année depuis le nom de fichier (format MMYYYY ou YYYY-MM)
     m = re.search(r"20\d{2}", periode)
     annee = m.group() if m else periode[:4]
 
+    print(f"  [{periode}] Lecture... ", end="", flush=True)
+
     try:
         df = lire_parquet_s3(BUCKET_BRONZE, cle)
-        logger.info(f"  [{periode}] ✓ {len(df):,} lignes")
+        print(f"✓  {len(df):,} lignes", flush=True)
 
         # --- Mapping colonnes ---
         correspondance = mapper_colonnes(list(df.columns))
+        # Déduplication des noms standards
         noms_std_vals = list(correspondance.values())
         seen: dict = {}
         new_corr: dict = {}
@@ -297,7 +370,9 @@ for cle in cles_bronze:
             new_corr[src] = std
         df = df.rename(new_corr)
 
-        # --- Forcer mois_annee depuis le nom de fichier ---
+        # --- Forcer mois_annee depuis le nom de fichier (source fiable) ---
+        # Ne pas faire confiance à la valeur interne : certains fichiers bronze
+        # sont des doublons d'autres périodes et contiennent un mois_annee erroné.
         df = df.with_columns(pl.lit(periode).alias("mois_annee"))
 
         # --- Normalisation situations ---
@@ -315,7 +390,7 @@ for cle in cles_bronze:
             )
 
         if len(df) == 0:
-            logger.warning(f"    [{periode}] ⚠️  Aucune ligne conservée après filtrage situations")
+            print(f"    ⚠️  Aucune ligne conservée après filtrage situations")
             continue
 
         # --- Enrichissement ANSTAT ---
@@ -343,6 +418,7 @@ for cle in cles_bronze:
                 .unique(subset=["libelle_norm"])
                 .rename({col_code: nom_code})
             )
+            # Ajouter les colonnes extras si présentes
             cols_extra_src = [c for c in table_codes.columns
                               if c not in (col_code, "libelle", "libelle_norm")]
             if cols_extra_src:
@@ -361,11 +437,13 @@ for cle in cles_bronze:
                 .drop("_col_norm_tmp")
             )
 
+            # Calcul du taux de matching pour cette période
             taux = 100 * df[nom_code].is_not_null().sum() / len(df)
             row_stats[f"{nom_code}_taux"] = round(taux, 1)
 
+            # Log des codes principaux
             if nom_code in CODES_A_SURVEILLER:
-                logger.info(f"      [{periode}] {nom_code} : {taux:.1f}%")
+                print(f"      {nom_code} : {taux:.1f}%", flush=True)
 
         stats_matching_par_periode.append(row_stats)
 
@@ -373,28 +451,22 @@ for cle in cles_bronze:
         cols_num = ["montant_brut", "montant_net", "retenue_pension",
                     "impot", "charge_patronale"]
         cols_codes_num = [c for c in df.columns if re.match(r"^[0-9]", c)]
+
+        # Bronze = texte : « 1 500 », « 1 500 » (espace insécable) ou « 1,5 » deviendraient
+        # null avec un simple cast → nettoyage avant conversion
+        def _vers_nombre(c: str) -> pl.Expr:
+            if df[c].dtype != pl.Utf8:
+                return pl.col(c).cast(pl.Float64, strict=False)
+            return (pl.col(c).str.replace_all(r"[\s  ]", "")
+                    .str.replace_all(",", ".", literal=True)
+                    .cast(pl.Float64, strict=False))
+
         exprs_num = (
-            [pl.col(c).cast(pl.Float64, strict=False) for c in cols_num if c in df.columns]
-            + [pl.col(c).cast(pl.Float64, strict=False) for c in cols_codes_num]
+            [_vers_nombre(c) for c in cols_num if c in df.columns]
+            + [_vers_nombre(c) for c in cols_codes_num]
         )
         if exprs_num:
             df = df.with_columns(exprs_num)
-
-        # --- Calcul salaire_brut_f2 ---
-        # Somme des composantes F2 disponibles dans ce fichier.
-        # Les noms sont en lowercase après le mapping du script 02
-        # (ex. "124_f2", "228_f2"...).
-        # On calcule ici dans le Silver — couche métier — pour que
-        # l'étape 06 n'ait plus qu'à lire la colonne depuis le Silver.
-        comps_presentes = [c for c in COMPOSANTES_F2 if c in df.columns]
-        if comps_presentes:
-            df = df.with_columns(
-                pl.sum_horizontal([pl.col(c) for c in comps_presentes])
-                .alias("salaire_brut_f2")
-            )
-        else:
-            df = df.with_columns(pl.lit(None).cast(pl.Float64).alias("salaire_brut_f2"))
-            logger.warning(f"    [{periode}] ⚠️  Composantes F2 absentes — salaire_brut_f2 = null")
 
         # Accumulation par année
         if annee not in frames_par_annee:
@@ -403,7 +475,7 @@ for cle in cles_bronze:
         nb_ok += 1
 
     except Exception as e:
-        logger.error(f"  [{periode}] ✗ ERREUR : {e}")
+        print(f"✗ ERREUR : {e}")
         nb_err += 1
 
     gc.collect()
@@ -412,9 +484,11 @@ for cle in cles_bronze:
 # ÉCRITURE SILVER (un fichier par année)
 # ============================================================
 
-logger.info("=" * 70)
-logger.info("ÉCRITURE SILVER (par année)")
-logger.info("=" * 70)
+print()
+print("=" * 70)
+print("ÉCRITURE SILVER (par année)")
+print("=" * 70)
+print()
 
 for annee, frames in sorted(frames_par_annee.items()):
     df_annee = pl.concat(frames, how="diagonal")
@@ -427,21 +501,24 @@ for annee, frames in sorted(frames_par_annee.items()):
 # RAPPORT MATCHING ANSTAT PAR PÉRIODE
 # ============================================================
 
-logger.info("=" * 70)
-logger.info("RAPPORT : Taux de matching ANSTAT par période")
-logger.info("=" * 70)
+print()
+print("=" * 70)
+print("RAPPORT : Taux de matching ANSTAT par période")
+print("=" * 70)
+print()
 
 if stats_matching_par_periode:
     df_stats = pl.DataFrame(stats_matching_par_periode)
 
+    # Afficher les colonnes surveillées
     for code in CODES_A_SURVEILLER:
         col = f"{code}_taux"
         if col in df_stats.columns:
             taux_vals = df_stats[col].drop_nulls()
             if len(taux_vals) > 0:
-                logger.info(f"  {code} — min: {taux_vals.min():.1f}%  "
-                            f"max: {taux_vals.max():.1f}%  "
-                            f"moy: {taux_vals.mean():.1f}%")
+                print(f"  {code} — min: {taux_vals.min():.1f}%  "
+                      f"max: {taux_vals.max():.1f}%  "
+                      f"moy: {taux_vals.mean():.1f}%")
 
     sauvegarder_csv_staging(df_stats, "taux_matching_anstat_par_periode.csv")
 
@@ -449,18 +526,15 @@ if stats_matching_par_periode:
 # RÉSUMÉ FINAL
 # ============================================================
 
-logger.info("=" * 70)
-logger.info("RÉSUMÉ")
-logger.info("=" * 70)
-logger.info(f"Périodes traitées avec succès : {nb_ok}")
-logger.info(f"Erreurs                       : {nb_err}")
-logger.info(f"Années Silver produites       : {len(frames_par_annee)}")
-logger.info(f"Fichiers Silver disponibles dans : s3://{BUCKET_SILVER}/{PREFIX_SILVER}/")
-logger.info(f"Rapport matching : s3://{BUCKET_STAGING}/{PREFIX_VALID}/taux_matching_anstat_par_periode.csv")
-
-if nb_err > 0:
-    logger.error(f"SILVER INCOMPLET — {nb_err} période(s) en erreur")
-    sys.exit(1)
-
-logger.info("✓ SILVER TERMINÉ")
-logger.info("Prochaine étape : exécuter 04_validation_silver.py")
+print()
+print("=" * 70)
+print("RÉSUMÉ")
+print("=" * 70)
+print()
+print(f"Périodes traitées avec succès : {nb_ok}")
+print(f"Erreurs                       : {nb_err}")
+print(f"Années Silver produites       : {len(frames_par_annee)}")
+print(f"\nFichiers Silver disponibles dans : s3://{BUCKET_SILVER}/{PREFIX_SILVER}/")
+print(f"Rapport matching : s3://{BUCKET_STAGING}/{PREFIX_VALID}/taux_matching_anstat_par_periode.csv")
+print("\n✓ SILVER TERMINÉ")
+print("Prochaine étape : exécuter 03b_imputer_grades_silver.py")

@@ -32,31 +32,69 @@ import gc
 import io
 import os
 import re
-from common.s3_client import create_s3_client
-from common.logging_config import setup_pipeline_logging
-from common.polars_s3 import lire_parquet_s3, ecrire_parquet_s3
+from dotenv import load_dotenv
+import boto3
+from botocore.client import Config
 import polars as pl
 
+load_dotenv(".env")
+
 # --- CONFIGURATION ---
+
+# LORSQU'ON TRAVAILLE DEPUIS SA MACHINE LOCAL
+MINIO_ENDPOINT   = os.getenv("MINIO_ENDPOINT",   "http://192.168.1.230:30137")
+MINIO_ACCESS_KEY = os.getenv("MINIO_ACCESS_KEY", "")
+MINIO_SECRET_KEY = os.getenv("MINIO_SECRET_KEY", "")
 
 BUCKET_SILVER = os.getenv("BUCKET_SILVER", "silver")
 PREFIX_SILVER = "panel_admin"
 
-GRADES_VALIDES = (
-    [f"A{i}" for i in range(1, 8)] +
-    [f"B{i}" for i in range(1, 7)] +
-    [f"C{i}" for i in range(1, 6)] +
-    [f"D{i}" for i in range(1, 4)]
-)
-GRADES_INVALIDES = ["B7", "C7", "D7", "A", "B", "C", "D"]
+GRADES_VALIDES = [
+    "A3", "A4", "A5", "A6", "A7",
+    "B1", "B3",
+    "C1", "C2", "C3",
+    "D1", "D2",
+]
+# GRADES_INVALIDES n'est plus une liste fixe.
+# La détection utilise la logique inverse : tout grade absent de GRADES_VALIDES
+# (et différent de "NF") est considéré invalide → imputation tentée.
+# Voir l'expression _grade_invalide dans la boucle ci-dessous.
 
 # --- CLIENT S3 ---
-s3 = create_s3_client()
-logger, _ = setup_pipeline_logging("03b_imputer_grades_silver")
+s3 = boto3.client(
+    "s3",
+    endpoint_url          = MINIO_ENDPOINT,
+    aws_access_key_id     = MINIO_ACCESS_KEY,
+    aws_secret_access_key = MINIO_SECRET_KEY,
+    config                = Config(
+        signature_version = "s3v4",
+        retries           = {"max_attempts": 5, "mode": "adaptive"},
+        connect_timeout   = 30,
+        read_timeout      = 120,
+    ),
+    region_name = "us-east-1",
+    verify      = False,
+)
 
 # ============================================================
 # FONCTIONS UTILITAIRES
 # ============================================================
+
+def lire_parquet_s3(bucket: str, key: str) -> pl.DataFrame:
+    buf = io.BytesIO()
+    s3.download_fileobj(bucket, key, buf)
+    buf.seek(0)
+    return pl.read_parquet(buf)
+
+
+def ecrire_parquet_s3(df: pl.DataFrame, bucket: str, key: str) -> None:
+    buf = io.BytesIO()
+    df.write_parquet(buf, compression="snappy")
+    buf.seek(0)
+    taille = len(buf.getvalue()) / 1024**2
+    s3.put_object(Bucket=bucket, Key=key, Body=buf.getvalue())
+    print(f"  ✓ s3://{bucket}/{key}  ({len(df):,} lignes × {len(df.columns)} cols  {taille:.1f} MB)")
+
 
 def extraire_grade(statut: str | None) -> str:
     """Extrait le grade (ex: A3, B2) depuis statut_fonctionnaire."""
@@ -68,55 +106,14 @@ def extraire_grade(statut: str | None) -> str:
     return "NF"
 
 
-def construire_lookup_forward_fill(
-    df: pl.DataFrame,
-    cols_cles: list[str],
-    annee_col: str,
-    grade_col: str,
-    grades_valides: set[str],
-) -> pl.DataFrame:
-    """
-    Construit un lookup de grades valides par individu × année.
-    Pour chaque individu, on garde le grade valide et l'année la plus
-    récente où il a été observé.
-
-    cols_cles : colonnes identifiant l'individu (ex: cle_unique, emploi, etc.)
-    """
-    df_valides = df.filter(
-        pl.col(grade_col).is_in(grades_valides)
-    ).with_columns(
-        pl.col(annee_col).cast(pl.Int32, strict=False).alias("_annee_int")
-    )
-
-    lookup = (
-        df_valides
-        .group_by(cols_cles)
-        .agg(
-            pl.col("_annee_int").max().alias("_annee_future"),
-            pl.col(grade_col).first().alias("_grade_future"),
-        )
-    )
-
-    lookup_grade = (
-        df_valides
-        .join(lookup, on=cols_cles + ["_annee_int"], how="inner")
-        .select(cols_cles + ["_annee_int", grade_col])
-        .rename({
-            grade_col: "_GRADE_FF",
-            "_annee_int": "_annee_source",
-        })
-    )
-
-    return lookup_grade
-
-
 # ============================================================
 # ÉTAPE 1 : LISTER LES FICHIERS SILVER
 # ============================================================
 
-logger.info("=" * 70)
-logger.info("IMPUTATION DES GRADES — Silver")
-logger.info("=" * 70)
+print("=" * 70)
+print("IMPUTATION DES GRADES — Silver")
+print("=" * 70)
+print()
 
 pages_silver = s3.get_paginator("list_objects_v2").paginate(
     Bucket=BUCKET_SILVER, Prefix=PREFIX_SILVER
@@ -128,43 +125,44 @@ cles_silver = sorted([
     if obj["Key"].endswith(".parquet")
 ])
 
-logger.info(f"Fichiers Silver trouvés : {len(cles_silver)}")
+print(f"Fichiers Silver trouvés : {len(cles_silver)}\n")
 
 # ============================================================
 # ÉTAPE 2 : CHARGEMENT COMPLET POUR CONSTRUIRE LES LOOKUPS
 # ============================================================
-# L'imputation forward-fill nécessite l'intégralité de l'historique
-# pour trouver le grade futur d'un individu.
-# On charge tout le Silver en mémoire, puis on libère avant la
-# boucle d'écriture.
+# P3 (emploi global) nécessite l'intégralité de l'historique.
+# On charge tout le Silver en mémoire pour construire les
+# lookups, puis on libère avant la boucle d'écriture.
 
-logger.info("1. Chargement complet du Silver pour construction des lookups...")
+print("1. Chargement complet du Silver pour construction des lookups...")
 
 frames_all = []
 for cle in cles_silver:
     annee = re.search(r"20\d{2}", os.path.basename(cle))
     annee = annee.group() if annee else os.path.basename(cle)
+    print(f"   [{annee}] Lecture...", end=" ", flush=True)
     df = lire_parquet_s3(BUCKET_SILVER, cle)
-    cols_needed = ["statut_fonctionnaire", "cle_unique", "emploi", "code_organisme", "mois_annee"]
-    cols_present = [c for c in cols_needed if c in df.columns]
-    frames_all.append(df.select(cols_present))
-    logger.info(f"   [{annee}] ✓ {len(df):,} lignes")
+    # On ne garde que les colonnes nécessaires pour les lookups
+    cols_lookup = [c for c in ["statut_fonctionnaire", "emploi", "mois_annee"]
+                   if c in df.columns]
+    frames_all.append(df.select(cols_lookup))
+    print(f"✓ {len(df):,} lignes")
     del df
 
 panel_all = pl.concat(frames_all, how="diagonal")
 del frames_all
 gc.collect()
-logger.info(f"   ✓ Total : {len(panel_all):,} lignes")
+print(f"   ✓ Total : {len(panel_all):,} lignes\n")
 
 # ============================================================
 # ÉTAPE 3 : EXTRACTION DU GRADE BRUT ET STATS INITIALES
 # ============================================================
 
-logger.info("2. Extraction du grade depuis statut_fonctionnaire...")
+print("2. Extraction du grade depuis statut_fonctionnaire...")
 
 if "statut_fonctionnaire" not in panel_all.columns:
-    logger.warning("   ⚠️  Colonne statut_fonctionnaire absente — aucune imputation possible")
-    lk_forward = None
+    print("   ⚠️  Colonne statut_fonctionnaire absente — aucune imputation possible")
+    lk_p1 = lk_p2 = lk_p3 = None
 else:
     panel_all = panel_all.with_columns(
         pl.col("statut_fonctionnaire")
@@ -174,67 +172,68 @@ else:
 
     n_total     = len(panel_all)
     n_valides   = int(panel_all["GRADE"].is_in(GRADES_VALIDES).sum())
-    n_invalides = int(panel_all["GRADE"].is_in(GRADES_INVALIDES).sum())
     n_nf        = int((panel_all["GRADE"] == "NF").sum())
+    n_invalides = n_total - n_valides - n_nf
 
-    logger.info(f"   Grades valides     : {n_valides:,}  ({100*n_valides/n_total:.1f}%)")
-    logger.info(f"   Grades invalides   : {n_invalides:,}  ({100*n_invalides/n_total:.1f}%)")
-    logger.info(f"   Non fonctionnaires : {n_nf:,}  ({100*n_nf/n_total:.1f}%)")
+    print(f"   Grades valides     : {n_valides:,}  ({100*n_valides/n_total:.1f}%)")
+    print(f"   Grades invalides   : {n_invalides:,}  ({100*n_invalides/n_total:.1f}%)")
+    print(f"   Non fonctionnaires : {n_nf:,}  ({100*n_nf/n_total:.1f}%)\n")
 
     # ============================================================
-    # ÉTAPE 4 : CONSTRUCTION DU LOOKUP FORWARD-FILL
+    # ÉTAPE 4 : CONSTRUCTION DES LOOKUPS (toutes années)
     # ============================================================
-    # Pour les grades invalides (ex: B7, C7, D7, ou NF sur années anciennes),
-    # on regarde si l'individu a un grade valide dans les années futures.
-    # La clé d'identification est : cle_unique + emploi
-    # On utilise l'année la plus récente où le grade est valide.
 
-    has_cle_unique = "cle_unique" in panel_all.columns
-    has_emploi     = "emploi" in panel_all.columns
-    lk_forward = None
+    has_emploi = "emploi" in panel_all.columns
+    lk_p1 = lk_p2 = lk_p3 = None
 
-    if n_invalides > 0 and has_cle_unique and has_emploi:
-        logger.info("3. Construction du lookup forward-fill (grade futur par individu)...")
+    if n_invalides > 0 and has_emploi:
+        print("3. Construction des lookups grade modal (toutes années)...")
 
         panel_all = panel_all.with_columns([
-            pl.col("mois_annee").str.slice(2, 4).cast(pl.Int32, strict=False).alias("_annee"),
+            pl.col("mois_annee").str.slice(2, 4).cast(pl.Int32, strict=False).alias("_ANNEE"),
+            pl.col("mois_annee").str.slice(0, 2).cast(pl.Int32, strict=False).alias("_MOIS_NUM"),
         ])
 
         base_valides = panel_all.filter(pl.col("GRADE").is_in(GRADES_VALIDES))
 
-        max_annee = int(base_valides["_annee"].max())
-        logger.info(f"   Année max avec grades valides : {max_annee}")
-
-        lk_forward = (
+        lk_p1 = (
             base_valides
-            .group_by(["cle_unique", "emploi"])
-            .agg(
-                pl.col("GRADE")
-                .sort_by("_annee", descending=True)
-                .first()
-                .alias("_GRADE_FUTUR"),
-                pl.col("_annee")
-                .max()
-                .alias("_annee_source"),
-            )
+            .group_by(["emploi", "_ANNEE", "_MOIS_NUM"])
+            .agg(pl.col("GRADE").mode().first().alias("GRADE_P1"))
         )
-        logger.info(f"   ✓ Lookup forward-fill : {len(lk_forward):,} individus")
+        print(f"   ✓ P1 (emploi × année × mois) : {len(lk_p1):,} combinaisons")
+
+        lk_p2 = (
+            base_valides
+            .group_by(["emploi", "_ANNEE"])
+            .agg(pl.col("GRADE").mode().first().alias("GRADE_P2"))
+        )
+        print(f"   ✓ P2 (emploi × année)         : {len(lk_p2):,} combinaisons")
+
+        lk_p3 = (
+            base_valides
+            .group_by(["emploi"])
+            .agg(pl.col("GRADE").mode().first().alias("GRADE_P3"))
+        )
+        print(f"   ✓ P3 (emploi — global)        : {len(lk_p3):,} emplois couverts")
 
         del base_valides
 
-    elif n_invalides > 0 and (not has_cle_unique or not has_emploi):
-        logger.warning("3. ⚠️  Colonnes cle_unique/emploi absentes — forward-fill impossible")
+    elif n_invalides > 0 and not has_emploi:
+        print("3. ⚠️  Colonne emploi absente — imputation impossible")
     else:
-        logger.info("3. ✓ Aucun grade invalide détecté — lookup non nécessaire")
+        print("3. ✓ Aucun grade invalide détecté — lookups non nécessaires")
 
 del panel_all
 gc.collect()
+print()
 
 # ============================================================
 # ÉTAPE 5 : APPLICATION ANNÉE PAR ANNÉE + RÉÉCRITURE SILVER
 # ============================================================
 
-logger.info("4. Application de l'imputation et réécriture Silver...")
+print("4. Application de l'imputation et réécriture Silver...")
+print()
 
 stats_globales = {"OBSERVE": 0, "IMPUTE": 0, "NF_NON_IMPUTABLE": 0}
 
@@ -242,11 +241,14 @@ for cle in cles_silver:
     annee = re.search(r"20\d{2}", os.path.basename(cle))
     annee = annee.group() if annee else os.path.basename(cle)
 
+    print(f"  [{annee}] Lecture...", end=" ", flush=True)
     df = lire_parquet_s3(BUCKET_SILVER, cle)
-    logger.info(f"  [{annee}] ✓ {len(df):,} lignes")
+    print(f"✓ {len(df):,} lignes")
 
+    # Supprimer d'éventuelles anciennes colonnes GRADE / GRADE_SOURCE
     df = df.select([c for c in df.columns if c not in ("GRADE", "GRADE_SOURCE")])
 
+    # Extraction grade brut
     if "statut_fonctionnaire" in df.columns:
         df = df.with_columns(
             pl.col("statut_fonctionnaire")
@@ -256,34 +258,40 @@ for cle in cles_silver:
     else:
         df = df.with_columns(pl.lit("NF").alias("GRADE"))
 
+    # Marquer les lignes qui nécessitent une imputation :
+    # tout grade absent de GRADES_VALIDES et différent de "NF" est invalide.
     df = df.with_columns(
-        pl.col("GRADE").is_in(GRADES_INVALIDES).alias("_grade_invalide")
+        (
+            ~pl.col("GRADE").is_in(GRADES_VALIDES)
+            & (pl.col("GRADE") != "NF")
+        ).alias("_grade_invalide")
     )
 
-    if lk_forward is not None and "cle_unique" in df.columns and "emploi" in df.columns:
-        df = df.join(
-            lk_forward,
-            on=["cle_unique", "emploi"],
-            how="left",
-        )
+    # Application de la cascade si lookups disponibles
+    if lk_p1 is not None and "emploi" in df.columns:
+        df = df.with_columns([
+            pl.col("mois_annee").str.slice(2, 4).cast(pl.Int32, strict=False).alias("_ANNEE"),
+            pl.col("mois_annee").str.slice(0, 2).cast(pl.Int32, strict=False).alias("_MOIS_NUM"),
+        ])
 
+        df = df.join(lk_p1, on=["emploi", "_ANNEE", "_MOIS_NUM"], how="left")
+        df = df.join(lk_p2, on=["emploi", "_ANNEE"],              how="left")
+        df = df.join(lk_p3, on=["emploi"],                        how="left")
+
+        # Remplacement des grades invalides par cascade P1 → P2 → P3
         df = df.with_columns(
-            pl.when(pl.col("_grade_invalide") & pl.col("_GRADE_FUTUR").is_not_null())
-            .then(pl.col("_GRADE_FUTUR"))
-            .when(pl.col("_grade_invalide"))
-            .then(pl.col("GRADE"))
+            pl.when(pl.col("_grade_invalide"))
+            .then(
+                pl.when(pl.col("GRADE_P1").is_not_null()).then(pl.col("GRADE_P1"))
+                .when(pl.col("GRADE_P2").is_not_null()).then(pl.col("GRADE_P2"))
+                .when(pl.col("GRADE_P3").is_not_null()).then(pl.col("GRADE_P3"))
+                .otherwise(pl.col("GRADE"))
+            )
             .otherwise(pl.col("GRADE"))
             .alias("GRADE")
-        )
+        ).drop(["GRADE_P1", "GRADE_P2", "GRADE_P3", "_ANNEE", "_MOIS_NUM"])
 
-        n_ff = int(df.filter(
-            pl.col("_grade_invalide") & pl.col("_GRADE_FUTUR").is_not_null()
-        ).select(pl.len()).item())
-        if n_ff > 0:
-            logger.info(f"    [{annee}] Forward-fill appliqué : {n_ff:,} grades")
-
-        df = df.drop(["_GRADE_FUTUR", "_annee_source"])
-
+    # GRADE_SOURCE : basé sur l'état initial (_grade_invalide) et le résultat final
     df = df.with_columns(
         pl.when(~pl.col("_grade_invalide") & pl.col("GRADE").is_in(GRADES_VALIDES))
         .then(pl.lit("OBSERVE"))
@@ -293,6 +301,7 @@ for cle in cles_silver:
         .alias("GRADE_SOURCE")
     ).drop("_grade_invalide")
 
+    # Réordonnancement : GRADE et GRADE_SOURCE après statut_fonctionnaire
     cols = df.columns
     if "statut_fonctionnaire" in cols:
         idx  = cols.index("statut_fonctionnaire")
@@ -300,13 +309,18 @@ for cle in cles_silver:
         cols = cols[:idx + 1] + ["GRADE", "GRADE_SOURCE"] + cols[idx + 1:]
         df   = df.select(cols)
 
+    # Bilan de l'année
     n_obs = int((df["GRADE_SOURCE"] == "OBSERVE").sum())
     n_imp = int((df["GRADE_SOURCE"] == "IMPUTE").sum())
     n_nfi = int((df["GRADE_SOURCE"] == "NF_NON_IMPUTABLE").sum())
+    n_ann = n_obs + n_imp + n_nfi
     stats_globales["OBSERVE"]          += n_obs
     stats_globales["IMPUTE"]           += n_imp
     stats_globales["NF_NON_IMPUTABLE"] += n_nfi
-    logger.info(f"    [{annee}] OBSERVE={n_obs:,}  IMPUTE={n_imp:,}  NF_NON_IMPUTABLE={n_nfi:,}")
+    pct_obs = 100 * n_obs / n_ann if n_ann > 0 else 0
+    pct_imp = 100 * n_imp / n_ann if n_ann > 0 else 0
+    pct_nfi = 100 * n_nfi / n_ann if n_ann > 0 else 0
+    print(f"    OBSERVE={n_obs:,} ({pct_obs:.1f}%)  IMPUTE={n_imp:,} ({pct_imp:.1f}%)  NF_NON_IMPUTABLE={n_nfi:,} ({pct_nfi:.1f}%)")
 
     ecrire_parquet_s3(df, BUCKET_SILVER, cle)
     del df
@@ -317,16 +331,21 @@ for cle in cles_silver:
 # ============================================================
 
 n_tot = sum(stats_globales.values())
-logger.info("=" * 70)
-logger.info("RÉSUMÉ IMPUTATION GRADES — Silver")
-logger.info("=" * 70)
+print()
+print("=" * 70)
+print("RÉSUMÉ IMPUTATION GRADES — Silver")
+print("=" * 70)
+print()
 for src, n in stats_globales.items():
     pct = 100 * n / n_tot if n_tot > 0 else 0
-    logger.info(f"  {src:<20} : {n:,}  ({pct:.1f}%)")
-logger.info("=" * 70)
-logger.info("✓ IMPUTATION GRADES SILVER TERMINÉE")
-logger.info("=" * 70)
-logger.info("Colonnes ajoutées dans tous les fichiers Silver :")
-logger.info("  GRADE        — grade final (valide ou imputé)")
-logger.info("  GRADE_SOURCE — OBSERVE | IMPUTE | NF_NON_IMPUTABLE")
-logger.info("Prochaine étape : exécuter 03c_imputer_salaires_silver.py")
+    print(f"  {src:<20} : {n:,}  ({pct:.1f}%)")
+print()
+print("=" * 70)
+print("✓ IMPUTATION GRADES SILVER TERMINÉE")
+print("=" * 70)
+print()
+print("Colonnes ajoutées dans tous les fichiers Silver :")
+print("  GRADE        — grade final (valide ou imputé)")
+print("  GRADE_SOURCE — OBSERVE | IMPUTE | NF_NON_IMPUTABLE")
+print()
+print("Prochaine étape : exécuter 03c_imputer_salaires_silver.py")

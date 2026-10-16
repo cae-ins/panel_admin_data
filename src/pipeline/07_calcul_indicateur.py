@@ -10,8 +10,9 @@
 #   Référence anstat_2025 : Salaire de Base + Résidence + Logement + Transport
 #   → montant_brut_sans_indemnites_sans_alloc
 #
-# Méthodo 2 — Statut_Total (variable : montant_brut_total)
-#   Salaire brut total Feuille 1, tous codes postes confondus
+# Méthodo 2 — Statut_Total (variable de contrôle : montant_brut_controle_m2)
+#   Salaire brut total Feuille 1 moins les codes 461 à 464 (calculé en 06)
+#   Les indicateurs M2 restent calculés sur montant_brut_total complet (07b)
 #   Référence anstat_2025 : colonne "montant brut"
 #   → montant_brut_total_ref
 #
@@ -46,44 +47,47 @@
 
 import gc
 import io
-import json
 import os
 import re
 import tempfile
 import unicodedata
-from common.config import load_methodology_settings, CONFIG_PATH
-from common.s3_client import create_s3_client
-from common.logging_config import setup_pipeline_logging
-from common.polars_s3 import lire_parquet_s3
+from dotenv import load_dotenv
+import boto3
+from botocore.client import Config
 import polars as pl
 from openpyxl import Workbook
 from openpyxl.styles import PatternFill, Font, Alignment
 from openpyxl.utils import get_column_letter
 
+load_dotenv(".env")
+
 # ============================================================
 # PARAMÈTRES DE CONFIGURATION
 # ============================================================
 
-METHODOLOGY = load_methodology_settings()
-
 # True = Salaire brut (cle_unique) | False = Revenu salarial (matricule)
-MODE_SALAIRE_BRUT = bool(METHODOLOGY["mode_salaire_brut"])
+MODE_SALAIRE_BRUT = True
 
 # True = 2024-2025 | False = 2015 → dernière année disponible
-PERIODE_RECENTE = bool(METHODOLOGY["periode_recente"])
+PERIODE_RECENTE   = True
 
 # True = inclure zéros | False = salaire strictement > 0
-INCLURE_ZEROS = bool(METHODOLOGY["inclure_zeros"])
+INCLURE_ZEROS     = True
 
-# Seuil de winsorisation (ex: 0.01 = écrêtage à P1/P99), None pour désactiver.
-SEUIL_WINS = METHODOLOGY["seuil_wins"]
-if SEUIL_WINS is not None:
-    SEUIL_WINS = float(SEUIL_WINS)
+# Seuil de winsorisation (ex: 0.01 = écrêtage à P1/P99)
+# Mettre à None pour désactiver
+SEUIL_WINS        = 0.01
 
-# Effectif minimum par cellule mois × grade × CITP avant repli mois × grade.
-MIN_OBS_WINS = int(METHODOLOGY["min_obs_wins"])
+# Effectif minimum par cellule mois × grade × CITP pour appliquer la
+# winsorisation CITP. En dessous, repli sur mois × grade uniquement.
+MIN_OBS_WINS      = 100
 
 # ============================================================
+
+# LORSQU'ON TRAVAILLE DEPUIS SA MACHINE LOCAL
+MINIO_ENDPOINT   = os.getenv("MINIO_ENDPOINT",   "http://192.168.1.230:30137")
+MINIO_ACCESS_KEY = os.getenv("MINIO_ACCESS_KEY", "")
+MINIO_SECRET_KEY = os.getenv("MINIO_SECRET_KEY", "")
 
 BUCKET_GOLD    = os.getenv("BUCKET_GOLD",    "gold")
 BUCKET_STAGING = os.getenv("BUCKET_STAGING", "staging")
@@ -102,7 +106,14 @@ MOIS_FR = {
     9: "Septembre",10: "Octobre",  11: "Novembre", 12: "Décembre",
 }
 
-GRADES_VALIDES = list(METHODOLOGY["grades_valides"])
+CODE_ORGANISME_EXCLU = "59"   # exclu de tous les calculs
+
+GRADES_VALIDES = [
+    "A3", "A4", "A5", "A6", "A7",
+    "B1", "B3",
+    "C1", "C2", "C3",
+    "D1", "D2",
+]
 
 # Composantes du montant_brut_sans_ind_sans_alloc (codes F2, sans 421 allocation familiale)
 COMPOSANTES_SALAIRE_NOMS = {"124_F2", "228_F2", "271_F2", "425_F2"}
@@ -110,60 +121,44 @@ COMPOSANTES_SALAIRE_NOMS = {"124_F2", "228_F2", "271_F2", "425_F2"}
 # Codes poste éligibles pour montant_brut_sans_ind_sans_alloc (sans 421 allocation familiale)
 CODES_POSTE_ELIGIBLES = {"124", "228", "271", "425"}
 
-# Code organisme à exclure de tous les traitements
-CODE_ORGANISME_EXCLUS = "59"
-
 # Fichier de référence barème 2025 (dans staging/panel_admin/references/)
 KEY_ANSTAT_2025 = "panel_admin/references/anstat_2025.txt.xlsx"
 
 # Clé de sortie base_avec_statut
 KEY_BASE_AVEC_STATUT = f"{PREFIX_PANEL}/base_avec_statut.parquet"
-KEY_PARAMETRES_METHODO = f"{PREFIX_EXPORTS}/parametres_methodologiques_07.json"
 
 # --- CLIENT S3 ---
-s3 = create_s3_client()
-logger, _ = setup_pipeline_logging("07_calcul_indicateur")
-
-logger.info("=" * 70)
-logger.info("STATUT BARÈME — Calcul du statut (Conforme/Inférieur/Supérieur)")
-logger.info(f"  Période : {'2024-2025' if PERIODE_RECENTE else '2015 → récent'}")
-logger.info(
-    "Paramètres méthodologiques",
-    extra={
-        "config_path": str(CONFIG_PATH),
-        "mode_salaire_brut": MODE_SALAIRE_BRUT,
-        "periode_recente": PERIODE_RECENTE,
-        "inclure_zeros": INCLURE_ZEROS,
-        "seuil_wins": SEUIL_WINS,
-        "min_obs_wins": MIN_OBS_WINS,
-    },
+s3 = boto3.client(
+    "s3",
+    endpoint_url          = MINIO_ENDPOINT,
+    aws_access_key_id     = MINIO_ACCESS_KEY,
+    aws_secret_access_key = MINIO_SECRET_KEY,
+    config                = Config(
+        signature_version = "s3v4",
+        retries           = {"max_attempts": 5, "mode": "adaptive"},
+        connect_timeout   = 30,
+        read_timeout      = 120,
+    ),
+    region_name = "us-east-1",
+    verify      = False,
 )
-logger.info("=" * 70)
 
-s3.put_object(
-    Bucket=BUCKET_STAGING,
-    Key=KEY_PARAMETRES_METHODO,
-    Body=json.dumps(
-        {
-            "script": "07_calcul_indicateur.py",
-            "config_path": str(CONFIG_PATH),
-            "methodology": {
-                "mode_salaire_brut": MODE_SALAIRE_BRUT,
-                "periode_recente": PERIODE_RECENTE,
-                "inclure_zeros": INCLURE_ZEROS,
-                "seuil_wins": SEUIL_WINS,
-                "min_obs_wins": MIN_OBS_WINS,
-            },
-        },
-        ensure_ascii=False,
-        indent=2,
-    ).encode("utf-8"),
-)
-logger.info(f"Paramètres méthodologiques sauvegardés : s3://{BUCKET_STAGING}/{KEY_PARAMETRES_METHODO}")
+print("=" * 70)
+print("STATUT BARÈME — Calcul du statut (Conforme/Inférieur/Supérieur)")
+print(f"  Période : {'2024-2025' if PERIODE_RECENTE else '2015 → récent'}")
+print("=" * 70)
+print()
 
 # ============================================================
 # FONCTIONS UTILITAIRES
 # ============================================================
+
+def lire_parquet_s3(bucket: str, key: str) -> pl.DataFrame:
+    buf = io.BytesIO()
+    s3.download_fileobj(bucket, key, buf)
+    buf.seek(0)
+    return pl.read_parquet(buf)
+
 
 # ============================================================
 # CONSTANTES BARÈME
@@ -183,7 +178,7 @@ ORDRE_MODELE_ANSTAT = [
     ("Cadres supérieurs",                             "Cadre-Sup-Santé Generaliste & Specialiste"),
     ("Personnels Techniques",                         "Tech-Santé"),
     ("AUTRES SECTEURS",                               None),
-    ("Para-militaire",                                 "para militaire"),
+    ("Para-militaire",                                 "PARAMILITAIRE"),
     ("Barème Général",                                "Barême Général"),
     ("PERSONNELS SOUS STATUT PARTICULIER",            None),
     ("Magistrat",                                     "MAGISTRAT "),
@@ -202,7 +197,7 @@ def normaliser_pour_matching(texte) -> str | None:
         return None
     texte = re.sub(r"[-]", " ", texte)
     texte = re.sub(r"[.,;:/()\\[\]]", " ", texte)
-    texte = re.sub(r"[''’]", " ", texte)
+    texte = re.sub(r"[''\u2019]", " ", texte)
     texte = texte.upper()
     texte = unicodedata.normalize("NFKD", texte)
     texte = "".join(c for c in texte if not unicodedata.combining(c))
@@ -261,19 +256,19 @@ def charger_table_bareme() -> pl.DataFrame | None:
         n_info = int((df["bareme"] == "Informaticien").sum())
         n_sec  = int((df["bareme"] == "SECRETAIRE DIRECTION").sum())
         if n_info > 0:
-            logger.info(f"  ✓ Correction BAREME → Informaticien      : {n_info} emplois")
+            print(f"  ✓ Correction BAREME → Informaticien      : {n_info} emplois")
         if n_sec > 0:
-            logger.info(f"  ✓ Correction BAREME → SECRETAIRE DIRECTION : {n_sec} emplois")
+            print(f"  ✓ Correction BAREME → SECRETAIRE DIRECTION : {n_sec} emplois")
 
         table = (
             df.filter(pl.col("emploi_ref_norm").is_not_null())
             .select(["emploi_ref_norm", "bareme", "grade_ref"])
             .unique(subset=["emploi_ref_norm"])
         )
-        logger.info(f"  ✓ Table barème chargée : {len(table)} emplois")
+        print(f"  ✓ Table barème chargée : {len(table)} emplois")
         return table
     except Exception as e:
-        logger.warning(f"  ⚠️  Table barème non disponible ({e}) — feuilles barème ignorées")
+        print(f"  ⚠️  Table barème non disponible ({e}) — feuilles barème ignorées")
         return None
     finally:
         os.unlink(tmp_path)
@@ -291,9 +286,9 @@ def fuzzy_join_bareme(df: pl.DataFrame, table_join: pl.DataFrame,
                  how="left").drop("_emploi_norm")
     nb_match  = int(df["bareme"].is_not_null().sum())
     taux      = 100 * nb_match / len(df)
-    logger.info(f"  ✓ Fuzzy join barème : {nb_match:,} / {len(df):,} ({taux:.1f}%)")
+    print(f"  ✓ Fuzzy join barème : {nb_match:,} / {len(df):,} ({taux:.1f}%)")
     if taux < 20:
-        logger.warning("  ⚠️  Matching faible — vérifiez CORRESPONDANCE_GRILLE_EMPLOI.xlsx")
+        print("  ⚠️  Matching faible — vérifiez CORRESPONDANCE_GRILLE_EMPLOI.xlsx")
     return df
 
 
@@ -335,16 +330,16 @@ def charger_anstat_2025() -> pl.DataFrame | None:
     try:
         s3.download_file(BUCKET_STAGING, KEY_ANSTAT_2025, tmp_path)
         df = pl.read_excel(tmp_path)
-        logger.info(f"   ✓ anstat_2025.txt.xlsx chargé : {len(df):,} lignes × {len(df.columns)} cols")
-        logger.info(f"     Colonnes : {df.columns}")
+        print(f"   ✓ anstat_2025.txt.xlsx chargé : {len(df):,} lignes × {len(df.columns)} cols")
+        print(f"     Colonnes : {df.columns}")
     except Exception as e:
-        logger.warning(f"   ⚠️  Fichier anstat_2025.txt.xlsx introuvable ({e}) — étape barème ignorée")
+        print(f"   ⚠️  Fichier anstat_2025.txt.xlsx introuvable ({e}) — étape barème ignorée")
         return None
     finally:
         os.unlink(tmp_path)
 
     # Composantes du salaire de référence = codes Gold 124+228+271+425
-    # (Allocation familiale code 421 exclue pour l'audit de conformité)
+    # allocation_familiale (code 421) exclue — branche No_allocation_Familiale
     patterns_composantes = {
         "Salaire de Base": [r"salaire.*base", r"base.*salaire", r"traitement.*base",
                             r"^salaire$", r"^base$"],
@@ -367,12 +362,12 @@ def charger_anstat_2025() -> pl.DataFrame | None:
         col = trouver_colonne(df.columns, pats)
         if col:
             composantes_trouvees[nom] = col
-            logger.info(f"     {nom} → {col}")
+            print(f"     {nom} → {col}")
         else:
-            logger.warning(f"     ⚠️  Composante '{nom}' non trouvée dans le fichier")
+            print(f"     ⚠️  Composante '{nom}' non trouvée dans le fichier")
 
     if not composantes_trouvees:
-        logger.warning("   ⚠️  Aucune composante de salaire identifiée dans anstat_2025")
+        print("   ⚠️  Aucune composante de salaire identifiée dans anstat_2025")
         return None
 
     df = df.with_columns([
@@ -386,7 +381,7 @@ def charger_anstat_2025() -> pl.DataFrame | None:
 
     n_non_null = int(df["montant_brut_sans_indemnites_sans_alloc"].is_not_null().sum())
     composantes_label = " + ".join(composantes_trouvees.keys())
-    logger.info(f"   montant_brut_sans_indemnites_sans_alloc ({composantes_label}) : {n_non_null:,} valeurs")
+    print(f"   montant_brut_sans_indemnites_sans_alloc ({composantes_label}) : {n_non_null:,} valeurs")
 
     # Montant brut TOTAL (tous codes postes) pour Méthodo 2
     # Correspond à la colonne "Montant brut" du fichier anstat_2025
@@ -397,12 +392,10 @@ def charger_anstat_2025() -> pl.DataFrame | None:
             pl.col(col_brut_total).cast(pl.Float64, strict=False).alias("montant_brut_total_ref")
         )
         n_bt = int(df["montant_brut_total_ref"].is_not_null().sum())
-        logger.info(f"   montant_brut_total_ref (Méthodo 2, col='{col_brut_total}') : {n_bt:,} valeurs")
+        print(f"   montant_brut_total_ref (Méthodo 2, col='{col_brut_total}') : {n_bt:,} valeurs")
     else:
-        logger.warning(
-            f"   ⚠️  Colonne 'Montant brut total' non trouvée dans anstat_2025 "
-            f"— Statut_Total ne sera pas calculé"
-        )
+        print(f"   ⚠️  Colonne 'Montant brut total' non trouvée dans anstat_2025 "
+              f"— Statut_Total ne sera pas calculé")
     return df
 
 
@@ -444,19 +437,19 @@ def calculer_indicateurs_cluster(
     cluster_cols = []
     if col_secteur:
         cluster_cols.append(col_secteur)
-        logger.info(f"   Colonne secteur : {col_secteur}")
+        print(f"   Colonne secteur : {col_secteur}")
     else:
-        logger.warning("   ⚠️  Colonne secteur non trouvée — agrégation sur grade uniquement")
+        print("   ⚠️  Colonne secteur non trouvée — agrégation sur grade uniquement")
 
     if col_grade:
         cluster_cols.append(col_grade)
-        logger.info(f"   Colonne grade   : {col_grade}")
+        print(f"   Colonne grade   : {col_grade}")
     else:
-        logger.warning("   ⚠️  Colonne grade non trouvée — agrégation globale")
+        print("   ⚠️  Colonne grade non trouvée — agrégation globale")
 
     if not cluster_cols:
         cluster_cols = [df_ref.columns[0]]
-        logger.info(f"   Repli sur première colonne : {cluster_cols[0]}")
+        print(f"   Repli sur première colonne : {cluster_cols[0]}")
 
     indic = (
         df_ref
@@ -480,7 +473,7 @@ def calculer_indicateurs_cluster(
     if rename_map:
         indic = indic.rename(rename_map)
 
-    logger.info(f"   Indicateurs par cluster : {len(indic):,} lignes")
+    print(f"   Indicateurs par cluster : {len(indic):,} lignes")
     return indic, col_secteur, col_grade
 
 
@@ -506,7 +499,7 @@ def _print_tranches(
 
     hors = df.filter(pl.col(statut_col).is_in(STATUTS_HORS))
     if len(hors) == 0:
-        logger.info(f"   → Aucun agent hors-barème")
+        print(f"   → Aucun agent hors-barème")
         return
 
     for statut_label, borne_col in [
@@ -537,7 +530,7 @@ def _print_tranches(
             row["_tranche"]: row["count"]
             for row in sous["_tranche"].value_counts().iter_rows(named=True)
         }
-        logger.info(f"     Tranches d'écart — {statut_label} ({n_sous:,} agents) :")
+        print(f"     Tranches d'écart — {statut_label} ({n_sous:,} agents) :")
         for t in ORDRE_TRANCHES:
             n_t = counts.get(t, 0)
             pct = 100 * n_t / n_sous if n_sous > 0 else 0.0
@@ -545,14 +538,14 @@ def _print_tranches(
                 note = "  ← seront récupérés (règle ±5%)" if avant_recuperation else "  ← vide (déjà récupérés)"
             else:
                 note = ""
-            logger.info(f"       {t:<12} : {n_t:>10,}  ({pct:.1f}%){note}")
+            print(f"       {t:<12} : {n_t:>10,}  ({pct:.1f}%){note}")
 
 
 # ============================================================
 # 1. CHARGEMENT
 # ============================================================
 
-logger.info("1. Chargement des fichiers Gold panel...")
+print("1. Chargement des fichiers Gold panel...")
 
 pages_panel = s3.get_paginator("list_objects_v2").paginate(
     Bucket=BUCKET_GOLD, Prefix=PREFIX_PANEL
@@ -564,33 +557,36 @@ cles_panel = sorted([
     if re.search(r"panel_20\d{2}\.parquet$", obj["Key"])
 ])
 
-logger.info(f"   Fichiers panel trouvés : {len(cles_panel)}")
+print(f"   Fichiers panel trouvés : {len(cles_panel)}")
 
 frames = []
 for cle in cles_panel:
+    print(f"   Lecture {os.path.basename(cle)}...", end=" ", flush=True)
     df_part = lire_parquet_s3(BUCKET_GOLD, cle)
     frames.append(df_part)
-    logger.info(f"   Lecture {os.path.basename(cle)} ✓ {len(df_part):,} lignes")
+    print(f"✓ {len(df_part):,} lignes")
 
 base = pl.concat(frames, how="diagonal")
 del frames
 gc.collect()
-logger.info(f"   ✓ Total : {len(base):,} lignes × {len(base.columns)} colonnes")
+print(f"   ✓ Total : {len(base):,} lignes × {len(base.columns)} colonnes")
 
-# Exclusion défensive de l'organisme 59
-if "CODE_ORGANISME" in base.columns:
-    n_avant = len(base)
-    base = base.filter(pl.col("CODE_ORGANISME").cast(pl.Utf8) != CODE_ORGANISME_EXCLUS)
-    n_exclu = n_avant - len(base)
-    if n_exclu > 0:
-        logger.info(f"   Exclusion organisme {CODE_ORGANISME_EXCLUS} : {n_exclu:,} lignes supprimées")
-logger.info(f"   Base finale : {len(base):,} lignes")
+# Organisme 59 exclu de tous les calculs (M1, M2, effectifs, 07a, 07b, 08, 11)
+if "CODE_ORGANISME" not in base.columns:
+    raise RuntimeError("Colonne CODE_ORGANISME absente du Gold panel — exclusion de l'organisme 59 impossible")
+_n_org59 = int((base["CODE_ORGANISME"].cast(pl.Utf8).str.strip_chars() == CODE_ORGANISME_EXCLU).sum())
+base = base.filter(
+    pl.col("CODE_ORGANISME").is_null()
+    | (pl.col("CODE_ORGANISME").cast(pl.Utf8).str.strip_chars() != CODE_ORGANISME_EXCLU)
+)
+print(f"   Exclusion organisme {CODE_ORGANISME_EXCLU} : {_n_org59:,} lignes retirées")
+print(f"   Base finale : {len(base):,} lignes\n")
 
 # ============================================================
 # 2. VÉRIFICATION GRADE ET GRADE_SOURCE
 # ============================================================
 
-logger.info("2. Vérification des colonnes GRADE et GRADE_SOURCE...")
+print("2. Vérification des colonnes GRADE et GRADE_SOURCE...")
 
 if "GRADE" not in base.columns or "GRADE_SOURCE" not in base.columns:
     raise RuntimeError(
@@ -601,13 +597,14 @@ if "GRADE" not in base.columns or "GRADE_SOURCE" not in base.columns:
 n_total = len(base)
 for source in ["OBSERVE", "IMPUTE", "NF_NON_IMPUTABLE"]:
     n = int((base["GRADE_SOURCE"] == source).sum())
-    logger.info(f"   {source:<20} : {n:,}  ({100*n/n_total:.1f}%)")
+    print(f"   {source:<20} : {n:,}  ({100*n/n_total:.1f}%)")
+print()
 
 # ============================================================
 # 3. EXTRACTION ANNÉE / MOIS depuis mois_annee (format MMYYYY)
 # ============================================================
 
-logger.info("3. Extraction année/mois depuis mois_annee...")
+print("3. Extraction année/mois depuis mois_annee...")
 
 # mois_annee est au format MMYYYY (ex. "012015")
 base = base.with_columns([
@@ -616,13 +613,13 @@ base = base.with_columns([
 ])
 
 annees_dispo = sorted(base["ANNEE"].drop_nulls().unique().to_list())
-logger.info(f"   Années disponibles : {annees_dispo}")
+print(f"   Années disponibles : {annees_dispo}")
 
 ANNEES_ANALYSE = [a for a in annees_dispo if a >= 2024] if PERIODE_RECENTE else [a for a in annees_dispo if a >= 2015]
-logger.info(f"   Période retenue    : {ANNEES_ANALYSE}")
+print(f"   Période retenue    : {ANNEES_ANALYSE}")
 
 base = base.filter(pl.col("ANNEE").is_in(ANNEES_ANALYSE))
-logger.info(f"   Filtrage           : {len(base):,} lignes")
+print(f"   Filtrage           : {len(base):,} lignes\n")
 
 if len(base) == 0:
     raise ValueError(f"Aucune donnée pour les années {ANNEES_ANALYSE}")
@@ -637,7 +634,7 @@ base = base.with_columns(
 # 4. VÉRIFICATION montant_brut_sans_ind_sans_alloc
 # ============================================================
 
-logger.info("4. Vérification montant_brut_sans_ind_sans_alloc (pré-calculé en étape 06)...")
+print("4. Vérification montant_brut_sans_ind_sans_alloc (pré-calculé en étape 06)...")
 
 if "montant_brut_sans_ind_sans_alloc" not in base.columns:
     raise RuntimeError(
@@ -655,17 +652,17 @@ n_pos    = int((base["montant_brut_sans_ind_sans_alloc"] > 0).sum())
 n_nul    = int(base["montant_brut_sans_ind_sans_alloc"].is_null().sum())
 n_zero   = int((base["montant_brut_sans_ind_sans_alloc"] == 0).sum())
 n_neg    = int((base["montant_brut_sans_ind_sans_alloc"] < 0).sum())
-logger.info(f"   Source : montant_brut_sans_ind_sans_alloc (postes 124+228+271+425, sans allocation familiale 421, pré-agrégé en 06)")
-logger.info(f"   Salaires > 0  : {n_pos:,} ({100*n_pos/n_total:.1f}%)")
-logger.info(f"   Nuls (null)   : {n_nul:,} ({100*n_nul/n_total:.1f}%)")
-logger.info(f"   Zéros (= 0)   : {n_zero:,} ({100*n_zero/n_total:.1f}%)")
-logger.info(f"   Négatifs (< 0): {n_neg:,} ({100*n_neg/n_total:.1f}%)")
+print(f"   Source : montant_brut_sans_ind_sans_alloc (postes 124+228+271+425, sans allocation familiale 421, pré-agrégé en 06)")
+print(f"   Salaires > 0  : {n_pos:,} ({100*n_pos/n_total:.1f}%)")
+print(f"   Nuls (null)   : {n_nul:,} ({100*n_nul/n_total:.1f}%)")
+print(f"   Zéros (= 0)   : {n_zero:,} ({100*n_zero/n_total:.1f}%)")
+print(f"   Négatifs (< 0): {n_neg:,} ({100*n_neg/n_total:.1f}%)\n")
 
 # ============================================================
 # 5. STANDARDISATION DU SEXE
 # ============================================================
 
-logger.info("5. Standardisation sexe...")
+print("5. Standardisation sexe...")
 
 if "sexe" in base.columns:
     base = base.with_columns(
@@ -686,50 +683,51 @@ if "sexe" in base.columns:
     n_inconnu = int((base["SEXE_STD"] == "Inconnu").sum())
     if n_inconnu > 0:
         base = base.filter(pl.col("SEXE_STD") != "Inconnu")
-        logger.info(f"   Exclusion sexe inconnu : {n_inconnu:,}")
+        print(f"   Exclusion sexe inconnu : {n_inconnu:,}")
     for sexe_val in ["Homme", "Femme"]:
         n = int((base["SEXE_STD"] == sexe_val).sum())
-        logger.info(f"   {sexe_val} : {n:,}")
+        print(f"   {sexe_val} : {n:,}")
 else:
     base = base.with_columns(pl.lit("Non renseigné").alias("SEXE_STD"))
+print()
 
 # ============================================================
 # 6. DÉTECTION DES MULTI-POSTES
 # ============================================================
 
-logger.info("6. Détection multi-postes (par matricule)...")
+print("6. Détection multi-postes (par matricule)...")
 
 if "NB_POSTES" in base.columns:
     total_multi  = int((base["NB_POSTES"] > 1).sum())
     total_agents = len(base)
-    logger.info(f"   NB_POSTES issu du Gold (pré-calculé en étape 06)")
-    logger.info(f"   Multi-postes : {total_multi:,} / {total_agents:,} "
-                f"({100*total_multi/total_agents:.1f}%)")
+    print(f"   NB_POSTES issu du Gold (pré-calculé en étape 06)")
+    print(f"   Multi-postes : {total_multi:,} / {total_agents:,} "
+          f"({100*total_multi/total_agents:.1f}%)\n")
 elif "matricule" in base.columns:
-    logger.warning("   ⚠️  NB_POSTES absent du Gold — recalcul depuis les lignes")
-    nb_postes = (
-        base.group_by(["mois_annee", "matricule"])
-        .agg(pl.len().alias("NB_POSTES"))
+    # NB_POSTES absent du Gold : ARRÊT obligatoire.
+    # Le Gold est dédupliqué (1 ligne par matricule × mois) depuis l'étape 06.
+    # Recalculer NB_POSTES depuis ces lignes déjà déduplicées donnerait
+    # toujours 1 — tous les agents sembleraient mono-postes, ce qui est faux.
+    # La seule source fiable est le Silver (avant déduplication), accessible
+    # uniquement via l'étape 06.
+    raise RuntimeError(
+        "ARRÊT — Colonne NB_POSTES absente du Gold panel.\n"
+        "Le Gold est dédupliqué (1 ligne par matricule × mois) : recalculer\n"
+        "NB_POSTES depuis ces lignes donnerait toujours 1 et masquerait tous\n"
+        "les agents multi-postes.\n\n"
+        "Solution : relancer l'étape 06_compiler_panel.py pour régénérer\n"
+        "le Gold avec NB_POSTES correctement calculé depuis le Silver\n"
+        "(avant déduplication)."
     )
-    base = base.join(nb_postes, on=["mois_annee", "matricule"], how="left")
-    total_multi  = int(
-        base.filter(pl.col("NB_POSTES") > 1)
-        .select(["mois_annee", "matricule"]).unique().select(pl.len()).item()
-    )
-    total_agents = int(
-        base.select(["mois_annee", "matricule"]).unique().select(pl.len()).item()
-    )
-    logger.info(f"   Multi-postes : {total_multi:,} / {total_agents:,} "
-                f"({100*total_multi/total_agents:.1f}%)")
 else:
     base = base.with_columns(pl.lit(1).alias("NB_POSTES"))
-    logger.info("   Colonne matricule absente, NB_POSTES = 1")
+    print("   Colonne matricule absente, NB_POSTES = 1\n")
 
 # ============================================================
 # 7. FILTRAGE SUR GRADES VALIDES
 # ============================================================
 
-logger.info("7. Filtrage grades valides avant agrégation...")
+print("7. Filtrage grades valides avant agrégation...")
 
 if INCLURE_ZEROS:
     base_gv = base.filter(pl.col("GRADE").is_in(GRADES_VALIDES))
@@ -741,14 +739,14 @@ else:
 n_gv = len(base_gv)
 for source in ["OBSERVE", "IMPUTE"]:
     n = int((base_gv["GRADE_SOURCE"] == source).sum())
-    logger.info(f"   {source:<10} : {n:,}  ({100*n/n_gv:.1f}%)")
-logger.info(f"   Total retenu : {n_gv:,} ({100*n_gv/len(base):.1f}%)")
+    print(f"   {source:<10} : {n:,}  ({100*n/n_gv:.1f}%)")
+print(f"   Total retenu : {n_gv:,} ({100*n_gv/len(base):.1f}%)\n")
 
 # ============================================================
 # 7b. FUZZY JOIN EMPLOI → BARÈME
 # ============================================================
 
-logger.info("7b. Fuzzy join EMPLOI → BARÈME (via table de correspondance)...")
+print("7b. Fuzzy join EMPLOI → BARÈME (via table de correspondance)...")
 
 TABLE_BAREME = charger_table_bareme()
 
@@ -767,16 +765,20 @@ if TABLE_BAREME is not None and col_emploi_panel is not None:
     BAREME_DISPONIBLE = True
 else:
     if TABLE_BAREME is None:
-        logger.warning("  ⚠️  Table barème absente — feuilles barème non produites")
+        print("  ⚠️  Table barème absente — feuilles barème non produites")
     else:
-        logger.warning(f"  ⚠️  Colonne emploi absente dans le panel — feuilles barème non produites")
+        print(f"  ⚠️  Colonne emploi absente dans le panel — feuilles barème non produites")
     BAREME_DISPONIBLE = False
 
 # --- Exclusion police (non-fonctionnaires — pas de statut barème) ---
 if "bareme" in base_gv.columns:
     n_police = int((base_gv["bareme"] == "police").sum())
-    base_gv = base_gv.filter(pl.col("bareme") != "police")
-    logger.info(f"   Exclusion police (NF) : {n_police:,} agents retirés")
+    n_sans_grille = int(base_gv["bareme"].is_null().sum())
+    # is_null() explicite : sans lui, le filtre != "police" retire aussi les agents sans grille
+    base_gv = base_gv.filter(pl.col("bareme").is_null() | (pl.col("bareme") != "police"))
+    print(f"   Exclusion police (NF) : {n_police:,} agents retirés")
+    print(f"   Agents sans grille (emploi absent de la correspondance) : {n_sans_grille:,} "
+          f"conservés → Statut « Cluster non déterminé »")
 
 # --- Exclusion montant_brut_sans_ind_sans_alloc = 0 ou null ---
 if "montant_brut_sans_ind_sans_alloc" in base_gv.columns:
@@ -786,29 +788,31 @@ if "montant_brut_sans_ind_sans_alloc" in base_gv.columns:
     base_gv = base_gv.filter(
         pl.col("montant_brut_sans_ind_sans_alloc").is_not_null() & (pl.col("montant_brut_sans_ind_sans_alloc") != 0)
     )
-    logger.info(f"   Exclusion sans salaire (montant_brut_sans_ind_sans_alloc ≤ 0) : {n_zero:,} agents retirés")
+    print(f"   Exclusion sans salaire (montant_brut_sans_ind_sans_alloc ≤ 0) : {n_zero:,} agents retirés")
 
-logger.info(f"   Base après exclusions : {len(base_gv):,} agents")
+print(f"   Base après exclusions : {len(base_gv):,} agents")
+print()
 
 # ============================================================
 # 7c. STATUT BARÈME — MÉTHODO 1
 # ============================================================
 
-logger.info("7c. Statut (Méthodo 1)")
-logger.info("   Objectif  : vérifier si le salaire de base de l'agent (sans indemnités ni")
-logger.info("               allocation familiale) est conforme au barème de son grade et secteur.")
-logger.info("   Gold      : montant_brut_sans_ind_sans_alloc  (codes postes 124+228+271+425)")
-logger.info("   Référence : montant_brut_sans_indemnites_sans_alloc  (Salaire de Base + Résidence")
-logger.info("               + Logement + Transport  —  source anstat_2025)")
+print("7c. Statut (Méthodo 1)")
+print("   Objectif  : vérifier si le salaire de base de l'agent (sans indemnités ni")
+print("               allocation familiale) est conforme au barème de son grade et secteur.")
+print("   Gold      : montant_brut_sans_ind_sans_alloc  (codes postes 124+228+271+425)")
+print("   Référence : montant_brut_sans_indemnites_sans_alloc  (Salaire de Base + Résidence")
+print("               + Logement + Transport  —  source anstat_2025)")
+print()
 
-logger.info("  7c-1. Chargement du référentiel anstat_2025...")
+print("  7c-1. Chargement du référentiel anstat_2025...")
 df_anstat_ref   = charger_anstat_2025()
 indic_cluster   = None
 col_secteur_ref = None
 col_grade_ref   = None
 
 if df_anstat_ref is not None and "montant_brut_sans_indemnites_sans_alloc" in df_anstat_ref.columns:
-    logger.info("  7c-2. Calcul des bornes de conformité par cluster (secteur × grade) depuis anstat_2025...")
+    print("  7c-2. Calcul des bornes de conformité par cluster (secteur × grade) depuis anstat_2025...")
     result_cluster = calculer_indicateurs_cluster(
         df_anstat_ref, value_col="montant_brut_sans_indemnites_sans_alloc", prefix="bareme"
     )
@@ -825,10 +829,11 @@ col_grade_main = next(
 )
 
 if indic_cluster is not None and "montant_brut_sans_ind_sans_alloc" in base_gv.columns:
-    logger.info("  7c-3. Attribution du Statut à chaque agent — comparaison au barème de son cluster (secteur × grade)...")
+    print("  7c-3. Attribution du Statut à chaque agent — comparaison au barème de son cluster (secteur × grade)...")
 
     MAPPING_BAREME_ANSTAT = {
         "Cadre-Sup-Santé Generaliste & Specialiste" : "Cadre-Sup-Santé",
+        "PARAMILITAIRE"                             : "para militaire",
     }
     # col_secteur_main et col_grade_main initialisés avant le bloc (réutilisés en 7d)
 
@@ -844,7 +849,7 @@ if indic_cluster is not None and "montant_brut_sans_ind_sans_alloc" in base_gv.c
         for ancien, nouveau in MAPPING_BAREME_ANSTAT.items():
             n_rem = int((base_gv[col_secteur_main] == nouveau).sum())
             if n_rem > 0:
-                logger.info(f"   Mapping barème : '{ancien}' → '{nouveau}' ({n_rem:,} agents)")
+                print(f"   Mapping barème : '{ancien}' → '{nouveau}' ({n_rem:,} agents)")
 
     cle_join_cluster = []
     if "secteur_ref" in indic_cluster.columns and col_secteur_main:
@@ -856,19 +861,19 @@ if indic_cluster is not None and "montant_brut_sans_ind_sans_alloc" in base_gv.c
         left_on  = [pair[1] for pair in cle_join_cluster]
         right_on = [pair[0] for pair in cle_join_cluster]
 
-        logger.info(f"   Clés de jointure Gold ↔ Référentiel : {left_on} ↔ {right_on}")
+        print(f"   Clés de jointure Gold ↔ Référentiel : {left_on} ↔ {right_on}")
 
         for l, r in zip(left_on, right_on):
             set_gold = set(base_gv[l].drop_nulls().unique().to_list())
             set_ref  = set(indic_cluster[r].drop_nulls().unique().to_list())
             dans_ref_pas_gold = sorted(set_ref - set_gold)
             dans_gold_pas_ref = sorted(set_gold - set_ref)
-            logger.info(f"   [{l}] Gold ({len(set_gold)} modalités) : {sorted(set_gold)}")
-            logger.info(f"   [{r}] Référentiel ({len(set_ref)} modalités) : {sorted(set_ref)}")
+            print(f"   [{l}] Gold ({len(set_gold)} modalités) : {sorted(set_gold)}")
+            print(f"   [{r}] Référentiel ({len(set_ref)} modalités) : {sorted(set_ref)}")
             if dans_ref_pas_gold:
-                logger.warning(f"     ⚠️  Dans référentiel mais absent du Gold : {dans_ref_pas_gold}")
+                print(f"     ⚠️  Dans référentiel mais absent du Gold : {dans_ref_pas_gold}")
             if dans_gold_pas_ref:
-                logger.warning(f"     ⚠️  Dans Gold mais absent du référentiel : {dans_gold_pas_ref}")
+                print(f"     ⚠️  Dans Gold mais absent du référentiel : {dans_gold_pas_ref}")
 
         if len(left_on) > 1:
             combis_gold = set(
@@ -879,18 +884,16 @@ if indic_cluster is not None and "montant_brut_sans_ind_sans_alloc" in base_gv.c
             )
             dans_ref_pas_gold_c = sorted(combis_ref - combis_gold)
             dans_gold_pas_ref_c = sorted(combis_gold - combis_ref)
-            logger.info(f"   Combinaisons ({' × '.join(left_on)}) :")
-            logger.info(f"     Gold         : {len(combis_gold):,} combinaisons")
-            logger.info(f"     Référentiel  : {len(combis_ref):,} combinaisons")
+            print(f"   Combinaisons ({' × '.join(left_on)}) :")
+            print(f"     Gold         : {len(combis_gold):,} combinaisons")
+            print(f"     Référentiel  : {len(combis_ref):,} combinaisons")
             if dans_ref_pas_gold_c:
-                logger.warning(f"     ⚠️  Dans référentiel mais absent du Gold : {dans_ref_pas_gold_c}")
+                print(f"     ⚠️  Dans référentiel mais absent du Gold : {dans_ref_pas_gold_c}")
             if dans_gold_pas_ref_c:
-                logger.warning(
-                    f"     ⚠️  Dans Gold mais absent du référentiel : {dans_gold_pas_ref_c[:20]}"
-                    f"{'...' if len(dans_gold_pas_ref_c) > 20 else ''}"
-                )
+                print(f"     ⚠️  Dans Gold mais absent du référentiel : {dans_gold_pas_ref_c[:20]}"
+                      f"{'...' if len(dans_gold_pas_ref_c) > 20 else ''}")
             if not dans_ref_pas_gold_c and not dans_gold_pas_ref_c:
-                logger.info(f"     ✓ Combinaisons identiques des deux côtés")
+                print(f"     ✓ Combinaisons identiques des deux côtés")
 
         indic_join = indic_cluster.with_columns(
             [pl.col(c).cast(pl.Utf8) for c in right_on]
@@ -913,7 +916,7 @@ if indic_cluster is not None and "montant_brut_sans_ind_sans_alloc" in base_gv.c
         )
         base_avec_statut = base_gv.clone()
     else:
-        logger.warning("   ⚠️  Jointure cluster impossible — Statut non calculé")
+        print("   ⚠️  Jointure cluster impossible — Statut non calculé")
         base_gv = base_gv.with_columns([
             pl.lit("Cluster non déterminé").alias("Statut"),
             pl.lit(None).cast(pl.Float64).alias("min_bareme"),
@@ -923,19 +926,20 @@ if indic_cluster is not None and "montant_brut_sans_ind_sans_alloc" in base_gv.c
 
     # --- Vérification para-militaires ---
     if col_secteur_main and col_secteur_main in base_gv.columns:
+        # Après MAPPING_BAREME_ANSTAT : PARAMILITAIRE est devenu "para militaire"
         n_para = int((base_gv[col_secteur_main] == "para militaire").sum())
         if n_para == 0:
-            logger.info(f"   ✓ Vérification para-militaires : aucun agent para-militaire dans la base")
+            print("   ⚠️  Aucun agent rattaché au barème PARAMILITAIRE — vérifier CORRESPONDANCE_GRILLE_EMPLOI.xlsx")
         else:
-            logger.warning(f"   ⚠️  ALERTE : {n_para:,} agents avec barème 'para militaire' détectés")
+            print(f"   ✓ Barème PARAMILITAIRE : {n_para:,} lignes rattachées")
 
     n_statut  = base_gv["Statut"].value_counts().sort("Statut")
     n_total_s = n_statut["count"].sum()
-    logger.info(f"\n   ── Statut M1 · avant repêchage ±5% ──────────────────────────────────")
-    logger.info(f"   (salaire sans ind. ni alloc. vs barème anstat_2025 par secteur × grade)")
+    print(f"\n   ── Statut M1 · avant repêchage ±5% ──────────────────────────────────")
+    print(f"   (salaire sans ind. ni alloc. vs barème anstat_2025 par secteur × grade)")
     for row in n_statut.iter_rows(named=True):
         pct = 100 * row["count"] / n_total_s if n_total_s > 0 else 0.0
-        logger.info(f"     {row['Statut']:<40} : {row['count']:>10,}  ({pct:.1f}%)")
+        print(f"     {row['Statut']:<40} : {row['count']:>10,}  ({pct:.1f}%)")
     _print_tranches(
         base_gv, "Statut", "montant_brut_sans_ind_sans_alloc",
         "min_bareme", "max_bareme", avant_recuperation=True
@@ -969,24 +973,24 @@ if indic_cluster is not None and "montant_brut_sans_ind_sans_alloc" in base_gv.c
             .alias("Statut")
         )
         base_avec_statut = base_gv.clone()
-        logger.info(f"\n   Repêchage des agents légèrement hors-barème (écart < 5% des bornes) :")
-        logger.info(f"     En dessous du minimum repêchés : {n_rec_inf:,}")
-        logger.info(f"     Au-dessus du maximum repêchés  : {n_rec_sup:,}")
+        print(f"\n   Repêchage des agents légèrement hors-barème (écart < 5% des bornes) :")
+        print(f"     En dessous du minimum repêchés : {n_rec_inf:,}")
+        print(f"     Au-dessus du maximum repêchés  : {n_rec_sup:,}")
 
         n_statut2  = base_gv["Statut"].value_counts().sort("Statut")
         n_total_s2 = n_statut2["count"].sum()
-        logger.info(f"\n   ── Statut M1 · après repêchage ±5% ──────────────────────────────────")
+        print(f"\n   ── Statut M1 · après repêchage ±5% ──────────────────────────────────")
         for row in n_statut2.iter_rows(named=True):
             pct = 100 * row["count"] / n_total_s2 if n_total_s2 > 0 else 0.0
-            logger.info(f"     {row['Statut']:<40} : {row['count']:>10,}  ({pct:.1f}%)")
+            print(f"     {row['Statut']:<40} : {row['count']:>10,}  ({pct:.1f}%)")
         _print_tranches(
             base_gv, "Statut", "montant_brut_sans_ind_sans_alloc",
             "min_bareme", "max_bareme", avant_recuperation=False
         )
-        logger.info(f"   → Les agents encore hors-barème seront imputés à l'étape 07a")
+        print(f"   → Les agents encore hors-barème seront imputés à l'étape 07a")
 
 elif "montant_brut_sans_ind_sans_alloc" not in base_gv.columns:
-    logger.warning("   ⚠️  montant_brut_sans_ind_sans_alloc absent du Gold — régénérer le Gold avec programme 06")
+    print("   ⚠️  montant_brut_sans_ind_sans_alloc absent du Gold — régénérer le Gold avec programme 06")
     base_gv = base_gv.with_columns([
         pl.lit("Cluster non déterminé").alias("Statut"),
         pl.lit(None).cast(pl.Float64).alias("min_bareme"),
@@ -1001,19 +1005,30 @@ else:
     ])
     base_avec_statut = base_gv.clone()
 
+print()
+
 # ============================================================
 # 7d. STATUT_TOTAL — MÉTHODO 2
 # ============================================================
 
-logger.info("7d. Statut_Total (Méthodo 2)")
-logger.info("   Objectif  : vérifier si le salaire brut total de l'agent (tous codes postes)")
-logger.info("               est conforme au barème de son grade et secteur.")
-logger.info("   Gold      : montant_brut_total  (Feuille 1 — tous codes postes confondus)")
-logger.info("   Référence : montant brut  (colonne 'montant brut'  —  source anstat_2025)")
+VAR_CTRL_M2 = "montant_brut_controle_m2"
+
+print("7d. Statut_Total (Méthodo 2)")
+print("   Objectif  : vérifier si le salaire brut total de l'agent, hors codes 461 à 464,")
+print("               est conforme au barème de son grade et secteur.")
+print(f"   Gold      : {VAR_CTRL_M2}  (montant_brut_total − codes 461 à 464)")
+print("   Référence : montant brut  (colonne 'montant brut'  —  source anstat_2025)")
+print("   Les indicateurs M2 restent calculés sur montant_brut_total complet.")
+
+if "montant_brut_total" in base_gv.columns and VAR_CTRL_M2 not in base_gv.columns:
+    raise RuntimeError(
+        f"ARRÊT — Colonne {VAR_CTRL_M2} absente du Gold panel.\n"
+        "Relancer 06_compiler_panel.py (version qui retire les codes 461 à 464)."
+    )
 
 if (df_anstat_ref is not None
         and "montant_brut_total_ref" in df_anstat_ref.columns
-        and "montant_brut_total" in base_gv.columns):
+        and VAR_CTRL_M2 in base_gv.columns):
 
     result_cluster_total = calculer_indicateurs_cluster(
         df_anstat_ref, value_col="montant_brut_total_ref", prefix="total"
@@ -1035,7 +1050,8 @@ if (df_anstat_ref is not None
                 [pl.col(c).cast(pl.Utf8) for c in right_on_t]
             )
             base_avec_statut = base_avec_statut.with_columns(
-                pl.col("montant_brut_total").cast(pl.Float64, strict=False)
+                pl.col("montant_brut_total").cast(pl.Float64, strict=False),
+                pl.col(VAR_CTRL_M2).cast(pl.Float64, strict=False),
             ).join(
                 indic_t_join.select(right_on_t + ["min_total", "max_total"]),
                 left_on=left_on_t, right_on=right_on_t, how="left",
@@ -1045,9 +1061,9 @@ if (df_anstat_ref is not None
             base_avec_statut = base_avec_statut.with_columns(
                 pl.when(pl.col("min_total").is_null() | pl.col("max_total").is_null())
                 .then(pl.lit("Cluster non déterminé"))
-                .when(pl.col("montant_brut_total") < pl.col("min_total"))
+                .when(pl.col(VAR_CTRL_M2) < pl.col("min_total"))
                 .then(pl.lit("Inférieur au minimum du barème"))
-                .when(pl.col("montant_brut_total") > pl.col("max_total"))
+                .when(pl.col(VAR_CTRL_M2) > pl.col("max_total"))
                 .then(pl.lit("Supérieur au maximum du barème"))
                 .otherwise(pl.lit("Conforme au barème"))
                 .alias("Statut_Total")
@@ -1056,13 +1072,13 @@ if (df_anstat_ref is not None
             # Distribution Statut_Total AVANT récupération + tranches
             n_st_av  = base_avec_statut["Statut_Total"].value_counts().sort("Statut_Total")
             n_tst_av = n_st_av["count"].sum()
-            logger.info(f"\n   ── Statut_Total M2 · avant repêchage ±5% ───────────────────────────")
-            logger.info(f"   (salaire brut total vs colonne 'montant brut' anstat_2025 par secteur × grade)")
+            print(f"\n   ── Statut_Total M2 · avant repêchage ±5% ───────────────────────────")
+            print(f"   (salaire brut total hors codes 461-464 vs colonne 'montant brut' anstat_2025 par secteur × grade)")
             for row in n_st_av.iter_rows(named=True):
                 pct = 100 * row["count"] / n_tst_av if n_tst_av > 0 else 0.0
-                logger.info(f"     {row['Statut_Total']:<40} : {row['count']:>10,}  ({pct:.1f}%)")
+                print(f"     {row['Statut_Total']:<40} : {row['count']:>10,}  ({pct:.1f}%)")
             _print_tranches(
-                base_avec_statut, "Statut_Total", "montant_brut_total",
+                base_avec_statut, "Statut_Total", VAR_CTRL_M2,
                 "min_total", "max_total", avant_recuperation=True
             )
 
@@ -1070,52 +1086,52 @@ if (df_anstat_ref is not None
             n_rec_inf_t = int(
                 base_avec_statut.filter(
                     (pl.col("Statut_Total") == "Inférieur au minimum du barème") &
-                    ((pl.col("min_total") - pl.col("montant_brut_total")) / pl.col("min_total") * 100 < 5)
+                    ((pl.col("min_total") - pl.col(VAR_CTRL_M2)) / pl.col("min_total") * 100 < 5)
                 ).shape[0]
             )
             n_rec_sup_t = int(
                 base_avec_statut.filter(
                     (pl.col("Statut_Total") == "Supérieur au maximum du barème") &
-                    ((pl.col("montant_brut_total") - pl.col("max_total")) / pl.col("max_total") * 100 < 5)
+                    ((pl.col(VAR_CTRL_M2) - pl.col("max_total")) / pl.col("max_total") * 100 < 5)
                 ).shape[0]
             )
             base_avec_statut = base_avec_statut.with_columns(
                 pl.when(
                     (pl.col("Statut_Total") == "Inférieur au minimum du barème") &
-                    ((pl.col("min_total") - pl.col("montant_brut_total"))
+                    ((pl.col("min_total") - pl.col(VAR_CTRL_M2))
                      / pl.col("min_total") * 100 < 5)
                 ).then(pl.lit("Conforme au barème"))
                 .when(
                     (pl.col("Statut_Total") == "Supérieur au maximum du barème") &
-                    ((pl.col("montant_brut_total") - pl.col("max_total"))
+                    ((pl.col(VAR_CTRL_M2) - pl.col("max_total"))
                      / pl.col("max_total") * 100 < 5)
                 ).then(pl.lit("Conforme au barème"))
                 .otherwise(pl.col("Statut_Total"))
                 .alias("Statut_Total")
             )
-            logger.info(f"\n   Repêchage des agents légèrement hors-barème M2 (écart < 5% des bornes) :")
-            logger.info(f"     En dessous du minimum repêchés : {n_rec_inf_t:,}")
-            logger.info(f"     Au-dessus du maximum repêchés  : {n_rec_sup_t:,}")
+            print(f"\n   Repêchage des agents légèrement hors-barème M2 (écart < 5% des bornes) :")
+            print(f"     En dessous du minimum repêchés : {n_rec_inf_t:,}")
+            print(f"     Au-dessus du maximum repêchés  : {n_rec_sup_t:,}")
 
             n_st  = base_avec_statut["Statut_Total"].value_counts().sort("Statut_Total")
             n_tst = n_st["count"].sum()
-            logger.info(f"\n   ── Statut_Total M2 · après repêchage ±5% ───────────────────────────")
+            print(f"\n   ── Statut_Total M2 · après repêchage ±5% ───────────────────────────")
             for row in n_st.iter_rows(named=True):
                 pct = 100 * row["count"] / n_tst if n_tst > 0 else 0.0
-                logger.info(f"     {row['Statut_Total']:<40} : {row['count']:>10,}  ({pct:.1f}%)")
+                print(f"     {row['Statut_Total']:<40} : {row['count']:>10,}  ({pct:.1f}%)")
             _print_tranches(
-                base_avec_statut, "Statut_Total", "montant_brut_total",
+                base_avec_statut, "Statut_Total", VAR_CTRL_M2,
                 "min_total", "max_total", avant_recuperation=False
             )
         else:
-            logger.warning("   ⚠️  Jointure cluster_total impossible — Statut_Total non calculé")
+            print("   ⚠️  Jointure cluster_total impossible — Statut_Total non calculé")
             base_avec_statut = base_avec_statut.with_columns([
                 pl.lit("Cluster non déterminé").alias("Statut_Total"),
                 pl.lit(None).cast(pl.Float64).alias("min_total"),
                 pl.lit(None).cast(pl.Float64).alias("max_total"),
             ])
     else:
-        logger.warning("   ⚠️  Indicateurs cluster_total non calculés — Statut_Total non calculé")
+        print("   ⚠️  Indicateurs cluster_total non calculés — Statut_Total non calculé")
         base_avec_statut = base_avec_statut.with_columns([
             pl.lit("Cluster non déterminé").alias("Statut_Total"),
             pl.lit(None).cast(pl.Float64).alias("min_total"),
@@ -1129,18 +1145,20 @@ else:
         raison.append("colonne montant_brut_total_ref absente d'anstat_2025")
     if "montant_brut_total" not in base_gv.columns:
         raison.append("colonne montant_brut_total absente du Gold panel")
-    logger.warning(f"   ⚠️  Statut_Total non calculé : {' / '.join(raison)}")
+    print(f"   ⚠️  Statut_Total non calculé : {' / '.join(raison)}")
     base_avec_statut = base_avec_statut.with_columns([
         pl.lit("Non calculé").alias("Statut_Total"),
         pl.lit(None).cast(pl.Float64).alias("min_total"),
         pl.lit(None).cast(pl.Float64).alias("max_total"),
     ])
 
+print()
+
 # ============================================================
 # 8. SAUVEGARDE base_avec_statut.parquet → Gold
 # ============================================================
 
-logger.info("8. Sauvegarde base_avec_statut.parquet...")
+print("8. Sauvegarde base_avec_statut.parquet...")
 
 if len(base_avec_statut) > 0:
     buf_pq = io.BytesIO()
@@ -1151,30 +1169,32 @@ if len(base_avec_statut) > 0:
         Key=KEY_BASE_AVEC_STATUT,
         Body=buf_pq.getvalue(),
     )
-    logger.info(f"   ✅ s3://{BUCKET_GOLD}/{KEY_BASE_AVEC_STATUT}")
-    logger.info(f"   {len(base_avec_statut):,} lignes × {len(base_avec_statut.columns)} colonnes")
+    print(f"   ✅ s3://{BUCKET_GOLD}/{KEY_BASE_AVEC_STATUT}")
+    print(f"   {len(base_avec_statut):,} lignes × {len(base_avec_statut.columns)} colonnes")
 
     # Résumé final
     total = len(base_avec_statut)
     if "Statut" in base_avec_statut.columns:
-        logger.info(f"\n   ── Résumé final Statut M1 (salaire sans ind. ni alloc.) ─────────────")
+        print(f"\n   ── Résumé final Statut M1 (salaire sans ind. ni alloc.) ─────────────")
         for row in (
             base_avec_statut["Statut"].value_counts().sort("Statut").iter_rows(named=True)
         ):
             pct = 100 * row["count"] / total if total > 0 else 0.0
-            logger.info(f"     {row['Statut']:<40} : {row['count']:>10,}  ({pct:.1f}%)")
+            print(f"     {row['Statut']:<40} : {row['count']:>10,}  ({pct:.1f}%)")
 
     if "Statut_Total" in base_avec_statut.columns:
-        logger.info(f"\n   ── Résumé final Statut_Total M2 (salaire brut total) ────────────────")
+        print(f"\n   ── Résumé final Statut_Total M2 (salaire brut total) ────────────────")
         for row in (
             base_avec_statut["Statut_Total"].value_counts().sort("Statut_Total").iter_rows(named=True)
         ):
             pct = 100 * row["count"] / total if total > 0 else 0.0
-            logger.info(f"     {row['Statut_Total']:<40} : {row['count']:>10,}  ({pct:.1f}%)")
+            print(f"     {row['Statut_Total']:<40} : {row['count']:>10,}  ({pct:.1f}%)")
 else:
-    logger.warning("   ⚠️  base_avec_statut vide — fichier non sauvegardé")
+    print("   ⚠️  base_avec_statut vide — fichier non sauvegardé")
 
-logger.info("=" * 70)
-logger.info("✓ CALCUL STATUT BARÈME TERMINÉ")
-logger.info("=" * 70)
-logger.info("Prochaine étape : exécuter 07a_imputer_hors_bareme.py")
+print()
+print("=" * 70)
+print("✓ CALCUL STATUT BARÈME TERMINÉ")
+print("=" * 70)
+print()
+print("Prochaine étape : exécuter 07a_imputer_hors_bareme.py")
