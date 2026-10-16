@@ -1,0 +1,22 @@
+flowchart LR
+    SRC["📁 Données\nde la Solde\n(Excel)"]
+
+    subgraph MEDALLION["Architecture Medallion"]
+        direction LR
+        B["🥉 BRONZE\nParquet brut\nFidélité source"]
+        S["🥈 SILVER\nNormalisé\nRègle métier"]
+        G["🥇 GOLD\nIndicateurs\nPrêt à publier"]
+        B --> S --> G
+    end
+
+    PG[("🐘 PostgreSQL\nBase analytique")]
+    SS["📊 Apache\nSuperset"]
+
+    SRC --> B
+    G --> PG --> SS
+
+    style B fill:#cd7f32,color:#fff,stroke:#a0522d
+    style S fill:#888,color:#fff,stroke:#666
+    style G fill:#d4ac0d,color:#fff,stroke:#b8860b
+    style PG fill:#1e8449,color:#fff,stroke:#155724
+    style SS fill:#1a5276,color:#fff,stroke:#154360

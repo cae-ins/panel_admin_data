@@ -1,0 +1,27 @@
+graph TB
+    SRC["📁 Données\nde la Solde"]
+
+    subgraph K8S["☸️  Cluster Kubernetes"]
+        JH["📓 JupyterHub\nAnalyse · Pipeline"]
+        MINIO["🪣 MinIO\nStockage objet S3\nBronze · Silver · Gold"]
+        PG["🐘 PostgreSQL\nPanel analytique"]
+        SS["📊 Apache Superset\nTableaux de bord"]
+        SEC["🔐 K8S Secrets\nCredentials injectés"]
+    end
+
+    USR["👤 Équipes\nmétier"]
+
+    SRC -->|"Excel mensuel"| JH
+    JH <-->|"Parquet par couche"| MINIO
+    JH -->|"Chargement transactionnel"| PG
+    PG --> SS
+    SS --> USR
+    SEC -.->|"Injection au runtime"| JH
+    MINIO -->|"Logs · Rapports de run"| JH
+
+    style K8S fill:#eaf4fb,stroke:#2e86c1
+    style SEC fill:#fef9e7,stroke:#f0b429
+    style JH fill:#d6eaf8,stroke:#2e86c1
+    style MINIO fill:#fdebd0,stroke:#d4ac0d
+    style PG fill:#d5f5e3,stroke:#1e8449
+    style SS fill:#1a5276,color:#fff,stroke:#154360

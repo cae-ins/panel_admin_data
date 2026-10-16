@@ -14,9 +14,9 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 # Copie du pipeline industrialisé
 COPY src/pipeline/*.py   src/pipeline/
-COPY src/pipeline/*.sh   src/pipeline/
 COPY src/pipeline/common src/pipeline/common
 COPY src/pipeline/config src/pipeline/config
+COPY superset/superset_views.sql superset/
 COPY orchestrateur.py .
 
 # Configuration par défaut

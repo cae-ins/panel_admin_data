@@ -1,0 +1,35 @@
+flowchart TD
+    S0["00 · Upload Staging\nExcel → MinIO"]
+    S1["01 · Pré-analyse\nDétection variations\nde schéma"]
+    S2["02 · Staging → Bronze\nExcel → Parquet"]
+    S3["03 · Bronze → Silver\nMapping colonnes\nNormalisation"]
+    S3b["03b · Imputation Grades\nCascade emploi P1/P2/P3"]
+    S3c["03c · Imputation Salaires\nLOCF + Médiane"]
+    S4["04 · Validation Silver\nContrôles qualité"]
+    S5["05 · Silver → Gold\nAgrégations mensuelles"]
+    S6["06 · Compilation Panel\nHistorique individuel"]
+    S7["07 · Statuts Barème\nConformité M1 + M2"]
+    S7a["07a · Imputation Hors-Barème\nForward/backward fill"]
+    S7b["07b · Calcul Indicateurs\nExcel technique"]
+    S8["08 · Rapport Excel\nSommaire navigable"]
+    S9["09 · Chargement PostgreSQL\nSwap transactionnel"]
+    S10["10 · Validation Superset\nVues SQL testées"]
+
+    S0 --> S1 --> S2 --> S3 --> S3b --> S3c --> S4
+    S4 --> S5 --> S6 --> S7 --> S7a --> S7b --> S8 --> S9 --> S10
+
+    style S0 fill:#d6eaf8,stroke:#2e86c1
+    style S1 fill:#d6eaf8,stroke:#2e86c1
+    style S2 fill:#cd7f32,color:#fff,stroke:#a0522d
+    style S3 fill:#cd7f32,color:#fff,stroke:#a0522d
+    style S3b fill:#cd7f32,color:#fff,stroke:#a0522d
+    style S3c fill:#cd7f32,color:#fff,stroke:#a0522d
+    style S4 fill:#d5d8dc,stroke:#888
+    style S5 fill:#d5d8dc,stroke:#888
+    style S6 fill:#fdebd0,stroke:#d4ac0d
+    style S7 fill:#fdebd0,stroke:#d4ac0d
+    style S7a fill:#fdebd0,stroke:#d4ac0d
+    style S7b fill:#fdebd0,stroke:#d4ac0d
+    style S8 fill:#fdebd0,stroke:#d4ac0d
+    style S9 fill:#1e8449,color:#fff,stroke:#155724
+    style S10 fill:#1e8449,color:#fff,stroke:#155724

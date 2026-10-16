@@ -28,17 +28,28 @@ Le projet adopte une architecture "Medallion" pour garantir la traçabilité et 
 - **Silver :** Normalisation des situations administratives, mapping des colonnes et enrichissement via les référentiels métiers.
 - **Gold :** Agrégation des données par individu et par période, calcul des indicateurs statistiques et production des rapports de synthèse.
 
-## Structure du Code
+## Organisation du dépôt
 
-- **orchestrateur.py** : Point d'entrée unique permettant de piloter l'ensemble des étapes du pipeline.
-- **src/pipeline/** : Contient les scripts Python de traitement (00 à 09).
-- **src/pipeline/tests/** : Suite de tests unitaires pour la validation des calculs d'imputation et de normalisation.
-- **src/pipeline/control_verif/** : Scripts de diagnostic pour le suivi de la qualité des données à chaque étape.
-- **src/research/** : Archives des travaux exploratoires et notebooks de développement.
-- **docs/documentation_officielle/** : Documentation officielle structurée en trois piliers :
-    - `01_Note_Methodologique.tex` : Principes statistiques, GSBPM et règles métier.
-    - `02_Architecture_Technique.tex` : Architecture Medallion, choix technologiques (Polars/MinIO) et flux de données.
-    - `03_Manuel_Exploitation.tex` : Guide opérationnel, déploiement et dépannage.
+| Emplacement | Contenu |
+|-------------|---------|
+| [orchestrateur.py](orchestrateur.py) | Point d'entrée du pipeline et reprise des exécutions |
+| [src/pipeline/](src/pipeline/) | Étapes de traitement, modules communs et configuration |
+| [src/pipeline/control_verif/](src/pipeline/control_verif/) | Diagnostics des données |
+| [src/utils/](src/utils/) | Pseudonymisation et lecture des schémas Excel |
+| [tests/](tests/) et [src/pipeline/tests/](src/pipeline/tests/) | Tests des utilitaires et des fonctions de calcul |
+| [superset/](superset/) | Vues PostgreSQL et guide de validation pour Superset |
+| [docs/](docs/README.md) | Documentation officielle, guides, communication et archives |
+| [src/research/](src/research/) | Notebooks et analyses ponctuelles, hors orchestration |
+| [src/R/](src/R/) et [consolidation_solde_2015_2025/](consolidation_solde_2015_2025/) | Travaux R historiques, conservés pour référence |
+| [infra/](infra/) et [Dockerfile](Dockerfile) | Configuration de déploiement |
+
+Les analyses ponctuelles dans `src/research/analyses_ponctuelles/` utilisent des
+chemins de données locaux à adapter avant exécution. Elles ne font pas partie du
+pipeline de production.
+
+Les fichiers `.env`, caches, journaux techniques et fichiers intermédiaires LaTeX
+restent locaux. Les rapports Markdown dans `reports/` conservent la trace des
+exécutions ; leur publication reste volontaire.
 
 ## Utilisation
 
@@ -51,6 +62,10 @@ Le projet adopte une architecture "Medallion" pour garantir la traçabilité et 
 ```bash
 pip install -r requirements.txt
 ```
+
+Configurer les variables de connexion à partir de `.env.example`, notamment
+`MINIO_ACCESS_KEY` et `MINIO_SECRET_KEY`. Les scripts ne fournissent pas de
+valeurs de connexion par défaut.
 
 ### Exécution du Pipeline
 Le pipeline peut être lancé intégralement ou par étapes spécifiques via l'orchestrateur. C'est un processus continu destiné à intégrer les nouvelles périodes de données dès leur disponibilité.
@@ -104,7 +119,7 @@ git commit -m "run $(date +%Y-%m-%d) — pipeline complet"
 
 ### Observabilité
 
-Tous les scripts du pipeline utilisent un logging structuré (`src/pipeline/common/logging_config.py`) configurable via variables d'environnement :
+L'orchestrateur et les scripts qui importent le module commun utilisent un logging structuré (`src/pipeline/common/logging_config.py`) configurable via variables d'environnement :
 
 | Variable | Valeur par défaut | Description |
 |----------|-------------------|-------------|
@@ -124,7 +139,23 @@ Tous les scripts du pipeline utilisent un logging structuré (`src/pipeline/comm
 6. **Compilation Panel** : Construction de l'historique individuel (logique sans allocation familiale).
 7. **Calcul Indicateurs** : Analyse des niveaux de revenus moyens par secteur et grade.
 8. **Rapport Sommaire** : Génération d'un fichier Excel interactif avec navigation structurée.
-9. **Chargement Final** : Synchronisation du panel vers le système de stockage cible.
+9. **Chargement Final** : Synchronisation du panel vers PostgreSQL.
+10. **Validation SQL Superset** : Application et contrôle des vues PostgreSQL avec `10_validate_superset_views.py`.
+
+Les scripts `10_correction_gold_trajectoire.py`, `11_analyse_salaire_experience.py`
+et `plus_age_experience.py` sont des traitements complémentaires lancés séparément.
+Le numéro 10 de l'orchestrateur désigne la validation SQL.
+
+## Vérifications locales
+
+```bash
+python orchestrateur.py --dry-run
+python -m pytest tests src/pipeline/tests
+```
+
+Le dry-run vérifie la présence des scripts sans lancer les traitements. Les tests
+du pipeline portent sur des fonctions recopiées dans les fichiers de test ; ils
+ne remplacent pas une validation complète sur les données et services externes.
 
 ---
 Cellule d'Analyses Économiques - ANSTAT

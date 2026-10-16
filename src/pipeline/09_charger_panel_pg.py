@@ -13,8 +13,8 @@
 #   3. Charge une table staging PostgreSQL
 #   4. Vérifie le nombre de lignes puis remplace la table finale en transaction
 #
-# Après cette étape :
-#   bash src/pipeline/10_refresh_superset.sh
+# Apres cette etape :
+#   python src/pipeline/10_validate_superset_views.py
 #
 # Variables d'environnement requises (.env) :
 #   MINIO_ENDPOINT, MINIO_ACCESS_KEY, MINIO_SECRET_KEY, BUCKET_GOLD
@@ -254,4 +254,4 @@ logger.info("=" * 70)
 logger.info(f"  Lignes chargées : {nb_lignes:,}")
 if periode:
     logger.info(f"  Période         : {periode[0]} → {periode[1]}")
-logger.info("Prochaine étape : bash src/pipeline/10_refresh_superset.sh")
+logger.info("Prochaine etape : python src/pipeline/10_validate_superset_views.py")

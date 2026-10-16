@@ -1,0 +1,38 @@
+flowchart LR
+    subgraph GSBPM["Phases GSBPM"]
+        direction TB
+        G4["4 · Collecter"]
+        G5["5 · Traiter"]
+        G6["6 · Analyser"]
+        G7["7 · Diffuser"]
+        G8["8 · Évaluer"]
+        G4 --> G5 --> G6 --> G7 --> G8
+    end
+
+    subgraph PIPE["Pipeline Panel Admin"]
+        direction TB
+        P1["00 · Staging\n01 · Pré-analyse"]
+        P2["02 → Bronze\n03–03c → Silver\n04 · Validation"]
+        P3["05–07b · Gold\nIndicateurs"]
+        P4["08 · Rapport Excel\n09 · PostgreSQL\n10 · Validation Superset"]
+        P5["Rapports de run\nPRODUCTION_READINESS"]
+        P1 --> P2 --> P3 --> P4 --> P5
+    end
+
+    G4 -.-> P1
+    G5 -.-> P2
+    G5 -.-> P3
+    G6 -.-> P3
+    G7 -.-> P4
+    G8 -.-> P5
+
+    style G4 fill:#d6eaf8,stroke:#2e86c1
+    style G5 fill:#fdebd0,stroke:#d4ac0d
+    style G6 fill:#d5f5e3,stroke:#1e8449
+    style G7 fill:#e8daef,stroke:#8e44ad
+    style G8 fill:#f9ebea,stroke:#c0392b
+    style P1 fill:#d6eaf8,stroke:#2e86c1
+    style P2 fill:#fdebd0,stroke:#d4ac0d
+    style P3 fill:#d5f5e3,stroke:#1e8449
+    style P4 fill:#e8daef,stroke:#8e44ad
+    style P5 fill:#f9ebea,stroke:#c0392b

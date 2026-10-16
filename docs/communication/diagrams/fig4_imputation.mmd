@@ -1,0 +1,14 @@
+flowchart LR
+    P1["P1 · Grade modal\nde l'agent\nsur ses autres périodes"]
+    P2["P2 · Grade modal\ndu même emploi\ndans le même organisme"]
+    P3["P3 · Grade modal\ndu même emploi\ntous organismes"]
+    NA["NA · Non imputé\nflagué"]
+
+    P1 -->|"Insuffisant"| P2
+    P2 -->|"Insuffisant"| P3
+    P3 -->|"Insuffisant"| NA
+
+    style P1 fill:#d5f5e3,stroke:#1e8449
+    style P2 fill:#fdebd0,stroke:#d4ac0d
+    style P3 fill:#fdf2e9,stroke:#e59866
+    style NA fill:#f9ebea,stroke:#c0392b

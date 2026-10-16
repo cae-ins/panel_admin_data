@@ -24,10 +24,6 @@ PyYAML>=6.0.1              # mapping de colonnes (étape 03 bronze->silver)
 # Dépendances optionnelles (non requises pour le pipeline ETL)
 # ============================================================
 
-# Dashboard interactif (app_hors_bareme_dashboard.py)
-# streamlit>=1.35.0
-# plotly>=5.22.0
-
 # Utilitaires (src/utils/)
 pandas>=2.2.0
 

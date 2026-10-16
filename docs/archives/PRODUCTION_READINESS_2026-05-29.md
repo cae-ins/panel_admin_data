@@ -1,3 +1,5 @@
+> Archive du 29 mai 2026. Ce document décrit un état antérieur au remplacement des scripts par ceux de Programme Solde ; ses validations ne décrivent pas la version actuelle.
+
 # Production Readiness — Panel Admin Data Pipeline
 
 ## Synthèse

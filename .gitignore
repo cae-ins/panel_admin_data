@@ -35,3 +35,26 @@ venv/
 .claude/
 .ipynb_checkpoints/
 **/.ipynb_checkpoints/
+
+# Journaux d'execution et etat local du pipeline
+*.log
+/reports/.pipeline_state.json
+
+# Fichiers intermediaires LaTeX (conserver les sources et livrables)
+*.aux
+*.fdb_latexmk
+*.fls
+*.synctex.gz
+*.toc
+*.nav
+*.snm
+*.vrb
+/docs/documentation_officielle/*.out
+
+# Fichiers temporaires des editeurs et du systeme
+.DS_Store
+Thumbs.db
+Desktop.ini
+~$*
+*.swp
+*.swo
