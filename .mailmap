@@ -1,11 +1,19 @@
-# Mapping pour unifier les identités des contributeurs
-Aminata Zongo <aminata.zongo@example.com> Aminata ZONGO <aminata.zongo@example.com>
-Aminata Zongo <aminata.zongo@example.com> Aminata COULIBALY <aminata.coulibaly@example.com>
-Aminata Zongo <aminata.zongo@example.com> Aminata-Coulibaly <aminata.coulibaly@example.com>
+# Unifie les identités git des contributeurs (git shortlog, git blame, git log).
+# Format : Nom canonique <adresse canonique> Nom du commit <adresse du commit>
 
-Nguessan Romuald <nguessan.romuald@example.com> Nguessan_Romuald <nguessan.romuald@example.com>
-Nguessan Romuald <nguessan.romuald@example.com> Nguessan-Romuald <nguessan.romuald@example.com>
+Franck Migone <franckmigone@gmail.com> fmigone <franckmigone@gmail.com>
+Franck Migone <franckmigone@gmail.com> <fmigone@gmail.com>
+Franck Migone <franckmigone@gmail.com> <23614284+fmigone@users.noreply.github.com>
 
-Franck Migone <f.migone@example.com> fmigone <f.migone@example.com>
-Franck Migone <f.migone@example.com> fÃmigone <f.migone@example.com>
-Franck Migone <f.migone@example.com> Your Name <your.name@example.com>
+Aminata Zongo <amiesougo@gmail.com> <amiesougo@gmail.com>
+Aminata Zongo <amiesougo@gmail.com> <a_coulibaly@domainecae.anstat>
+# Adresse générique « you@example.com » : commits « Aminata ZONGO » et « Your Name »
+# (septembre 2025, fusion des feuilles Excel), attribués à Aminata
+Aminata Zongo <amiesougo@gmail.com> <you@example.com>
+
+Romuald Nguessan <rom.nguessan@stat.plan.gouv.ci> <rom.nguessan@stat.plan.gouv.ci>
+Romuald Nguessan <rom.nguessan@stat.plan.gouv.ci> <romuald.nguessan@ensea.edu.ci>
+
+Jaurès Manouan <jauresmanouan@gmail.com> <jauresmanouan@gmail.com>
+
+CAE - ANStat <131480994+cae-ins@users.noreply.github.com> <131480994+cae-ins@users.noreply.github.com>

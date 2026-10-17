@@ -18,6 +18,7 @@ results/
 **/*.ods
 **/*.parquet
 **/*.pdf
+!docs/documentation_officielle/01_Note_Methodologique.pdf
 **/*.png
 **/*.jpg
 

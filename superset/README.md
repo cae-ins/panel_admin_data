@@ -2,7 +2,7 @@
 
 ## Contenu
 
-- `superset_views.sql` : vues PostgreSQL alignees sur la methodologie ANSTAT/CAE.
+- `superset_views.sql` : vues PostgreSQL alignees sur la methodologie ANSTAT/DDI.
 
 ## Prerequis
 

@@ -6,7 +6,6 @@
 - [Note méthodologique](documentation_officielle/01_Note_Methodologique.tex).
 - [Architecture technique](documentation_officielle/02_Architecture_Technique.tex).
 - [Manuel d'exploitation](documentation_officielle/03_Manuel_Exploitation.tex).
-- [Document méthodologique du 28 mai 2026](documentation_officielle/Document_Méthodologie_280526_V1.docx).
 - [PostgreSQL et Superset](../superset/README.md) : chargement et validation des vues.
 - [Pseudonymisation](pseudonymisation.md) : utilitaire et configuration de la clé.
 
@@ -15,6 +14,7 @@
 - [Communication](communication/) : source Markdown du billet et diagrammes Mermaid.
 - [Réunions](reunions/) : comptes rendus CNPS.
 - [Archives](archives/) : anciennes notes conservées comme références historiques.
+- [Document méthodologique du 28 mai 2026](documentation_officielle/Document_Méthodologie_280526_V1.docx) : obsolète, son contenu est repris dans la note méthodologique.
 - [Analyses ponctuelles](../src/research/analyses_ponctuelles/) : scripts exploratoires à adapter aux chemins de données locaux.
 
 Les notes archivées et le billet de communication peuvent décrire des versions

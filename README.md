@@ -241,5 +241,20 @@ Le dry-run vérifie la présence des scripts sans lancer les traitements. Les te
 du pipeline portent sur des fonctions recopiées dans les fichiers de test ; ils
 ne remplacent pas une validation complète sur les données et services externes.
 
+## Contributeurs
+
+| Contributeur | Apports principaux |
+|--------------|--------------------|
+| Aminata Zongo | Traitement initial des fichiers Solde, règles métier des étapes 00 à 09 (revenu, statut, barème, multi-postes, hors-barème, sommaires annuels) |
+| Jaurès Manouan | Statistiques secteur × grade, imputation des hors-barème, correction des trajectoires (étape 10), salaire par expérience (étape 11, `plus_age_experience.py`) |
+| Romuald Nguessan | Variables d'ancienneté et d'âge, base consolidée 2015–2025, scripts R de production des indicateurs |
+| Franck Migone | Passage à Python, pseudonymisation, infrastructure (Airflow, MinIO, PostgreSQL, Kubernetes), industrialisation du pipeline et documentation |
+
+Les scripts Programme Solde intégrés dans `main` par le commit `f839f6c`
+(étapes 00 à 08, 10, 11 et `plus_age_experience.py`) ont été écrits par Aminata
+Zongo et Jaurès Manouan sur leurs branches, puis portés à la main dans `main`.
+`git blame` les attribue donc au commit d'intégration : pour retrouver leurs
+auteurs, consulter l'historique de toutes les branches (`git log --all`).
+
 ---
-Cellule d'Analyses Économiques - ANSTAT
+Direction des Données et de l'Innovation (DDI) - ANSTAT

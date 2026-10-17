@@ -1,6 +1,6 @@
 # Moderniser la production statistique en Afrique de l'Ouest : comment le Data Engineering entre dans la statistique publique
 
-**Cellule d'Analyses Économiques — ANSTAT**\
+**Direction des Données et de l'Innovation (DDI) — ANSTAT**\
 *Mai 2026*
 
 > **Résumé.** Nous sommes partis d'une source administrative très riche, mais difficile à stabiliser dans le temps. Pour produire des indicateurs fiables sur les salaires publics, l'ANSTAT a mis en place une chaîne de production plus robuste : architecture Medallion, orchestration Python, stockage objet, PostgreSQL, Superset, Git et documentation d'exploitation. L'enjeu n'est pas seulement de gagner du temps. Il est de pouvoir expliquer, reprendre et vérifier chaque chiffre publié.
@@ -399,7 +399,7 @@ La question n'est pas de savoir si nos agences peuvent se l'offrir. Les outils s
 
 ---
 
-*Ce pipeline est développé à la Cellule d'Analyses Économiques de l'ANSTAT. Les données de la solde utilisées sont soumises au secret statistique et ne sont pas diffusées. La documentation officielle est versionnée avec le code source du pipeline.*
+*Ce pipeline est développé à la Direction des Données et de l'Innovation (DDI) de l'ANSTAT. Les données de la solde utilisées sont soumises au secret statistique et ne sont pas diffusées. La documentation officielle est versionnée avec le code source du pipeline.*
 
 ---
 

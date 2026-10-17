@@ -1,7 +1,7 @@
 -- ============================================================
 -- superset_views.sql
 -- Panel Admin - Salaires Fonction Publique Ivoirienne
--- Vues PostgreSQL alignees sur la methodologie ANSTAT/CAE
+-- Vues PostgreSQL alignees sur la methodologie ANSTAT/DDI
 --
 -- Dependances : table `panel` chargee depuis
 --   gold/panel_admin/base_avec_statut_corrigee.parquet

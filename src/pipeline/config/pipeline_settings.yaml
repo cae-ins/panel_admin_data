@@ -8,7 +8,7 @@ methodology:
   inclure_zeros: true          # true = inclure salaires nuls/NA ; false = salaire > 0
   seuil_wins: 0.01             # null pour désactiver la winsorisation
   min_obs_wins: 100            # seuil de repli mois x grade si cellule CITP trop petite
-  grades_valides:              # liste issue du document méthodologique du 28/05/2026
+  grades_valides:              # liste de la note méthodologique
     - "A3"
     - "A4"
     - "A5"
