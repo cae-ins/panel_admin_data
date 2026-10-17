@@ -525,7 +525,7 @@ $\text{IHPC}_t$ est l'indice moyen de l'année pour les sommaires annuels, et l'
 
 \subsection{Base PostgreSQL (étape 09)}
 
-L'étape 09 charge dans PostgreSQL (table \texttt{panel}) la base corrigée de l'étape 07a, avec toutes ses colonnes, dont les statuts M1 et M2. Si la base corrigée est absente, la base non corrigée de l'étape 07 est chargée, ce qui est signalé dans le journal. Le chargement remplace entièrement la table : les données sont d'abord chargées dans une table intermédiaire, le nombre de lignes est contrôlé, puis la table intermédiaire remplace la table finale.
+L'étape 09 charge dans PostgreSQL (table \texttt{panel}) la base corrigée de l'étape 07a, avec toutes ses colonnes, dont les statuts M1 et M2. Si la base corrigée est absente, la base non corrigée de l'étape 07 est chargée, ce qui est signalé dans le journal. Le chargement remplace entièrement la table : les données sont d'abord chargées dans une table intermédiaire, le nombre de lignes est contrôlé, puis la table intermédiaire remplace la table finale. Les vues Superset, qui dépendent de cette table, sont supprimées au passage et recréées par l'étape 10.
 
 \subsection{Vues Superset (étape 10)}
 

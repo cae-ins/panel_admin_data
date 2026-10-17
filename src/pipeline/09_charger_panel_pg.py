@@ -200,8 +200,9 @@ try:
             f"Contrôle staging échoué : {nb_staging:,} lignes PostgreSQL vs {len(df):,} lignes Parquet"
         )
 
+    # CASCADE : les vues Superset dépendent de la table ; l'étape 10 les recrée
     cur.execute(
-        sql.SQL("DROP TABLE IF EXISTS {}.{}").format(
+        sql.SQL("DROP TABLE IF EXISTS {}.{} CASCADE").format(
             sql.Identifier(PG_SCHEMA),
             sql.Identifier(PG_TABLE),
         )
